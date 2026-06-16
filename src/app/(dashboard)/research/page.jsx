@@ -567,6 +567,24 @@ export default function ResearchPage() {
     saveThesis(updated);
   }, [saveThesis, thesis]);
 
+  const updateUnderwriting = (field, value) => {
+    setThesis(prev => ({
+      ...prev,
+      underwriting: { ...((prev || {}).underwriting || {}), [field]: value },
+    }));
+    setThesisDirty(true);
+  };
+
+  const commitUnderwriting = useCallback((field, value) => {
+    const updated = {
+      ...(thesis || {}),
+      underwriting: { ...((thesis || {}).underwriting || {}), [field]: value },
+    };
+    setThesis(updated);
+    setThesisDirty(true);
+    saveThesis(updated);
+  }, [saveThesis, thesis]);
+
   const updateResearchWorkspace = useCallback((updater, persist = false) => {
     const nextWorkspace = updater(buildResearchWorkspace(thesis, selectedStock));
     const updated = {
@@ -1101,6 +1119,21 @@ export default function ResearchPage() {
             </div>
           ) : thesis ? (
             <div className="space-y-8" onBlur={() => saveThesis()}>
+              <Card>
+                <h2 className="text-lg font-bold text-gray-900 mb-1">Company Overview</h2>
+                <p className="text-sm text-gray-500 mb-6">In-depth notes on the business; model, segments, customers, moat, competitive landscape. Paste images directly into the text area.</p>
+
+                <RichTextArea
+                  value={thesis?.underwriting?.companyOverview || ''}
+                  onChange={value => updateUnderwriting('companyOverview', value)}
+                  onBlur={value => commitUnderwriting('companyOverview', value)}
+                  onCommit={value => commitUnderwriting('companyOverview', value)}
+                  ticker={selectedTicker}
+                  placeholder="Cover the business model, key segments, customers, competitive position, moat, regulatory backdrop, and anything else worth knowing about this name. Paste charts or screenshots inline..."
+                  rows={6}
+                />
+              </Card>
+
               <Card>
                 <h2 className="text-lg font-bold text-gray-900 mb-1">Thesis Structure</h2>
                 <p className="text-sm text-gray-500 mb-6">Capture the core fundamentals first, then answer the diligence and dislocation questions in full underneath.</p>

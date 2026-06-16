@@ -321,6 +321,107 @@ async function remoteImageRun(url, opts = {}) {
   }
 }
 
+// execCommand fontSize 1..7 → docx half-points (size 20 ≈ 10pt body default)
+const FONT_SIZE_MAP = { '1': 14, '2': 16, '3': 20, '4': 24, '5': 28, '6': 36, '7': 48 };
+
+function parseFontSizeStyle(value) {
+  if (!value) return null;
+  const m = String(value).match(/(\d+(?:\.\d+)?)(px|pt|em|rem)?/i);
+  if (!m) return null;
+  const num = parseFloat(m[1]);
+  const unit = (m[2] || 'px').toLowerCase();
+  let pt;
+  if (unit === 'pt') pt = num;
+  else if (unit === 'em' || unit === 'rem') pt = num * 12;
+  else pt = num * 0.75;
+  return Math.max(8, Math.round(pt * 2)); // half-points
+}
+
+/**
+ * Parse a rich-text HTML string into an array of paragraphs, where each
+ * paragraph is an array of run descriptors {text, bold, italics, underline, size}.
+ */
+function htmlToParagraphs(html) {
+  if (!html || !html.trim()) return [];
+  const looksLikeHtml = /<\/?(p|br|b|i|u|strong|em|span|div|font)\b/i.test(html);
+  if (!looksLikeHtml) {
+    return html.split('\n').filter(l => l.trim()).map(line => [{ text: line }]);
+  }
+
+  let root;
+  try {
+    const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
+    root = doc.body.firstChild;
+  } catch {
+    return [[{ text: html.replace(/<[^>]+>/g, '') }]];
+  }
+  if (!root) return [];
+
+  const paragraphs = [];
+  let current = [];
+  const flush = () => {
+    if (current.some(r => r.text && r.text.length > 0)) paragraphs.push(current);
+    current = [];
+  };
+
+  const walk = (node, fmt) => {
+    if (node.nodeType === 3) {
+      const text = node.textContent;
+      if (text) current.push({ ...fmt, text });
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'br') { flush(); return; }
+    if (tag === 'p' || tag === 'div') {
+      flush();
+      const nextFmt = { ...fmt };
+      applyInlineStyles(node, nextFmt);
+      for (const child of node.childNodes) walk(child, nextFmt);
+      flush();
+      return;
+    }
+    const nextFmt = { ...fmt };
+    if (tag === 'b' || tag === 'strong') nextFmt.bold = true;
+    if (tag === 'i' || tag === 'em') nextFmt.italics = true;
+    if (tag === 'u') nextFmt.underline = true;
+    if (tag === 'font') {
+      const size = node.getAttribute('size');
+      if (size && FONT_SIZE_MAP[size]) nextFmt.size = FONT_SIZE_MAP[size];
+    }
+    applyInlineStyles(node, nextFmt);
+    for (const child of node.childNodes) walk(child, nextFmt);
+  };
+
+  const applyInlineStyles = (el, fmt) => {
+    const style = el.style;
+    if (!style) return;
+    if (style.fontWeight && (style.fontWeight === 'bold' || parseInt(style.fontWeight) >= 600)) fmt.bold = true;
+    if (style.fontStyle === 'italic') fmt.italics = true;
+    if (style.textDecoration && style.textDecoration.includes('underline')) fmt.underline = true;
+    if (style.fontSize) {
+      const sz = parseFontSizeStyle(style.fontSize);
+      if (sz) fmt.size = sz;
+    }
+  };
+
+  walk(root, {});
+  flush();
+  return paragraphs;
+}
+
+function runsToTextRuns(runs) {
+  return runs.map(r => new TextRun({
+    text: r.text,
+    font: FONT_SERIF,
+    size: r.size || 20,
+    color: C.dark,
+    bold: !!r.bold,
+    italics: !!r.italics,
+    underline: r.underline ? {} : undefined,
+  }));
+}
+
 async function appendRichContent(sections, value, opts = {}) {
   const blocks = normalizeRichBlocks(value);
   let wroteAny = false;
@@ -349,23 +450,18 @@ async function appendRichContent(sections, value, opts = {}) {
     }
 
     if (block?.type === 'text' && typeof block.value === 'string') {
-      const lines = block.value.split('\n').filter(l => l.trim());
-      lines.forEach(line => {
-        const p = bodyParagraph(line);
-        if (p) {
-          if (opts.indent) {
-            sections.push(new Paragraph({
-              spacing: { after: 100, line: 276 },
-              alignment: AlignmentType.JUSTIFIED,
-              indent: { left: opts.indent },
-              children: [new TextRun({ text: line, font: FONT_SERIF, size: 20, color: C.dark })],
-            }));
-          } else {
-            sections.push(p);
-          }
-        }
+      const paragraphs = htmlToParagraphs(block.value);
+      paragraphs.forEach(runs => {
+        if (!runs.length) return;
+        const children = runsToTextRuns(runs);
+        sections.push(new Paragraph({
+          spacing: { after: 100, line: 276 },
+          alignment: AlignmentType.JUSTIFIED,
+          indent: opts.indent ? { left: opts.indent } : undefined,
+          children,
+        }));
       });
-      if (lines.length > 0) wroteAny = true;
+      if (paragraphs.length > 0) wroteAny = true;
     }
   }
 
@@ -660,7 +756,7 @@ export async function exportReport({ ticker, thesis, model, tickerData, liveQuot
       });
     }
 
-    if (hasRichContent(thesis?.underwriting?.companyOverview)) {
+    if (!isResearchWorkspace && hasRichContent(thesis?.underwriting?.companyOverview)) {
       if (coreReasons.length === 0) {
         sections.push(new Paragraph({
           spacing: { before: 300, after: 100 },
@@ -789,6 +885,12 @@ export async function exportReport({ ticker, thesis, model, tickerData, liveQuot
       width: { size: 100, type: WidthType.PERCENTAGE },
       rows: tableRows,
     }));
+  }
+
+  // ═══════════ COMPANY DEEP DIVE (research primer only) ═══════════
+  if (isResearchWorkspace && hasRichContent(thesis?.underwriting?.companyOverview)) {
+    sections.push(sectionTitle('Company Deep Dive'));
+    await appendRichContent(sections, thesis.underwriting.companyOverview, { centerImages: true });
   }
 
   // ═══════════ THE STORY ═══════════
