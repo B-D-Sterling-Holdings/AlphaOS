@@ -40,9 +40,8 @@ const NAV_GROUPS = [
       { href: '/documents', label: 'Documents', icon: FolderOpen },
       { href: '/link-database', label: 'Link Database', icon: Link2 },
       { href: '/financials', label: 'Financials', icon: DollarSign },
-      { href: '/workspace', label: 'Workspace', icon: Sparkles },
     ],
-    matchPaths: ['/documents', '/link-database', '/financials', '/workspace'],
+    matchPaths: ['/documents', '/link-database', '/financials'],
   },
 ];
 
@@ -222,6 +221,24 @@ export default function Navbar() {
                   <Target size={16} />
                   Strategic Hub
                   {(pathname === '/strategic-hub' || pathname.startsWith('/strategic-hub/')) && (
+                    <span className={`absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-0.5 rounded-full ${isDark ? 'bg-emerald-400' : 'bg-emerald-500'}`} />
+                  )}
+                </Link>
+              )}
+              {i === 0 && (
+                <Link
+                  href="/workspace"
+                  className={`
+                    relative flex items-center gap-1.5 px-4 py-2 rounded-xl text-[15px] font-semibold transition-all duration-200 no-underline
+                    ${pathname === '/workspace' || pathname.startsWith('/workspace/')
+                      ? isDark ? 'text-emerald-400 bg-emerald-500/15' : 'text-emerald-700 bg-emerald-50'
+                      : isDark ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'
+                    }
+                  `}
+                >
+                  <Sparkles size={16} />
+                  Workspace
+                  {(pathname === '/workspace' || pathname.startsWith('/workspace/')) && (
                     <span className={`absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-0.5 rounded-full ${isDark ? 'bg-emerald-400' : 'bg-emerald-500'}`} />
                   )}
                 </Link>
