@@ -140,7 +140,7 @@ function NavDropdown({ group, pathname, searchParams, isDark }) {
 export default function Navbar() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { logout } = useAuth();
+  const { logout, isDemo } = useAuth();
   const isDark = false;
   const [scrolled, setScrolled] = useState(false);
 
@@ -178,6 +178,7 @@ export default function Navbar() {
       }}
     >
       <div className="max-w-7xl mx-auto px-6 lg:px-12 h-16 flex items-center justify-between">
+        <div className="flex items-center gap-3">
         <Link href="/" className="flex items-center gap-3.5 no-underline group">
           <Image
             src="/images/wow.png"
@@ -193,6 +194,15 @@ export default function Navbar() {
             Dashboard
           </span>
         </Link>
+        {isDemo && (
+          <span
+            className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 border border-amber-200"
+            title="You are in the isolated demo environment — no production data is used."
+          >
+            <Sparkles size={12} /> Demo
+          </span>
+        )}
+        </div>
 
         <div className="flex items-center gap-1">
           {NAV_GROUPS.map((group, i) => (

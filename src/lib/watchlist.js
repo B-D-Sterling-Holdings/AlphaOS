@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { getDb } from './db';
 
 const DEFAULT_WATCHLIST = {
   watchlists: [
@@ -19,6 +19,7 @@ function orderStocks(stocks = []) {
 }
 
 export async function loadWatchlist() {
+  const supabase = await getDb();
   const [{ data: watchlists, error: wErr }, { data: setting, error: sErr }] = await Promise.all([
     supabase.from('watchlists').select('*'),
     supabase.from('app_settings').select('value').eq('key', 'activeWatchlistId').single(),
@@ -39,6 +40,7 @@ export async function loadWatchlist() {
 }
 
 export async function saveWatchlist(data) {
+  const supabase = await getDb();
   const { watchlists, activeWatchlistId } = data;
 
   // Get existing watchlist IDs

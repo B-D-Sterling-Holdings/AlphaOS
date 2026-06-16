@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 import { summarizeByType } from '@/lib/summarizer';
 
 /*
@@ -93,6 +93,7 @@ async function tryExtractFromUrl(url) {
 /* ── GET — list links (optional ticker / contentType filters) ── */
 
 export async function GET(request) {
+  const supabase = await getDb();
   const { searchParams } = new URL(request.url);
   const ticker = searchParams.get('ticker');
   const contentType = searchParams.get('contentType');
@@ -111,6 +112,7 @@ export async function GET(request) {
 /* ── POST — quick-save a link (no auto-summarization) ──────── */
 
 export async function POST(request) {
+  const supabase = await getDb();
   const body = await request.json();
 
   const record = {
@@ -143,6 +145,7 @@ export async function POST(request) {
 /* ── PUT — update link (manual summary, regenerate, paste) ── */
 
 export async function PUT(request) {
+  const supabase = await getDb();
   const body = await request.json();
   const { id } = body;
 
@@ -215,6 +218,7 @@ export async function PUT(request) {
 /* ── DELETE — remove a link ──────────────────────────────────── */
 
 export async function DELETE(request) {
+  const supabase = await getDb();
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
 

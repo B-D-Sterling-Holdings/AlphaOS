@@ -1,6 +1,7 @@
-import { supabase } from './supabase';
+import { getDb } from './db';
 
 export async function tickerDataExists(ticker) {
+  const supabase = await getDb();
   const { data, error } = await supabase
     .from('ticker_fundamentals')
     .select('ticker')
@@ -12,6 +13,7 @@ export async function tickerDataExists(ticker) {
 }
 
 export async function loadTickerFundamentals(ticker) {
+  const supabase = await getDb();
   const upper = ticker.toUpperCase();
 
   const [{ data: fundamentals }, { data: prices }] = await Promise.all([

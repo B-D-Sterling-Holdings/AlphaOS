@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 import { getLatestResultSignal } from '@/lib/macroRegimeSignal';
 
 const MACRO_DIR = path.resolve(process.cwd(), 'macro_regime_allocator');
@@ -15,6 +15,7 @@ const VALID_COMMANDS = ['run', 'predict', 'fast', 'validate', 'clean'];
 
 /** Sync Supabase config → config.yaml so the Python process uses the UI values. */
 async function syncConfigToYaml() {
+  const supabase = await getDb();
   try {
     const { data } = await supabase
       .from('macro_regime_config')
@@ -86,6 +87,7 @@ function parseCSV(text) {
 }
 
 async function syncToSupabase(runId) {
+  const supabase = await getDb();
   try {
     const result = { backtest: [], metrics: [], report: null, plots: {}, validation_report: null, validation_data: {} };
 
@@ -177,6 +179,7 @@ async function syncToSupabase(runId) {
 }
 
 async function updateRunRecord(runId, fields) {
+  const supabase = await getDb();
   if (!runId) return;
   try {
     await supabase.from('macro_regime_runs').update(fields).eq('id', runId);
@@ -184,6 +187,7 @@ async function updateRunRecord(runId, fields) {
 }
 
 async function pruneRuns() {
+  const supabase = await getDb();
   try {
     const { data: recent } = await supabase
       .from('macro_regime_runs')
@@ -198,6 +202,7 @@ async function pruneRuns() {
 }
 
 async function pruneResults() {
+  const supabase = await getDb();
   try {
     const { data: recentResults } = await supabase
       .from('macro_regime_results')
@@ -213,6 +218,15 @@ async function pruneResults() {
 
 // POST - start a run
 export async function POST(req) {
+  const supabase = await getDb();
+  // Demo sessions are read-only for the macro-regime allocator: running it spawns a
+  // heavy Python process and rewrites shared server config. Demo reads seeded results.
+  if (supabase.isDemo) {
+    return NextResponse.json(
+      { error: 'Running the macro-regime allocator is disabled in demo mode.' },
+      { status: 403 }
+    );
+  }
   try {
     const { command } = await req.json();
     if (!VALID_COMMANDS.includes(command)) {
@@ -341,6 +355,7 @@ export async function POST(req) {
 
 // GET - check run status + run history
 export async function GET(req) {
+  const supabase = await getDb();
   try {
     const { searchParams } = new URL(req.url);
     const historyMode = searchParams.get('history');

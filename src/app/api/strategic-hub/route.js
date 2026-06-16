@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 import { getValuationExpectedReturn } from '@/lib/valuationModel';
 
 // Aggregates portfolio, thesis, research, task, and strategic note data
 // into a single payload for the Strategic Hub view
 export async function GET() {
+  const supabase = await getDb();
   try {
     const [
       holdingsRes,

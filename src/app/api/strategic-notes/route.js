@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 // GET — load all strategic notes
 export async function GET() {
+  const supabase = await getDb();
   const { data, error } = await supabase
     .from('strategic_notes')
     .select('*')
@@ -14,6 +15,7 @@ export async function GET() {
 
 // POST — upsert a strategic note for a ticker
 export async function POST(request) {
+  const supabase = await getDb();
   const body = await request.json();
   const { ticker, sentiment, conviction, action, action_reason, notes, alternatives, target_weight, priority, expected_return, sort_order } = body;
 
@@ -49,6 +51,7 @@ export async function POST(request) {
 
 // DELETE — remove a strategic note
 export async function DELETE(request) {
+  const supabase = await getDb();
   const { ticker } = await request.json();
   if (!ticker) return NextResponse.json({ error: 'ticker required' }, { status: 400 });
 

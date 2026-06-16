@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 export async function GET(request) {
+  const supabase = await getDb();
   try {
     const { searchParams } = new URL(request.url);
     const includeArchived = searchParams.get('archived') === '1';
@@ -24,6 +25,7 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
+  const supabase = await getDb();
   try {
     const body = await request.json();
     const row = {
@@ -46,6 +48,7 @@ export async function POST(request) {
 }
 
 export async function PUT(request) {
+  const supabase = await getDb();
   try {
     const body = await request.json();
     const { id, ...rest } = body;
@@ -73,6 +76,7 @@ export async function PUT(request) {
 }
 
 export async function DELETE(request) {
+  const supabase = await getDb();
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 async function readConfig() {
+  const supabase = await getDb();
   const { data, error } = await supabase
     .from('sector_config')
     .select('config')
@@ -13,6 +14,7 @@ async function readConfig() {
 }
 
 async function writeConfig(config) {
+  const supabase = await getDb();
   const { error } = await supabase
     .from('sector_config')
     .update({ config })

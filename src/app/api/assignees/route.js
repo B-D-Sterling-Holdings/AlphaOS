@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const TABLE = 'app_settings';
 
@@ -9,6 +9,7 @@ function getKey(boardId) {
 
 // GET - load saved assignees [{name, color}] for a board
 export async function GET(req) {
+  const supabase = await getDb();
   const { searchParams } = new URL(req.url);
   const boardId = searchParams.get('board_id') || 'default';
   const key = getKey(boardId);
@@ -42,6 +43,7 @@ export async function GET(req) {
 
 // PUT - save assignees list for a board
 export async function PUT(req) {
+  const supabase = await getDb();
   try {
     const { assignees, board_id } = await req.json();
     const key = getKey(board_id || 'default');

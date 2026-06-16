@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const TABLE = 'app_settings';
 const BOARDS_KEY = 'task_boards';
@@ -8,6 +8,7 @@ const ACTIVE_KEY = 'activeTaskBoardId';
 const DEFAULT_BOARDS = [{ id: 'default', name: 'Main Board' }];
 
 async function getSetting(key) {
+  const supabase = await getDb();
   const { data, error } = await supabase
     .from(TABLE)
     .select('value')
@@ -23,6 +24,7 @@ async function getSetting(key) {
 }
 
 async function setSetting(key, value) {
+  const supabase = await getDb();
   const serialized = typeof value === 'string' ? value : JSON.stringify(value);
   await supabase
     .from(TABLE)

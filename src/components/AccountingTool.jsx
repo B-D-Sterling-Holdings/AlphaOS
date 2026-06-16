@@ -15,7 +15,8 @@ import {
   updateContributionDate, closePeriod
 } from '@/lib/accounting';
 import { formatMoneyPrecise, formatPct, formatNumber } from '@/lib/formatters';
-import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/AuthContext';
+import { clientDb } from '@/lib/clientDb';
 
 const STORAGE_KEY = 'fund-accounting-state';
 
@@ -1106,6 +1107,11 @@ function NavConverterTab({ computedTimeline, state }) {
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function AccountingTool() {
+  // Account-aware Supabase access: demo sessions persist to demo_app_settings,
+  // never the production row. AuthGate guarantees accountType is resolved before mount.
+  const { accountType } = useAuth();
+  const db = useMemo(() => clientDb(accountType), [accountType]);
+
   const [state, setState] = useState(null);
   const [activeTab, setActiveTab] = useState('accounting'); // 'accounting' | 'investor-performance' | 'nav-converter'
   const [activeQuarter, setActiveQuarter] = useState(0);
@@ -1186,7 +1192,7 @@ export default function AccountingTool() {
         const local = localStorage.getItem(STORAGE_KEY);
         if (local) {
           const parsed = backfillSP(JSON.parse(local));
-          await supabase.from('app_settings').upsert({
+          await db.from('app_settings').upsert({
             key: STORAGE_KEY,
             value: JSON.stringify(parsed),
           });
@@ -1213,7 +1219,7 @@ export default function AccountingTool() {
 
       // Nothing anywhere — use seed
       const seed = createSeedState();
-      await supabase.from('app_settings').upsert({
+      await db.from('app_settings').upsert({
         key: STORAGE_KEY,
         value: JSON.stringify(seed),
       });
@@ -1222,7 +1228,7 @@ export default function AccountingTool() {
 
     load();
     return () => { cancelled = true; };
-  }, [backfillSP]);
+  }, [backfillSP, db]);
 
   // Persist to Supabase on every state change (skip the initial load)
   const hasLoadedOnce = useRef(false);
@@ -1239,13 +1245,13 @@ export default function AccountingTool() {
     if (state === prevStateRef.current) return;
     prevStateRef.current = state;
 
-    supabase.from('app_settings').upsert({
+    db.from('app_settings').upsert({
       key: STORAGE_KEY,
       value: JSON.stringify(state),
     }).then(({ error }) => {
       if (error) console.error('Failed to persist accounting state:', error);
     });
-  }, [state]);
+  }, [state, db]);
 
   // Compute timeline — auto-set the last period's end date to today and AUM to live value
   const computedTimeline = useMemo(() => {

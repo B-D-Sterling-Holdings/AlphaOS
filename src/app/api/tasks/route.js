@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 /*
   Supabase table required — run this SQL in the Supabase SQL Editor:
@@ -32,6 +32,7 @@ const TABLE = 'tasks';
 
 // GET — fetch tasks, optionally filtered by board_id
 export async function GET(req) {
+  const supabase = await getDb();
   const { searchParams } = new URL(req.url);
   const boardId = searchParams.get('board_id');
 
@@ -58,6 +59,7 @@ export async function GET(req) {
 
 // POST — create a new task
 export async function POST(req) {
+  const supabase = await getDb();
   const body = await req.json();
   const { title, priority = 'low', board_id = 'default' } = body;
 
@@ -94,6 +96,7 @@ export async function POST(req) {
 
 // PUT — update a task (toggle done, rename, subtasks, etc.)
 export async function PUT(req) {
+  const supabase = await getDb();
   const body = await req.json();
   const { id, ...updates } = body;
 
@@ -114,6 +117,7 @@ export async function PUT(req) {
 
 // DELETE — remove a task
 export async function DELETE(req) {
+  const supabase = await getDb();
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
 

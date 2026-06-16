@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 import { getLatestResultSignal } from '@/lib/macroRegimeSignal';
 
 export async function GET() {
+  const supabase = await getDb();
   try {
     const derived = await getLatestResultSignal(supabase);
     if (!derived?.signal) {
@@ -19,6 +20,7 @@ export async function GET() {
 }
 
 export async function POST() {
+  const supabase = await getDb();
   try {
     const derived = await getLatestResultSignal(supabase);
 
