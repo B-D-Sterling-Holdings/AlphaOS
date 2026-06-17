@@ -32,17 +32,22 @@ function fmtDate(d) {
 
 // ─── Editable Cell ───────────────────────────────────────────────────────────
 
-function EditableCell({ value, onChange, format = 'money', className = '' }) {
+function EditableCell({ value, onChange, format = 'money', className = '', blankWhenZero = false }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef(null);
 
-  const display = format === 'money' ? fmt$(value)
+  // Treat null/0 as an empty cell when requested (e.g. a contribution of 0):
+  // still clickable, but shows a clean dash and opens to an empty input.
+  const isBlank = blankWhenZero && (value == null || value === 0);
+
+  const display = isBlank ? '—'
+    : format === 'money' ? fmt$(value)
     : format === 'date' ? (value || '')
     : String(value ?? '');
 
   const startEdit = () => {
-    setDraft(format === 'money' ? (value ?? '').toString() : (value ?? ''));
+    setDraft(isBlank ? '' : format === 'money' ? (value ?? '').toString() : (value ?? ''));
     setEditing(true);
   };
 
@@ -547,9 +552,17 @@ function QuarterTable({ quarter, quarterIndex, state, setState, computedQuarter,
       {showPeriodModal && (
         <NextPeriodModal
           currentAUM={liveAUM}
-          onNextPeriod={(closeDate, closeAUM, newStartDate) =>
-            setState(closePeriod(state, quarterIndex, closeDate, closeAUM, newStartDate))
-          }
+          onNextPeriod={(closeDate, closeAUM, newStartDate) => {
+            // If the quarter has no period yet (e.g. a freshly added quarter),
+            // there's nothing to "close" — create the first period directly.
+            const hasPeriod = state.quarters[quarterIndex].events.some(e => e.type === 'period');
+            const today = new Date().toISOString().split('T')[0];
+            setState(
+              hasPeriod
+                ? closePeriod(state, quarterIndex, closeDate, closeAUM, newStartDate)
+                : addPeriod(state, quarterIndex, closeDate, today, closeAUM)
+            );
+          }}
           onClose={() => setShowPeriodModal(false)}
         />
       )}
@@ -592,15 +605,12 @@ function InvestorRows({ investor, columns, cellBase, rowLabel, sectionLabel, sta
             const amount = col.data.amounts[investor] || 0;
             return (
               <td key={ci} className={`${cellBase} bg-emerald-50/40 border-l border-dashed border-emerald-200`}>
-                {amount > 0 ? (
-                  <EditableCell
-                    value={amount}
-                    onChange={v => setState(updateContribution(state, quarterIndex, col.eventIndex, investor, v))}
-                    className="text-emerald-700 font-semibold"
-                  />
-                ) : (
-                  <span className="text-gray-300">—</span>
-                )}
+                <EditableCell
+                  value={amount}
+                  onChange={v => setState(updateContribution(state, quarterIndex, col.eventIndex, investor, v))}
+                  blankWhenZero
+                  className={amount > 0 ? 'text-emerald-700 font-semibold' : 'text-gray-300'}
+                />
               </td>
             );
           }
@@ -1202,9 +1212,9 @@ export default function AccountingTool() {
         }
       } catch {}
 
-      // Normal load from Supabase
+      // Normal load from Supabase (account-aware: demo sessions read demo_app_settings)
       try {
-        const { data, error } = await supabase
+        const { data, error } = await db
           .from('app_settings')
           .select('value')
           .eq('key', STORAGE_KEY)
@@ -1396,19 +1406,6 @@ export default function AccountingTool() {
           liveAUM={liveAUM}
           aumLoading={aumLoading}
         />
-        </div>
-      )}
-
-      {/* Empty quarter state */}
-      {state.quarters[activeQuarter]?.events.length === 0 && (
-        <div className="animate-fade-in-up stagger-4 bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
-          <p className="text-gray-400 text-sm mb-4">No periods in this quarter yet.</p>
-          <button
-            onClick={() => {/* trigger add period modal via ref or state - handled within QuarterTable */}}
-            className="px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-emerald-600 to-emerald-500 rounded-xl"
-          >
-            Add First Period
-          </button>
         </div>
       )}
 
