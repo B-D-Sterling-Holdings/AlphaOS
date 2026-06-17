@@ -57,19 +57,32 @@ export async function POST(request) {
     const accountingState = JSON.parse(settingsRow.value);
     const computedTimeline = computeFullTimeline(accountingState);
 
-    // Build flat period list for date matching
-    const periods = [];
+    // Build a "share ladder": outstanding shares effective from each period start.
+    //
+    // We DON'T match by [startDate, endDate] range because stale/open periods can
+    // overlap newer ones (e.g. an un-closed current period whose endDate still
+    // extends past a later contribution). Range-overlap matching then picks the
+    // older period's pre-contribution share count and divides post-contribution
+    // AUM by too few shares, making NAV skyrocket. Instead each entry uses the
+    // share count from the latest period that started on or before its date.
+    //
+    // Keying off period starts (not contribution dates) matches the accounting
+    // model: a contribution freezes at the prior period's END NAV and the issued
+    // shares are recognized when the NEXT period begins the following day (see
+    // closePeriod in lib/accounting.js). startTotalShares already reflects every
+    // contribution up to that point.
+    const ladder = [];
     for (let qi = 0; qi < computedTimeline.length; qi++) {
       for (const ev of computedTimeline[qi].computedEvents) {
         if (ev.type === 'period') {
-          periods.push({
-            startDate: ev.startDate,
-            endDate: ev.endDate,
-            totalShares: ev.startTotalShares,
-          });
+          ladder.push({ date: ev.startDate, totalShares: ev.startTotalShares });
         }
       }
     }
+    // Sort ascending by start date; later same-day starts win (larger count last).
+    ladder.sort((a, b) =>
+      a.date === b.date ? a.totalShares - b.totalShares : a.date < b.date ? -1 : 1
+    );
 
     // 2. Parse entries and compute fund NAV per share
     const parsed = [];
@@ -82,30 +95,21 @@ export async function POST(request) {
       const [mm, dd, yyyy] = parts;
       const isoDate = `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
 
-      // Find matching period
-      let matchedPeriod = null;
-      for (const p of periods) {
-        if (isoDate >= p.startDate && isoDate <= p.endDate) {
-          matchedPeriod = p;
-          break;
-        }
-      }
-      // Fallback: if date is after last period start (current open period)
-      if (!matchedPeriod && periods.length > 0) {
-        const last = periods[periods.length - 1];
-        if (isoDate >= last.startDate) {
-          matchedPeriod = last;
-        }
+      // Shares outstanding as of this date = latest ladder step on or before it.
+      let shares = null;
+      for (const step of ladder) {
+        if (step.date <= isoDate) shares = step.totalShares;
+        else break;
       }
 
-      if (!matchedPeriod || matchedPeriod.totalShares <= 0) {
+      if (shares == null || shares <= 0) {
         return NextResponse.json({
-          error: `No matching period with shares found for date ${entry.date}`
+          error: `No share count available on or before date ${entry.date}`
         }, { status: 400 });
       }
 
-      const fundNav = entry.aum / matchedPeriod.totalShares;
-      parsed.push({ isoDate, fundNav, aum: entry.aum, shares: matchedPeriod.totalShares });
+      const fundNav = entry.aum / shares;
+      parsed.push({ isoDate, fundNav, aum: entry.aum, shares });
     }
 
     // 3. Fetch S&P 500 historical prices for the date range
