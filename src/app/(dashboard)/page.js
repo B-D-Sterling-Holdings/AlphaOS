@@ -14,6 +14,7 @@ ChartJS.register(ArcElement, ChartTooltip, Legend);
 Chart.register(...registerables);
 
 const TIMEFRAMES = [
+  { label: 'MTD', days: 'mtd' },
   { label: '1M', days: 30 },
   { label: '3M', days: 90 },
   { label: '6M', days: 180 },
@@ -265,10 +266,16 @@ export default function DashboardPage() {
     const first = navData[0];
 
     function findByDaysAgo(days) {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - days);
-      const cutoffStr = cutoff.toISOString().slice(0, 10);
-      // Find first entry on or after cutoff
+      // Anchor the lookback to the latest data point's date, not wall-clock
+      // today. NAV is entered periodically, so the most recent row usually
+      // lags behind today; anchoring to `new Date()` made short windows fall
+      // off the end of the data and default to inception (== cumulative).
+      const anchor = new Date(last.date + 'T00:00:00');
+      anchor.setDate(anchor.getDate() - days);
+      const cutoffStr = anchor.toISOString().slice(0, 10);
+      // Use the first entry on or after the cutoff — this matches the chart's
+      // `filtered[0]` for the same window so the cards and the chart timeframe
+      // stats always agree. Falls back to inception if history is shorter.
       return navData.find(d => d.date >= cutoffStr) || navData[0];
     }
 
@@ -288,14 +295,22 @@ export default function DashboardPage() {
   // ── Chart logic (same as before) ──
 
   const filtered = useMemo(() => {
-    if (!navData) return [];
+    if (!navData || !navData.length) return [];
     const tf = TIMEFRAMES.find(t => t.label === timeframe);
     if (!tf || tf.days === null) return navData;
+    // Anchor windows to the latest data point's date, not wall-clock today —
+    // NAV rows lag behind today, so anchoring to `new Date()` filtered short
+    // windows past the end of the data and returned nothing.
+    const anchor = new Date(navData[navData.length - 1].date + 'T00:00:00');
     if (tf.days === 'ytd') {
-      const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10);
+      const yearStart = new Date(anchor.getFullYear(), 0, 1).toISOString().slice(0, 10);
       return navData.filter(d => d.date >= yearStart);
     }
-    const cutoff = new Date();
+    if (tf.days === 'mtd') {
+      const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1).toISOString().slice(0, 10);
+      return navData.filter(d => d.date >= monthStart);
+    }
+    const cutoff = new Date(anchor);
     cutoff.setDate(cutoff.getDate() - tf.days);
     const cutoffStr = cutoff.toISOString().slice(0, 10);
     return navData.filter(d => d.date >= cutoffStr);
