@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const TABLE = 'allocation_config';
 
 // GET - load saved allocation config
 export async function GET() {
+  const supabase = await getDb();
   try {
     const { data, error } = await supabase
       .from(TABLE)
@@ -28,6 +29,7 @@ export async function GET() {
 
 // PUT - save allocation config
 export async function PUT(req) {
+  const supabase = await getDb();
   try {
     const { config } = await req.json();
 

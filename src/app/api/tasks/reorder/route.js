@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 // PATCH — bulk-update positions for tasks within a priority section
 export async function PATCH(req) {
+  const supabase = await getDb();
   const { items } = await req.json();
 
   if (!Array.isArray(items) || items.length === 0) {

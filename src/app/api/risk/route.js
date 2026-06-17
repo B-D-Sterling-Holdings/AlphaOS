@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 import { fetchRisk } from '@/lib/fetchRisk';
 
 export async function POST(request) {
+  const supabase = await getDb();
   try {
     const body = await request.json();
     const { holdings } = body;

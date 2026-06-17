@@ -1,6 +1,7 @@
-import { supabase } from './supabase';
+import { getDb } from './db';
 
 export async function loadPortfolio() {
+  const supabase = await getDb();
   const [{ data: holdings, error: hErr }, { data: cashRow, error: cErr }] = await Promise.all([
     supabase.from('holdings').select('*').order('added_at'),
     supabase.from('portfolio_cash').select('cash').eq('id', 1).single(),
@@ -21,6 +22,7 @@ export async function loadPortfolio() {
 }
 
 export async function addHolding(ticker, shares, costBasis) {
+  const supabase = await getDb();
   const upper = ticker.trim().toUpperCase();
   const now = new Date().toISOString();
 
@@ -38,6 +40,7 @@ export async function addHolding(ticker, shares, costBasis) {
 }
 
 export async function removeHolding(ticker) {
+  const supabase = await getDb();
   const upper = ticker.trim().toUpperCase();
 
   const { error } = await supabase
@@ -50,6 +53,7 @@ export async function removeHolding(ticker) {
 }
 
 export async function updateCash(cash) {
+  const supabase = await getDb();
   const { error } = await supabase
     .from('portfolio_cash')
     .update({ cash: Number(cash) || 0 })

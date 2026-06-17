@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const DEFAULT_THESIS = {
   coreReasons: [{ title: '', description: '' }, { title: '', description: '' }, { title: '', description: '' }],
@@ -46,6 +46,7 @@ function deserializeAssumptions(val) {
 }
 
 export async function GET(request, { params }) {
+  const supabase = await getDb();
   const { ticker } = await params;
   const upper = ticker.toUpperCase();
 
@@ -73,6 +74,7 @@ export async function GET(request, { params }) {
 }
 
 export async function POST(request, { params }) {
+  const supabase = await getDb();
   const { ticker } = await params;
   const upper = ticker.toUpperCase();
 

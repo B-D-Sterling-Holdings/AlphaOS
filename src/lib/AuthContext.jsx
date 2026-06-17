@@ -6,6 +6,7 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [authenticated, setAuthenticated] = useState(false);
+  const [accountType, setAccountType] = useState('prod');
   const [loading, setLoading] = useState(true);
 
   // On mount, check for an existing session cookie
@@ -17,6 +18,7 @@ export function AuthProvider({ children }) {
           const data = await res.json();
           if (data.authenticated) {
             setAuthenticated(true);
+            setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
           }
         }
       } catch {
@@ -40,7 +42,9 @@ export function AuthProvider({ children }) {
       throw new Error(data.error || 'Invalid credentials');
     }
 
+    const data = await res.json().catch(() => ({}));
     setAuthenticated(true);
+    setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
     return true;
   }, []);
 
@@ -51,10 +55,11 @@ export function AuthProvider({ children }) {
       // Clear local state even if the server call fails
     }
     setAuthenticated(false);
+    setAccountType('prod');
   }, []);
 
   return (
-    <AuthContext.Provider value={{ authenticated, loading, login, logout }}>
+    <AuthContext.Provider value={{ authenticated, accountType, isDemo: accountType === 'demo', loading, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

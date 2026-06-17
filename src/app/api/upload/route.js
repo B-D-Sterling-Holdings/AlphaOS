@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const BUCKET = 'research-images';
 
 export async function POST(request) {
+  const supabase = await getDb();
   try {
     const formData = await request.formData();
     const file = formData.get('file');
@@ -15,7 +16,7 @@ export async function POST(request) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const ext = file.name.split('.').pop();
-    const path = `${ticker}/${Date.now()}_${file.name}`;
+    const path = `${supabase.storagePrefix}${ticker}/${Date.now()}_${file.name}`;
 
     const { data, error } = await supabase.storage
       .from(BUCKET)
@@ -35,6 +36,7 @@ export async function POST(request) {
 }
 
 export async function DELETE(request) {
+  const supabase = await getDb();
   try {
     const { searchParams } = new URL(request.url);
     const path = searchParams.get('path');

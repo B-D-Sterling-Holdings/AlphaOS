@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 export async function GET(req) {
+  const supabase = await getDb();
   try {
     const { searchParams } = new URL(req.url);
     const name = searchParams.get('name');

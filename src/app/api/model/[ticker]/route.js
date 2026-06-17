@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 export async function GET(request, { params }) {
+  const supabase = await getDb();
   const { ticker } = await params;
   const upper = ticker.toUpperCase();
 
@@ -19,6 +20,7 @@ export async function GET(request, { params }) {
 }
 
 export async function POST(request, { params }) {
+  const supabase = await getDb();
   const { ticker } = await params;
   const upper = ticker.toUpperCase();
 

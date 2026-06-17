@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const TABLE = 'macro_regime_weights';
 
 // GET - load saved macro-regime portfolio weights
 export async function GET() {
+  const supabase = await getDb();
   try {
     const { data, error } = await supabase
       .from(TABLE)
@@ -27,6 +28,7 @@ export async function GET() {
 
 // PUT - save macro-regime portfolio weights
 export async function PUT(req) {
+  const supabase = await getDb();
   try {
     const { weights } = await req.json();
 

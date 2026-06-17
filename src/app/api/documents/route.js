@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const BUCKET = 'documents';
 
 export async function GET(request) {
+  const supabase = await getDb();
   try {
     const { searchParams } = new URL(request.url);
     const category = searchParams.get('category');
@@ -23,6 +24,7 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
+  const supabase = await getDb();
   try {
     const formData = await request.formData();
     const file = formData.get('file');
@@ -36,7 +38,7 @@ export async function POST(request) {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const path = `${category}/${Date.now()}_${file.name}`;
+    const path = `${supabase.storagePrefix}${category}/${Date.now()}_${file.name}`;
 
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from(BUCKET)
@@ -70,6 +72,7 @@ export async function POST(request) {
 }
 
 export async function PUT(request) {
+  const supabase = await getDb();
   try {
     const body = await request.json();
     const { id, title } = body;
@@ -100,6 +103,7 @@ export async function PUT(request) {
 }
 
 export async function DELETE(request) {
+  const supabase = await getDb();
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');

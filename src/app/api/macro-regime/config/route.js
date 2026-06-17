@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 const TABLE = 'macro_regime_config';
 
@@ -33,6 +33,7 @@ const DEFAULT_CONFIG = {
 };
 
 export async function GET() {
+  const supabase = await getDb();
   try {
     const { data, error } = await supabase
       .from(TABLE)
@@ -51,6 +52,7 @@ export async function GET() {
 }
 
 export async function PUT(req) {
+  const supabase = await getDb();
   try {
     const { config } = await req.json();
     if (!config) return NextResponse.json({ error: 'config is required' }, { status: 400 });

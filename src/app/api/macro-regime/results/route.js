@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 import { buildSignalFromBacktest } from '@/lib/macroRegimeSignal';
 
 export async function GET() {
+  const supabase = await getDb();
   try {
     // Get the latest results from Supabase
     const { data, error } = await supabase

@@ -1,6 +1,6 @@
 import YahooFinance from 'yahoo-finance2';
 const yahooFinance = new YahooFinance({ suppressNotices: ['ripHistorical'] });
-import { supabase } from './supabase';
+import { getDb } from './db';
 
 const ALPHA_VANTAGE_BASE_URL = 'https://www.alphavantage.co/query';
 
@@ -87,6 +87,7 @@ async function sleep(ms) {
 }
 
 export async function generateTickerData(ticker, apiKey) {
+  const supabase = await getDb();
   const upper = ticker.toUpperCase();
 
   // Fetch prices from yahoo-finance2

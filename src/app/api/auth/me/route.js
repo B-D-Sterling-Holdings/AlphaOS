@@ -16,6 +16,7 @@ export async function GET(request) {
   return NextResponse.json({
     authenticated: true,
     user: { username: session.username },
+    accountType: session.accountType === 'demo' ? 'demo' : 'prod',
     expiresAt: session.exp ? new Date(session.exp * 1000).toISOString() : null,
   });
 }

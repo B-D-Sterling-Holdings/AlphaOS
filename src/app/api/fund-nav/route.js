@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 import YahooFinance from 'yahoo-finance2';
 import { computeFullTimeline } from '@/lib/accounting';
 
@@ -10,6 +10,7 @@ const INCEPTION_SP = 5634.58;
 const INCEPTION_NAV = 100;
 
 export async function GET() {
+  const supabase = await getDb();
   try {
     const { data, error } = await supabase
       .from('fund_nav_data')
@@ -35,6 +36,7 @@ export async function GET() {
  * 5. Upserts rows into fund_nav_data
  */
 export async function POST(request) {
+  const supabase = await getDb();
   try {
     const { entries } = await request.json();
     if (!entries || !Array.isArray(entries) || entries.length === 0) {

@@ -131,8 +131,16 @@ export default function LoginPage() {
           </button>
         </form>
 
+        {/* Demo hint */}
+        <p className="text-center text-[11px] text-gray-400 mt-6">
+          Just exploring? Sign in with{' '}
+          <span className="font-semibold text-emerald-600">demo</span>
+          {' / '}
+          <span className="font-semibold text-emerald-600">demo</span>
+        </p>
+
         {/* Footer */}
-        <p className="text-center text-[10px] text-gray-300 mt-8">
+        <p className="text-center text-[10px] text-gray-300 mt-4">
           B.D. Sterling Capital &middot; Fund Management System
         </p>
       </div>

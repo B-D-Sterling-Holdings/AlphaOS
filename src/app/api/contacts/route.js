@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
 
 /*
   Supabase tables required — run this SQL in the Supabase SQL Editor:
@@ -41,6 +41,7 @@ import { supabase } from '@/lib/supabase';
 const TABLE = 'contacts';
 
 export async function GET() {
+  const supabase = await getDb();
   const { data, error } = await supabase
     .from(TABLE)
     .select('*')
@@ -51,6 +52,7 @@ export async function GET() {
 }
 
 export async function POST(req) {
+  const supabase = await getDb();
   const body = await req.json();
   const { name } = body;
 
@@ -87,6 +89,7 @@ export async function POST(req) {
 }
 
 export async function PUT(req) {
+  const supabase = await getDb();
   const body = await req.json();
   const { id, ...updates } = body;
 
@@ -106,6 +109,7 @@ export async function PUT(req) {
 }
 
 export async function DELETE(req) {
+  const supabase = await getDb();
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
 
