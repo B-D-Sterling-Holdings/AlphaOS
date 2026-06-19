@@ -586,7 +586,7 @@ export default function HoldingsPage() {
                             </span>
                           </td>
                           <td className="text-right py-3.5 px-3 text-gray-500">
-                            {quotesLoaded ? `${weight.toFixed(1)}%` : <div className="h-5 w-12 rounded skeleton ml-auto" />}
+                            {quotesLoaded ? `${weight.toFixed(2)}%` : <div className="h-5 w-12 rounded skeleton ml-auto" />}
                           </td>
                           <td className="text-right py-3.5 px-3 text-gray-900 font-semibold">
                             {quotesLoaded ? formatMoney(p.value) : <div className="h-5 w-20 rounded skeleton ml-auto" />}
@@ -654,7 +654,7 @@ export default function HoldingsPage() {
                         <span className="bg-gray-200 text-gray-600 font-bold text-xs px-2.5 py-1 rounded-lg">CASH</span>
                       </td>
                       <td className="text-right py-3.5 px-3 text-gray-500">
-                        {quotesLoaded ? `${totalAum > 0 ? ((parseFloat(cash) || 0) / totalAum * 100).toFixed(1) : '0.0'}%` : <div className="h-5 w-12 rounded skeleton ml-auto" />}
+                        {quotesLoaded ? `${totalAum > 0 ? ((parseFloat(cash) || 0) / totalAum * 100).toFixed(2) : '0.00'}%` : <div className="h-5 w-12 rounded skeleton ml-auto" />}
                       </td>
                       <td className="text-right py-3.5 px-3 text-gray-900 font-semibold">
                         <div className="flex items-center justify-end gap-1">

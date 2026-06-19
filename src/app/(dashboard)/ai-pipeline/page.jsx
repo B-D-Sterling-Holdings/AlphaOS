@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Workflow, Play, Download, Upload, BarChart3, Settings, List, Info, Trash2,
-  Terminal, Loader2, ChevronDown, History, X, Cpu,
+  Terminal, Loader2, ChevronDown, History, X, Cpu, Pencil, Save,
+  Database, FileText, FileSpreadsheet,
 } from 'lucide-react';
 import Card from '@/components/Card';
 import Toast from '@/components/Toast';
@@ -60,6 +61,11 @@ export default function AiPipelinePage() {
   const [timeline, setTimeline] = useState([]);
   const [detail, setDetail] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // ── Data & Docs state ──
+  const [datasets, setDatasets] = useState([]);
+  const [documents, setDocuments] = useState([]);
+  const [dataLoading, setDataLoading] = useState(false);
 
   const pollRef = useRef(null);
   const logRef = useRef(null);
@@ -193,6 +199,16 @@ export default function AiPipelinePage() {
   }, [uploadTicker, uploadFile]);
 
   // ── Signal History data ──
+  const loadTimeline = useCallback(async (ticker) => {
+    if (!ticker) { setTimeline([]); return; }
+    try {
+      const d = await fetch(`/api/prism/history/${ticker}/timeline`).then((x) => x.json());
+      setTimeline(d.timeline || []);
+    } catch (e) {
+      setToast({ message: e.message, type: 'error' });
+    }
+  }, []);
+
   const loadHistories = useCallback(async () => {
     setHistoryLoading(true);
     try {
@@ -200,8 +216,10 @@ export default function AiPipelinePage() {
       const list = d.histories || [];
       setHistories(list);
       if (list.length && !selectedTicker) selectTicker(list[0].ticker);
+      return list;
     } catch (e) {
       setToast({ message: e.message, type: 'error' });
+      return [];
     } finally {
       setHistoryLoading(false);
     }
@@ -211,14 +229,53 @@ export default function AiPipelinePage() {
   const selectTicker = useCallback(async (ticker) => {
     setSelectedTicker(ticker);
     setDetail(null);
-    if (!ticker) { setTimeline([]); return; }
+    await loadTimeline(ticker);
+  }, [loadTimeline]);
+
+  // ── Edit / delete a recommendation (signal-history row) ──
+  const saveRecommendation = useCallback(async (ref, fields) => {
     try {
-      const d = await fetch(`/api/prism/history/${ticker}/timeline`).then((x) => x.json());
-      setTimeline(d.timeline || []);
+      const d = await fetch(`/api/prism/recommendations/${encodeURIComponent(ref)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields),
+      }).then((x) => x.json());
+      if (d?.error) { setToast({ message: d.error, type: 'error' }); return false; }
+      setToast({ message: 'Recommendation updated', type: 'success' });
+      setDetail(d);
+      await loadHistories();
+      await loadTimeline(selectedTicker);
+      return true;
     } catch (e) {
       setToast({ message: e.message, type: 'error' });
+      return false;
     }
-  }, []);
+  }, [loadHistories, loadTimeline, selectedTicker]);
+
+  const deleteRecommendation = useCallback((point) => {
+    const ref = point.id || point.source_file;
+    if (!ref) { setToast({ message: 'Cannot delete: missing id', type: 'error' }); return; }
+    setConfirm({
+      title: 'Delete recommendation',
+      message: `Permanently delete the ${point.signal || ''} signal from ${fmtDate(point.date || point.analysis_date)}? This can't be undone.`,
+      onConfirm: async () => {
+        setConfirm(null);
+        try {
+          const d = await fetch(`/api/prism/recommendations/${encodeURIComponent(ref)}`, { method: 'DELETE' })
+            .then((x) => x.json());
+          if (d?.error) { setToast({ message: d.error, type: 'error' }); return; }
+          setToast({ message: 'Recommendation deleted', type: 'success' });
+          setDetail(null);
+          const list = await loadHistories();
+          const next = list.some((h) => h.ticker === selectedTicker) ? selectedTicker : (list[0]?.ticker || '');
+          setSelectedTicker(next);
+          await loadTimeline(next);
+        } catch (e) {
+          setToast({ message: e.message, type: 'error' });
+        }
+      },
+    });
+  }, [loadHistories, loadTimeline, selectedTicker]);
 
   const openDetail = useCallback(async (point) => {
     const ref = point.id || point.source_file;
@@ -236,6 +293,96 @@ export default function AiPipelinePage() {
     if (tab === 'history' && !histories.length) loadHistories();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  // ── Data & Docs ──
+  const loadDataDocs = useCallback(async () => {
+    setDataLoading(true);
+    try {
+      const [ds, dc] = await Promise.all([
+        fetch('/api/prism/data').then((x) => x.json()),
+        fetch('/api/prism/documents').then((x) => x.json()),
+      ]);
+      setDatasets(ds.datasets || []);
+      setDocuments(dc.documents || []);
+    } catch (e) {
+      setToast({ message: e.message, type: 'error' });
+    } finally {
+      setDataLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'data' && !datasets.length && !documents.length) loadDataDocs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const saveDataset = useCallback(async (id, fields) => {
+    try {
+      const r = await fetch(`/api/prism/data/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields),
+      }).then((x) => x.json());
+      if (r?.error) { setToast({ message: r.error, type: 'error' }); return false; }
+      setToast({ message: 'Dataset updated', type: 'success' });
+      setDatasets((prev) => prev.map((x) => (x.id === id ? r : x)));
+      return true;
+    } catch (e) {
+      setToast({ message: e.message, type: 'error' });
+      return false;
+    }
+  }, []);
+
+  const deleteDataset = useCallback((d) => {
+    setConfirm({
+      title: 'Delete dataset',
+      message: `Delete ${d.ticker} · ${d.category}? This can't be undone.`,
+      onConfirm: async () => {
+        setConfirm(null);
+        try {
+          const r = await fetch(`/api/prism/data/${d.id}`, { method: 'DELETE' }).then((x) => x.json());
+          if (r?.error) { setToast({ message: r.error, type: 'error' }); return; }
+          setToast({ message: 'Dataset deleted', type: 'success' });
+          setDatasets((prev) => prev.filter((x) => x.id !== d.id));
+        } catch (e) {
+          setToast({ message: e.message, type: 'error' });
+        }
+      },
+    });
+  }, []);
+
+  const saveDocument = useCallback(async (id, fields) => {
+    try {
+      const r = await fetch(`/api/prism/documents/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields),
+      }).then((x) => x.json());
+      if (r?.error) { setToast({ message: r.error, type: 'error' }); return false; }
+      setToast({ message: 'Document updated', type: 'success' });
+      setDocuments((prev) => prev
+        .map((x) => (x.id === id ? r : x))
+        .sort((a, b) => a.ticker.localeCompare(b.ticker) || a.filename.localeCompare(b.filename)));
+      return true;
+    } catch (e) {
+      setToast({ message: e.message, type: 'error' });
+      return false;
+    }
+  }, []);
+
+  const deleteDocument = useCallback((d) => {
+    setConfirm({
+      title: 'Delete document',
+      message: `Delete ${d.filename} (${d.ticker})? This can't be undone.`,
+      onConfirm: async () => {
+        setConfirm(null);
+        try {
+          const r = await fetch(`/api/prism/documents/${d.id}`, { method: 'DELETE' }).then((x) => x.json());
+          if (r?.error) { setToast({ message: r.error, type: 'error' }); return; }
+          setToast({ message: 'Document deleted', type: 'success' });
+          setDocuments((prev) => prev.filter((x) => x.id !== d.id));
+        } catch (e) {
+          setToast({ message: e.message, type: 'error' });
+        }
+      },
+    });
+  }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
@@ -267,6 +414,7 @@ export default function AiPipelinePage() {
           {[
             { id: 'pipeline', label: 'Pipeline', icon: Workflow },
             { id: 'history', label: 'Signal History', icon: History },
+            { id: 'data', label: 'Data & Docs', icon: Database },
           ].map(({ id, label, icon: I }) => (
             <button key={id} onClick={() => setTab(id)}
               className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12px] font-semibold transition-all ${
@@ -278,7 +426,7 @@ export default function AiPipelinePage() {
         </div>
       </div>
 
-      {tab === 'pipeline' ? (
+      {tab === 'pipeline' && (
         <PipelineTab
           tickers={tickers}
           runStatus={runStatus} runLog={runLog} runHistory={runHistory} historyLog={historyLog}
@@ -292,11 +440,21 @@ export default function AiPipelinePage() {
           analyzeMode={analyzeMode} setAnalyzeMode={setAnalyzeMode}
           utilTicker={utilTicker} setUtilTicker={setUtilTicker}
         />
-      ) : (
+      )}
+      {tab === 'history' && (
         <HistoryTab
           histories={histories} loading={historyLoading}
           selectedTicker={selectedTicker} selectTicker={selectTicker}
           timeline={timeline} detail={detail} setDetail={setDetail} openDetail={openDetail}
+          onSave={saveRecommendation} onDelete={deleteRecommendation}
+        />
+      )}
+      {tab === 'data' && (
+        <DataDocsTab
+          datasets={datasets} documents={documents} loading={dataLoading}
+          onReload={loadDataDocs}
+          onSaveDataset={saveDataset} onDeleteDataset={deleteDataset}
+          onSaveDocument={saveDocument} onDeleteDocument={deleteDocument}
         />
       )}
 
@@ -459,7 +617,7 @@ function PipelineTab(props) {
 }
 
 // ════════════════════════════════════ Signal History tab ══════════════════════
-function HistoryTab({ histories, loading, selectedTicker, selectTicker, timeline, detail, setDetail, openDetail }) {
+function HistoryTab({ histories, loading, selectedTicker, selectTicker, timeline, detail, setDetail, openDetail, onSave, onDelete }) {
   if (loading && !histories.length) {
     return <Card><div className="flex items-center gap-2 text-sm text-gray-400 py-8 justify-center"><Loader2 size={16} className="animate-spin" /> Loading signal history…</div></Card>;
   }
@@ -530,7 +688,14 @@ function HistoryTab({ histories, loading, selectedTicker, selectTicker, timeline
       </Card>
 
       {/* Detail panel */}
-      {detail && <DetailPanel detail={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <DetailPanel
+          detail={detail}
+          onClose={() => setDetail(null)}
+          onSave={onSave}
+          onDelete={onDelete}
+        />
+      )}
 
       {/* History table */}
       <Card title={`${selectedTicker} Analysis History`}>
@@ -544,6 +709,7 @@ function HistoryTab({ histories, loading, selectedTicker, selectTicker, timeline
                 <th className="py-2 pr-3 font-semibold">Position</th>
                 <th className="py-2 pr-3 font-semibold">Price Target</th>
                 <th className="py-2 pr-3 font-semibold">Changed</th>
+                <th className="py-2 pr-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -558,6 +724,22 @@ function HistoryTab({ histories, loading, selectedTicker, selectTicker, timeline
                     <td className="py-2.5 pr-3 font-mono text-gray-600">{e.position_size_pct != null ? `${Number(e.position_size_pct).toFixed(1)}%` : '—'}</td>
                     <td className="py-2.5 pr-3 font-mono text-gray-600">{e.price_target != null ? `$${Number(e.price_target).toFixed(2)}` : '—'}</td>
                     <td className={`py-2.5 pr-3 font-semibold ${e.signal_changed ? 'text-indigo-600' : 'text-gray-300'}`}>{e.signal_changed ? 'Yes' : '—'}</td>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={(ev) => { ev.stopPropagation(); openDetail(e); }}
+                          title="Edit"
+                          className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          onClick={(ev) => { ev.stopPropagation(); onDelete(e); }}
+                          title="Delete"
+                          className="rounded-md p-1 text-gray-400 hover:bg-red-50 hover:text-red-600">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
@@ -569,10 +751,21 @@ function HistoryTab({ histories, loading, selectedTicker, selectTicker, timeline
   );
 }
 
-function DetailPanel({ detail, onClose }) {
+const SIGNAL_OPTIONS = ['BUY', 'HOLD', 'AVOID'];
+const CONVICTION_OPTIONS = ['VERY_HIGH', 'HIGH', 'MODERATE', 'LOW', 'UNKNOWN'];
+
+function toDateInput(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toISOString().slice(0, 10);
+}
+
+function DetailPanel({ detail, onClose, onSave, onDelete }) {
   const rec = detail.recommendation || {};
   const sections = detail.sections || {};
-  const c = signalClasses(rec.signal);
+  const c = signalClasses(rec.signal || detail.signal);
+  const ref = detail.id || detail.source_file;
   const sectionLabels = {
     executive_summary: 'Executive Summary',
     fundamental_analysis: 'Fundamental Analysis',
@@ -581,12 +774,100 @@ function DetailPanel({ detail, onClose }) {
     risk_factors: 'Risk Factors',
   };
 
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState(null);
+
+  const startEdit = () => {
+    setForm({
+      signal: (detail.signal || rec.signal || '').toUpperCase(),
+      conviction: (detail.conviction || rec.conviction || 'UNKNOWN').toUpperCase(),
+      position_size_pct: detail.position_size_pct ?? '',
+      price_target: detail.price_target ?? '',
+      expected_return_pct: detail.expected_return_pct ?? '',
+      analysis_date: toDateInput(detail.analysis_date),
+      reasoning: rec.reasoning || '',
+    });
+    setEditing(true);
+  };
+
+  const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    const ok = await onSave(ref, form);
+    setSaving(false);
+    if (ok) setEditing(false);
+  };
+
+  if (editing && form) {
+    const inputCls = 'w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30';
+    const labelCls = 'block text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1';
+    return (
+      <Card
+        title={`Edit · ${detail.ticker}`}
+        actions={
+          <button onClick={() => setEditing(false)} className="rounded-lg border border-gray-200 p-1 text-gray-400 hover:text-gray-700"><X size={14} /></button>
+        }
+      >
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label className={labelCls}>Signal</label>
+            <select value={form.signal} onChange={(e) => setField('signal', e.target.value)} className={inputCls}>
+              <option value="">—</option>
+              {SIGNAL_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>Conviction</label>
+            <select value={form.conviction} onChange={(e) => setField('conviction', e.target.value)} className={inputCls}>
+              {CONVICTION_OPTIONS.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>Analysis Date</label>
+            <input type="date" value={form.analysis_date} onChange={(e) => setField('analysis_date', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>Position Size %</label>
+            <input type="number" step="0.1" value={form.position_size_pct} onChange={(e) => setField('position_size_pct', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>Price Target $</label>
+            <input type="number" step="0.01" value={form.price_target} onChange={(e) => setField('price_target', e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>Expected Return %</label>
+            <input type="number" step="0.1" value={form.expected_return_pct} onChange={(e) => setField('expected_return_pct', e.target.value)} className={inputCls} />
+          </div>
+        </div>
+        <div className="mt-3">
+          <label className={labelCls}>Reasoning</label>
+          <textarea rows={4} value={form.reasoning} onChange={(e) => setField('reasoning', e.target.value)} className={`${inputCls} resize-y leading-relaxed`} />
+        </div>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={() => setEditing(false)} disabled={saving}
+            className="rounded-xl border border-gray-200 px-3.5 py-2 text-[12px] font-semibold text-gray-600 hover:border-gray-300 disabled:opacity-40">
+            Cancel
+          </button>
+          <button onClick={save} disabled={saving}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-gray-900 text-white px-3.5 py-2 text-[12px] font-semibold hover:bg-gray-800 disabled:opacity-40">
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Changes
+          </button>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card
       title={`${detail.ticker} · ${fmtDate(detail.analysis_date)}`}
       actions={
         <div className="flex items-center gap-2">
-          <span className={`rounded-md border px-2 py-0.5 text-[11px] font-bold ${c.chip}`}>{rec.signal || '—'}</span>
+          <span className={`rounded-md border px-2 py-0.5 text-[11px] font-bold ${c.chip}`}>{rec.signal || detail.signal || '—'}</span>
+          <button onClick={startEdit} title="Edit" className="rounded-lg border border-gray-200 p-1 text-gray-400 hover:text-gray-700"><Pencil size={14} /></button>
+          <button onClick={() => onDelete({ id: detail.id, source_file: detail.source_file, signal: rec.signal || detail.signal, analysis_date: detail.analysis_date })}
+            title="Delete" className="rounded-lg border border-gray-200 p-1 text-gray-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600"><Trash2 size={14} /></button>
           <button onClick={onClose} className="rounded-lg border border-gray-200 p-1 text-gray-400 hover:text-gray-700"><X size={14} /></button>
         </div>
       }
@@ -638,6 +919,225 @@ function DetailPanel({ detail, onClose }) {
             </details>
           ) : null
         )}
+      </div>
+    </Card>
+  );
+}
+
+// ════════════════════════════════════ Data & Docs tab ═════════════════════════
+function DataDocsTab({ datasets, documents, loading, onReload, onSaveDataset, onDeleteDataset, onSaveDocument, onDeleteDocument }) {
+  const [editingDataset, setEditingDataset] = useState(null); // dataset row being edited
+  const [editingDocId, setEditingDocId] = useState(null);
+
+  if (loading && !datasets.length && !documents.length) {
+    return <Card><div className="flex items-center gap-2 text-sm text-gray-400 py-8 justify-center"><Loader2 size={16} className="animate-spin" /> Loading data & documents…</div></Card>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Generated ticker data */}
+      <Card
+        title="Generated Ticker Data"
+        actions={
+          <button onClick={onReload} className="rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-semibold text-gray-500 hover:border-gray-300">
+            Refresh
+          </button>
+        }
+      >
+        <p className="text-sm text-gray-500 -mt-2 mb-4">CSV datasets (fundamentals, prices, ratios, valuation) stored in Supabase.</p>
+        {datasets.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-gray-400 border-b border-gray-100">
+                  <th className="py-2 pr-3 font-semibold">Ticker</th>
+                  <th className="py-2 pr-3 font-semibold">Category</th>
+                  <th className="py-2 pr-3 font-semibold">Rows</th>
+                  <th className="py-2 pr-3 font-semibold">Updated</th>
+                  <th className="py-2 pr-3 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {datasets.map((d) => (
+                  <tr key={d.id} className="border-b border-gray-50">
+                    <td className="py-2.5 pr-3 font-bold text-gray-800">{d.ticker}</td>
+                    <td className="py-2.5 pr-3 font-mono text-gray-600">{d.category}</td>
+                    <td className="py-2.5 pr-3 font-mono text-gray-600">{d.rows ?? '—'}</td>
+                    <td className="py-2.5 pr-3 text-gray-500">{fmtDate(d.updated_at, true)}</td>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setEditingDataset(d)} title="Edit CSV"
+                          className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"><Pencil size={13} /></button>
+                        <button onClick={() => onDeleteDataset(d)} title="Delete"
+                          className="rounded-md p-1 text-gray-400 hover:bg-red-50 hover:text-red-600"><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-center py-10">
+            <FileSpreadsheet size={26} className="mx-auto text-gray-300 mb-2" />
+            <p className="text-[12px] text-gray-400">No datasets yet. Fetch market data from the Pipeline tab.</p>
+          </div>
+        )}
+      </Card>
+
+      {editingDataset && (
+        <DatasetEditor
+          dataset={editingDataset}
+          onSave={onSaveDataset}
+          onClose={() => setEditingDataset(null)}
+        />
+      )}
+
+      {/* Uploaded documents */}
+      <Card title="Research Documents">
+        <p className="text-sm text-gray-500 -mt-2 mb-4">PDFs and files uploaded for the analysis pipeline.</p>
+        {documents.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-gray-400 border-b border-gray-100">
+                  <th className="py-2 pr-3 font-semibold">Ticker</th>
+                  <th className="py-2 pr-3 font-semibold">Filename</th>
+                  <th className="py-2 pr-3 font-semibold">Updated</th>
+                  <th className="py-2 pr-3 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {documents.map((d) =>
+                  editingDocId === d.id ? (
+                    <DocumentEditRow key={d.id} doc={d} onSave={onSaveDocument} onCancel={() => setEditingDocId(null)} />
+                  ) : (
+                    <tr key={d.id} className="border-b border-gray-50">
+                      <td className="py-2.5 pr-3 font-bold text-gray-800">{d.ticker}</td>
+                      <td className="py-2.5 pr-3 text-gray-600">
+                        <span className="inline-flex items-center gap-1.5"><FileText size={13} className="text-gray-400" />{d.filename}</span>
+                      </td>
+                      <td className="py-2.5 pr-3 text-gray-500">{fmtDate(d.updated_at, true)}</td>
+                      <td className="py-2.5 pr-3">
+                        <div className="flex items-center justify-end gap-1">
+                          <button onClick={() => setEditingDocId(d.id)} title="Rename / reassign"
+                            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"><Pencil size={13} /></button>
+                          <button onClick={() => onDeleteDocument(d)} title="Delete"
+                            className="rounded-md p-1 text-gray-400 hover:bg-red-50 hover:text-red-600"><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-center py-10">
+            <FileText size={26} className="mx-auto text-gray-300 mb-2" />
+            <p className="text-[12px] text-gray-400">No documents uploaded. Upload one from the Pipeline tab.</p>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function DocumentEditRow({ doc, onSave, onCancel }) {
+  const [ticker, setTicker] = useState(doc.ticker);
+  const [filename, setFilename] = useState(doc.filename);
+  const [saving, setSaving] = useState(false);
+  const inputCls = 'w-full rounded-lg border border-gray-200 bg-white px-2 py-1 text-[12px] text-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30';
+
+  const save = async () => {
+    setSaving(true);
+    const ok = await onSave(doc.id, { ticker, filename });
+    setSaving(false);
+    if (ok) onCancel();
+  };
+
+  return (
+    <tr className="border-b border-gray-50 bg-gray-50/60">
+      <td className="py-2 pr-3">
+        <input value={ticker} onChange={(e) => setTicker(e.target.value.toUpperCase())} className={`${inputCls} w-20`} />
+      </td>
+      <td className="py-2 pr-3" colSpan={2}>
+        <input value={filename} onChange={(e) => setFilename(e.target.value)} className={inputCls} />
+      </td>
+      <td className="py-2 pr-3">
+        <div className="flex items-center justify-end gap-1">
+          <button onClick={save} disabled={saving} title="Save"
+            className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50 disabled:opacity-40">
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+          </button>
+          <button onClick={onCancel} disabled={saving} title="Cancel"
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40"><X size={13} /></button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function DatasetEditor({ dataset, onSave, onClose }) {
+  const [csv, setCsv] = useState(null);
+  const [category, setCategory] = useState(dataset.category);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const d = await fetch(`/api/prism/data/${dataset.id}`).then((x) => x.json());
+        if (alive) setCsv(d.csv_content || '');
+      } catch {
+        if (alive) setCsv('');
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [dataset.id]);
+
+  const save = async () => {
+    setSaving(true);
+    const ok = await onSave(dataset.id, { csv_content: csv, category });
+    setSaving(false);
+    if (ok) onClose();
+  };
+
+  const inputCls = 'rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30';
+
+  return (
+    <Card
+      title={`Edit · ${dataset.ticker}`}
+      actions={<button onClick={onClose} className="rounded-lg border border-gray-200 p-1 text-gray-400 hover:text-gray-700"><X size={14} /></button>}
+    >
+      <div className="mb-3">
+        <label className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Category</label>
+        <input value={category} onChange={(e) => setCategory(e.target.value)} className={`${inputCls} w-full font-mono`} />
+      </div>
+      <label className="block text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">CSV Content</label>
+      {loading ? (
+        <div className="flex items-center gap-2 text-[12px] text-gray-400 py-6 justify-center"><Loader2 size={14} className="animate-spin" /> Loading CSV…</div>
+      ) : (
+        <textarea
+          value={csv ?? ''}
+          onChange={(e) => setCsv(e.target.value)}
+          rows={14}
+          spellCheck={false}
+          className="w-full rounded-xl border border-gray-200 bg-gray-950 px-3 py-2 font-mono text-[11px] leading-relaxed text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 resize-y"
+        />
+      )}
+      <div className="mt-4 flex items-center justify-end gap-2">
+        <button onClick={onClose} disabled={saving}
+          className="rounded-xl border border-gray-200 px-3.5 py-2 text-[12px] font-semibold text-gray-600 hover:border-gray-300 disabled:opacity-40">
+          Cancel
+        </button>
+        <button onClick={save} disabled={saving || loading}
+          className="inline-flex items-center gap-1.5 rounded-xl bg-gray-900 text-white px-3.5 py-2 text-[12px] font-semibold hover:bg-gray-800 disabled:opacity-40">
+          {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save Changes
+        </button>
       </div>
     </Card>
   );
