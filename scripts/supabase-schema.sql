@@ -357,6 +357,87 @@ CREATE INDEX IF NOT EXISTS idx_ideas_archived ON ideas(archived);
 
 
 -- ============================================================
+-- 21. PRISM AI — PIPELINE RUNS (analysis pipeline job history)
+-- run_type: analyze, analyze-all, generate-data, plot, install, list, info
+-- status:   running, completed, failed
+-- ============================================================
+CREATE TABLE IF NOT EXISTS prism_runs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  run_type TEXT NOT NULL,
+  ticker TEXT,
+  status TEXT DEFAULT 'running',
+  started_at TIMESTAMPTZ DEFAULT now(),
+  completed_at TIMESTAMPTZ,
+  exit_code INTEGER,
+  log_output TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prism_runs_started ON prism_runs(started_at DESC);
+
+
+-- ============================================================
+-- 22. PRISM AI — RECOMMENDATIONS (parsed analysis outputs; signal history)
+-- One row per *_analysis.json written by `make analyze`.
+-- signal:     BUY, HOLD, AVOID
+-- conviction: VERY_HIGH, HIGH, MODERATE, LOW
+-- ============================================================
+CREATE TABLE IF NOT EXISTS prism_recommendations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  ticker TEXT NOT NULL,
+  analysis_date TIMESTAMPTZ,
+  signal TEXT,
+  conviction TEXT,
+  position_size_pct NUMERIC,
+  price_target NUMERIC,
+  expected_return_pct NUMERIC,
+  model TEXT,
+  analysis_mode TEXT,
+  recommendation JSONB DEFAULT '{}'::jsonb,
+  sections JSONB DEFAULT '{}'::jsonb,
+  full_response TEXT,
+  source_file TEXT UNIQUE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prism_recs_ticker ON prism_recommendations(ticker);
+CREATE INDEX IF NOT EXISTS idx_prism_recs_date ON prism_recommendations(analysis_date DESC);
+
+
+-- ============================================================
+-- 23. PRISM AI — TICKER DATA (generated CSVs stored in Supabase, not on disk)
+-- One row per dataset; category is e.g. 'fundamentals/revenue',
+-- 'price_data/daily_prices', 'ratios/valuation_ratios', 'valuation/valuation'.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS prism_ticker_data (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  ticker TEXT NOT NULL,
+  category TEXT NOT NULL,
+  csv_content TEXT,
+  rows INTEGER,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (ticker, category)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prism_ticker_data_ticker ON prism_ticker_data(ticker);
+
+
+-- ============================================================
+-- 24. PRISM AI — TICKER DOCUMENTS (uploaded research PDFs, base64)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS prism_ticker_documents (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  ticker TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  content_base64 TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (ticker, filename)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prism_ticker_docs_ticker ON prism_ticker_documents(ticker);
+
+
+-- ============================================================
 -- STORAGE BUCKETS
 -- Run these separately or create via the Supabase dashboard
 -- Dashboard > Storage > New Bucket
@@ -381,22 +462,29 @@ INSERT INTO storage.buckets (id, name, public) VALUES ('research-images', 'resea
 -- STORAGE POLICIES (allow public read + authenticated upload)
 -- ============================================================
 
--- documents bucket policies
+-- documents bucket policies (DROP-then-CREATE so the file is safe to re-run;
+-- CREATE POLICY has no IF NOT EXISTS).
+DROP POLICY IF EXISTS "Allow public read on documents" ON storage.objects;
 CREATE POLICY "Allow public read on documents" ON storage.objects
   FOR SELECT USING (bucket_id = 'documents');
 
+DROP POLICY IF EXISTS "Allow public insert on documents" ON storage.objects;
 CREATE POLICY "Allow public insert on documents" ON storage.objects
   FOR INSERT WITH CHECK (bucket_id = 'documents');
 
+DROP POLICY IF EXISTS "Allow public delete on documents" ON storage.objects;
 CREATE POLICY "Allow public delete on documents" ON storage.objects
   FOR DELETE USING (bucket_id = 'documents');
 
 -- research-images bucket policies
+DROP POLICY IF EXISTS "Allow public read on research-images" ON storage.objects;
 CREATE POLICY "Allow public read on research-images" ON storage.objects
   FOR SELECT USING (bucket_id = 'research-images');
 
+DROP POLICY IF EXISTS "Allow public insert on research-images" ON storage.objects;
 CREATE POLICY "Allow public insert on research-images" ON storage.objects
   FOR INSERT WITH CHECK (bucket_id = 'research-images');
 
+DROP POLICY IF EXISTS "Allow public delete on research-images" ON storage.objects;
 CREATE POLICY "Allow public delete on research-images" ON storage.objects
   FOR DELETE USING (bucket_id = 'research-images');
