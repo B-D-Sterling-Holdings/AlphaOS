@@ -15,7 +15,7 @@ DECLARE
     'demo_holdings','demo_watchlists','demo_research_links','demo_theses',
     'demo_valuation_models','demo_strategic_notes','demo_fund_nav_data',
     'demo_ticker_fundamentals','demo_ticker_prices','demo_macro_regime_results',
-    'demo_macro_regime_runs'
+    'demo_macro_regime_runs','demo_prism_recommendations','demo_prism_runs'
   ];
 BEGIN
   FOREACH t IN ARRAY tbls LOOP
@@ -174,6 +174,45 @@ SELECT
   NULL,
   '{}'::jsonb
 FROM new_run;
+
+
+-- ── Prism AI: recommendation history (Signal History tab) ────────────────────
+-- Multiple analyses per ticker so the timeline shows signal changes. The "run"
+-- action is disabled in demo, so this seeded history is what the tab displays.
+INSERT INTO demo_prism_recommendations
+  (ticker, analysis_date, signal, conviction, position_size_pct, price_target, expected_return_pct, model, analysis_mode, recommendation, sections, source_file)
+VALUES
+  ('AAPL', now() - interval '90 days', 'HOLD', 'MODERATE', 3.0, 205, 8.5, 'llama3.1:8b', 'balanced',
+   '{"signal":"HOLD","conviction":"MODERATE","position_size_pct":3.0,"price_target_12mo":205,"expected_return_pct":8.5,"key_catalysts":["Services growth","Buybacks"],"key_risks":["China demand","Regulatory"],"reasoning":"Quality franchise but limited near-term dislocation; expected return below the BUY threshold."}'::jsonb,
+   '{"executive_summary":"High-quality compounder trading near fair value; no clear dislocation yet.","fundamental_analysis":"Durable FCF and margins with steady buybacks.","qualitative_factors":"Strong ecosystem moat and brand.","risk_factors":"China demand softness and regulatory scrutiny."}'::jsonb,
+   'demo_20260320_AAPL_analysis.json'),
+  ('AAPL', now() - interval '45 days', 'BUY', 'HIGH', 6.5, 230, 14.2, 'llama3.1:8b', 'balanced',
+   '{"signal":"BUY","conviction":"HIGH","position_size_pct":6.5,"price_target_12mo":230,"expected_return_pct":14.2,"key_catalysts":["AI device cycle","Services margin expansion"],"key_risks":["Hardware demand"],"reasoning":"Pullback created a dislocation while fundamentals kept improving — classic DHQ setup."}'::jsonb,
+   '{"executive_summary":"Price weakness despite improving fundamentals — a temporary dislocation.","fundamental_analysis":"Revenue and EPS reaccelerating; FCF strong.","qualitative_factors":"Ecosystem lock-in intact.","risk_factors":"Dislocation appears temporary, not structural."}'::jsonb,
+   'demo_20260504_AAPL_analysis.json'),
+  ('AAPL', now() - interval '5 days', 'BUY', 'VERY_HIGH', 8.0, 245, 17.8, 'llama3.1:8b', 'balanced',
+   '{"signal":"BUY","conviction":"VERY_HIGH","position_size_pct":8.0,"price_target_12mo":245,"expected_return_pct":17.8,"key_catalysts":["AI refresh","Capital returns"],"key_risks":["Valuation"],"reasoning":"Dislocation persists with strengthening fundamentals and >17% expected return."}'::jsonb,
+   '{"executive_summary":"Conviction increased as the dislocation persisted and fundamentals strengthened.","fundamental_analysis":"Accelerating growth with record FCF.","qualitative_factors":"Best-in-class capital allocation.","risk_factors":"Primary risk is multiple compression."}'::jsonb,
+   'demo_20260613_AAPL_analysis.json'),
+  ('NFLX', now() - interval '60 days', 'BUY', 'HIGH', 5.0, 720, 13.1, 'llama3.1:8b', 'growth',
+   '{"signal":"BUY","conviction":"HIGH","position_size_pct":5.0,"price_target_12mo":720,"expected_return_pct":13.1,"key_catalysts":["Ad tier","Password sharing"],"key_risks":["Content costs"],"reasoning":"Subscriber re-acceleration with expanding margins supports a BUY."}'::jsonb,
+   '{"executive_summary":"Growth re-accelerating with improving profitability.","fundamental_analysis":"Revenue growth with operating leverage.","qualitative_factors":"Scale advantage in content.","risk_factors":"Competitive content spend."}'::jsonb,
+   'demo_20260419_NFLX_analysis.json'),
+  ('NFLX', now() - interval '8 days', 'HOLD', 'MODERATE', 2.5, 690, 7.0, 'llama3.1:8b', 'growth',
+   '{"signal":"HOLD","conviction":"MODERATE","position_size_pct":2.5,"price_target_12mo":690,"expected_return_pct":7.0,"key_catalysts":["Ad tier"],"key_risks":["Valuation","Content costs"],"reasoning":"Strong run leaves limited upside to fair value; downgrade to HOLD."}'::jsonb,
+   '{"executive_summary":"Re-rated to fair value after a strong run; upside now limited.","fundamental_analysis":"Healthy fundamentals already reflected in price.","qualitative_factors":"Leadership intact.","risk_factors":"Valuation risk dominates."}'::jsonb,
+   'demo_20260610_NFLX_analysis.json'),
+  ('GOOGL', now() - interval '30 days', 'BUY', 'HIGH', 6.0, 215, 15.4, 'llama3.1:8b', 'balanced',
+   '{"signal":"BUY","conviction":"HIGH","position_size_pct":6.0,"price_target_12mo":215,"expected_return_pct":15.4,"key_catalysts":["Cloud growth","AI monetization"],"key_risks":["Antitrust"],"reasoning":"Underappreciated cloud and AI optionality with a reasonable valuation."}'::jsonb,
+   '{"executive_summary":"Cloud and AI optionality underpriced by the market.","fundamental_analysis":"Strong revenue growth and FCF.","qualitative_factors":"Data and distribution moat.","risk_factors":"Regulatory and antitrust overhang."}'::jsonb,
+   'demo_20260519_GOOGL_analysis.json');
+
+-- A couple of completed pipeline runs for the run-history list.
+INSERT INTO demo_prism_runs (run_type, ticker, status, started_at, completed_at, exit_code, log_output) VALUES
+  ('analyze', 'AAPL', 'completed', now() - interval '5 days', now() - interval '5 days' + interval '22 seconds', 0,
+   E'Analyzing AAPL (mode: balanced)...\nAnalysis complete for AAPL: BUY (VERY_HIGH)'),
+  ('analyze', 'NFLX', 'completed', now() - interval '8 days', now() - interval '8 days' + interval '19 seconds', 0,
+   E'Analyzing NFLX (mode: growth)...\nAnalysis complete for NFLX: HOLD (MODERATE)');
 
 
 -- ── App settings (active selections) ─────────────────────────────────────────

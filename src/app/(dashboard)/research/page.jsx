@@ -1,16 +1,18 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, Image as ImageIcon, X, ZoomIn, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ChevronDown, Star } from 'lucide-react';
+import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, Image as ImageIcon, X, ZoomIn, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ChevronDown, Star, Sparkles } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
 import FundamentalChart from '@/components/charts/FundamentalChart';
 import PriceChart from '@/components/charts/PriceChart';
 import Toast from '@/components/Toast';
-import { formatLargeNumber, formatNumber } from '@/lib/formatters';
+import { formatLargeNumber, formatNumber, formatShareCount } from '@/lib/formatters';
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
 import RichTextArea from '@/components/RichTextArea';
+import DraftReview from '@/components/DraftReview';
+import { useAuth } from '@/lib/AuthContext';
 
 const FUNDAMENTALS_BOXES = [
   { key: 'revenueGrowth', label: 'Revenue and Growth', color: 'blue', placeholder: 'Revenue CAGR, segment growth, unit economics, pricing, and demand drivers...' },
@@ -118,6 +120,177 @@ function buildResearchWorkspace(thesis, stock) {
     dislocationItems: normalizeQuestionItems(
       pickWorkspaceValue(workspace.dislocationItems, stock?.dislocationItems ?? [])
     ),
+  };
+}
+
+function normalizeThread(thread) {
+  return {
+    id: thread?.id || makeEditorItemId(),
+    title: thread?.title || '',
+    resolved: !!thread?.resolved,
+    createdAt: thread?.createdAt || new Date().toISOString(),
+    messages: (thread?.messages || []).map(msg => ({
+      id: msg?.id || makeEditorItemId(),
+      role: msg?.role === 'reviewer' ? 'reviewer' : 'author',
+      body: msg?.body ?? '',
+      createdAt: msg?.createdAt || new Date().toISOString(),
+    })),
+  };
+}
+
+function buildDraftReview(thesis) {
+  const draftReview = thesis?.underwriting?.draftReview || {};
+  const paper = draftReview.paper;
+  return {
+    paper: Array.isArray(paper)
+      ? paper
+      : (typeof paper === 'string' && paper.trim() ? [{ type: 'text', value: paper }] : []),
+    threads: (draftReview.threads || []).map(normalizeThread),
+  };
+}
+
+function makeTtmQuarterLabel(row) {
+  return `${row.quarter}'${String(row.year).slice(-2)}`;
+}
+
+function ttmPctChange(curr, prior) {
+  if (curr == null || prior == null || prior === 0) return null;
+  return Math.round(((curr - prior) / Math.abs(prior)) * 1000) / 10;
+}
+
+function round1(v) {
+  return v == null ? null : Math.round(v * 10) / 10;
+}
+
+// Build a compact, narration-ready TTM fundamentals summary from the data shown
+// in the Fundamentals tab (tickerData). IMPORTANT: those series are ALREADY
+// trailing-twelve-month figures — revenue/eps/fcf are TTM sums, operating margin
+// is TTM-based, shares are a TTM mean — each indexed by quarter-end (see
+// generateData.js). So every data point IS a rolling 12-month value; a "lookback
+// of k quarters" is simply the value k points back, never a sum across points.
+// Monetary values are pre-formatted so the model narrates rather than re-deriving
+// magnitudes; growth/CAGRs are computed here so the figures are authoritative.
+function buildFundamentalsTTM(tickerData, liveQuote) {
+  if (!tickerData) return null;
+  const rev = tickerData.revenue || [];
+  const eps = tickerData.eps || [];
+  const fcf = tickerData.fcf || [];
+  const margins = tickerData.operating_margins || [];
+  const shares = tickerData.buybacks || [];
+  const valuation = tickerData.valuation || {};
+
+  const revVals = rev.map(r => r.revenue);
+  const epsVals = eps.map(e => e.eps_diluted);
+  const fcfVals = fcf.map(f => f.free_cash_flow);
+  const marginVals = margins.map(m => m.operating_margin * 100);
+  const shareVals = shares.map(s => s.shares_outstanding);
+
+  // at(vals, k): the TTM value k quarters before the latest quarter-end. k=0 is
+  // the current TTM, k=4 the TTM one year ago, k=8 two years ago, etc. Each point
+  // is already a rolling 12-month figure, so this is a direct lookup — no summing.
+  const at = (vals, k) => {
+    const idx = vals.length - 1 - k;
+    return idx >= 0 && vals[idx] != null ? Number(vals[idx]) : null;
+  };
+  const cagrPct = (current, past, years) => {
+    if (current == null || past == null || past <= 0 || current <= 0) return null;
+    return Math.round((Math.pow(current / past, 1 / years) - 1) * 1000) / 10;
+  };
+  // CAGR ladder for a TTM metric. Each rung is null when history is too short, so
+  // the model can read the trajectory (e.g. 5Y < 3Y < 1Y reads as accelerating).
+  const cagrLadder = (vals) => ({
+    cagr2yPct: cagrPct(at(vals, 0), at(vals, 8), 2),
+    cagr3yPct: cagrPct(at(vals, 0), at(vals, 12), 3),
+    cagr5yPct: cagrPct(at(vals, 0), at(vals, 20), 5),
+  });
+
+  const ttmRevenue = at(revVals, 0);
+  const ttmEps = at(epsVals, 0);
+  const ttmFcf = at(fcfVals, 0);
+  const priorRevenue = at(revVals, 4);
+  const priorEps = at(epsVals, 4);
+  const priorFcf = at(fcfVals, 4);
+
+  const latestShares = at(shareVals, 0);
+  const yearAgoShares = at(shareVals, 4);
+  const threeYrAgoShares = at(shareVals, 12);
+  const fiveYrAgoShares = at(shareVals, 20);
+
+  const price = liveQuote?.price || (valuation.currentPrice ? Number(valuation.currentPrice) : null);
+  const ttmPe = (price && ttmEps && ttmEps > 0) ? price / ttmEps : null;
+  const ttmFcfYield = (price && ttmFcf && latestShares && latestShares > 0)
+    ? (ttmFcf / (price * latestShares)) * 100 : null;
+  const ttmPs = (price && ttmRevenue && latestShares && latestShares > 0)
+    ? (price * latestShares) / ttmRevenue : null;
+
+  // FCF margin at a given lookback (both already TTM at the same quarter-end).
+  const fcfMarginAt = (k) => {
+    const f = at(fcfVals, k);
+    const r = at(revVals, k);
+    return (f != null && r) ? round1((f / r) * 100) : null;
+  };
+
+  // A trailing series of TTM snapshots for trend color. Because the underlying
+  // values are rolling 12-month figures, this shows the smoothed trend (it does
+  // NOT show quarterly seasonality).
+  const series = (rows, vals, fmt, n = 8) => {
+    const startIdx = Math.max(0, rows.length - n);
+    return rows.slice(startIdx).map((row, i) => ({
+      asOf: makeTtmQuarterLabel(row),
+      value: fmt(vals[startIdx + i]),
+    }));
+  };
+  const money = (v) => (v == null ? null : formatLargeNumber(v));
+  const dollars = (v) => (v == null ? null : `$${Number(v).toFixed(2)}`);
+  const pct = (v) => (v == null ? null : `${round1(v)}%`);
+
+  return {
+    asOf: rev.length ? makeTtmQuarterLabel(rev[rev.length - 1]) : null,
+    quartersOfHistory: rev.length,
+    note: 'All revenue/EPS/FCF figures are trailing-twelve-month (TTM); each series point is a rolling 12-month value at that quarter-end.',
+    price: price != null ? Number(price.toFixed(2)) : null,
+    revenue: {
+      ttm: money(ttmRevenue),
+      ttmOneYearAgo: money(priorRevenue),
+      yoyGrowthPct: ttmPctChange(ttmRevenue, priorRevenue),
+      ...cagrLadder(revVals),
+      ttmTrend: series(rev, revVals, money),
+    },
+    eps: {
+      ttm: dollars(ttmEps),
+      ttmOneYearAgo: dollars(priorEps),
+      yoyGrowthPct: ttmPctChange(ttmEps, priorEps),
+      ...cagrLadder(epsVals),
+      ttmTrend: series(eps, epsVals, dollars),
+    },
+    fcf: {
+      ttm: money(ttmFcf),
+      ttmOneYearAgo: money(priorFcf),
+      yoyGrowthPct: ttmPctChange(ttmFcf, priorFcf),
+      ...cagrLadder(fcfVals),
+      ttmMarginPct: fcfMarginAt(0),
+      ttmMarginOneYearAgoPct: fcfMarginAt(4),
+      ttmTrend: series(fcf, fcfVals, money),
+    },
+    operatingMargin: {
+      ttmPct: round1(at(marginVals, 0)),
+      ttmOneYearAgoPct: round1(at(marginVals, 4)),
+      ttmThreeYearsAgoPct: round1(at(marginVals, 12)),
+      ttmTrend: series(margins, marginVals, pct),
+    },
+    shares: {
+      latest: latestShares != null ? formatShareCount(latestShares) : null,
+      yoyChangePct: ttmPctChange(latestShares, yearAgoShares),
+      threeYrChangePct: ttmPctChange(latestShares, threeYrAgoShares),
+      fiveYrChangePct: ttmPctChange(latestShares, fiveYrAgoShares),
+      // Annualized pace of the share-count change (negative = net buybacks).
+      annualized3yChangePct: cagrPct(latestShares, threeYrAgoShares, 3),
+    },
+    valuation: {
+      peRatioTtm: round1(ttmPe),
+      fcfYieldTtmPct: round1(ttmFcfYield),
+      priceToSalesTtm: round1(ttmPs),
+    },
   };
 }
 
@@ -383,6 +556,7 @@ function QuestionSection({
 
 export default function ResearchPage() {
   const cache = useCache();
+  const { isDemo } = useAuth();
   const [allData, setAllData] = useState(() => cache.get('deep_research_watchlist') || null);
   const [selectedTicker, setSelectedTicker] = useState(() => cache.get('deep_research_selectedTicker') || '');
   const [tickerData, setTickerData] = useState(() => cache.get('deep_research_tickerData') || null);
@@ -392,6 +566,8 @@ export default function ResearchPage() {
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [overviewGenerating, setOverviewGenerating] = useState(false);
+  const [fundamentalsGenerating, setFundamentalsGenerating] = useState(false);
   const [liveQuote, setLiveQuote] = useState(() => cache.get('deep_research_liveQuote') || null);
   const [quoteLoading, setQuoteLoading] = useState(() => !cache.get('deep_research_liveQuote') && !!cache.get('deep_research_selectedTicker'));
   const [activeResearchTab, setActiveResearchTab] = useState(() => cache.get('deep_research_activeTab') || 'fundamentals');
@@ -428,6 +604,8 @@ export default function ResearchPage() {
 
   const dueDiligenceItems = researchWorkspace.dueDiligenceItems;
   const dislocationItems = researchWorkspace.dislocationItems;
+
+  const draftReview = useMemo(() => buildDraftReview(thesis), [thesis]);
 
   const loadResearchStocks = useCallback(async () => {
     try {
@@ -598,6 +776,20 @@ export default function ResearchPage() {
     setThesisDirty(true);
     if (persist) saveThesis(updated);
   }, [saveThesis, selectedStock, thesis]);
+
+  const updateDraftReview = useCallback((updater, persist = false) => {
+    const nextDraftReview = updater(buildDraftReview(thesis));
+    const updated = {
+      ...(thesis || {}),
+      underwriting: {
+        ...((thesis || {}).underwriting || {}),
+        draftReview: nextDraftReview,
+      },
+    };
+    setThesis(updated);
+    setThesisDirty(true);
+    if (persist) saveThesis(updated);
+  }, [saveThesis, thesis]);
 
   const addNewsUpdate = () => {
     setThesis(prev => ({
@@ -773,6 +965,101 @@ export default function ResearchPage() {
       item.id === parentId ? { ...item, subQuestions: newSubs.map(createSubQuestion) } : item
     );
     updateQuestionList(field, nextItems, persist);
+  };
+
+  // ---- Native Company Overview generation -----------------------------------
+  // Generates a business overview grounded in the company's latest 10-K
+  // (Item 1: Business) and 10-Q, then writes it straight into the Company
+  // Overview editor. Existing analyst notes are preserved — generated text is
+  // appended under a divider, never overwritten.
+  const overviewHasContent = (val) => {
+    if (Array.isArray(val)) {
+      return val.some(b => b?.type === 'image' || (b?.value && b.value.replace(/<[^>]+>/g, '').trim()));
+    }
+    return typeof val === 'string' && val.replace(/<[^>]+>/g, '').trim().length > 0;
+  };
+
+  const mergeOverview = (existing, html) => {
+    const divider = `<b>— AI-generated from SEC filings —</b><br>`;
+    if (!overviewHasContent(existing)) return html;
+    if (Array.isArray(existing)) {
+      return [...existing, { type: 'text', value: `<br>${divider}${html}` }];
+    }
+    return `${existing}<br><br>${divider}${html}`;
+  };
+
+  const generateCompanyOverview = async () => {
+    if (!selectedTicker || overviewGenerating) return;
+    setOverviewGenerating(true);
+    setToast({ message: `Generating company overview for ${selectedTicker} from SEC filings… This may take ~30 seconds.`, type: 'info' });
+    try {
+      const res = await fetch('/api/research/company-overview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: selectedTicker }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setToast({ message: data.error || 'Failed to generate company overview', type: 'error' });
+        return;
+      }
+      const existing = thesis?.underwriting?.companyOverview;
+      commitUnderwriting('companyOverview', mergeOverview(existing, data.html));
+      setToast({ message: `Company overview generated for ${selectedTicker}`, type: 'success' });
+    } catch (e) {
+      setToast({ message: `Generation failed: ${e.message}`, type: 'error' });
+    } finally {
+      setOverviewGenerating(false);
+    }
+  };
+
+  // ---- Native Thesis Structure (fundamentals) generation --------------------
+  // Computes TTM figures from the Fundamentals-tab data (tickerData) and asks
+  // the model to fill all four thesis boxes at once. Like the overview, each box
+  // appends under a divider so the analyst's own notes are never overwritten.
+  const mergeBox = (existing, text) => {
+    const add = String(text || '').trim();
+    const cur = typeof existing === 'string' ? existing.trim() : '';
+    if (!add) return cur;
+    return cur ? `${cur}\n\n— Generated from TTM fundamentals —\n${add}` : add;
+  };
+
+  const generateThesisFundamentals = async () => {
+    if (!selectedTicker || fundamentalsGenerating) return;
+    const summary = buildFundamentalsTTM(tickerData, liveQuote);
+    if (!summary || !summary.revenue.ttm) {
+      setToast({ message: 'No fundamentals data available yet — generate data for this ticker first.', type: 'error' });
+      return;
+    }
+    setFundamentalsGenerating(true);
+    setToast({ message: `Filling the thesis fundamentals for ${selectedTicker} from TTM data… This may take ~20 seconds.`, type: 'info' });
+    try {
+      const res = await fetch('/api/research/thesis-fundamentals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: selectedTicker, fundamentals: summary }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setToast({ message: data.error || 'Failed to generate thesis fundamentals', type: 'error' });
+        return;
+      }
+      const boxes = data.boxes || {};
+      updateResearchWorkspace((ws) => ({
+        ...ws,
+        fundamentals: {
+          revenueGrowth: mergeBox(ws.fundamentals.revenueGrowth, boxes.revenueGrowth),
+          profitability: mergeBox(ws.fundamentals.profitability, boxes.profitability),
+          capitalReturn: mergeBox(ws.fundamentals.capitalReturn, boxes.capitalReturn),
+          misc: mergeBox(ws.fundamentals.misc, boxes.misc),
+        },
+      }), true);
+      setToast({ message: `Thesis fundamentals filled for ${selectedTicker}`, type: 'success' });
+    } catch (e) {
+      setToast({ message: `Generation failed: ${e.message}`, type: 'error' });
+    } finally {
+      setFundamentalsGenerating(false);
+    }
   };
 
   if (loading) {
@@ -1021,6 +1308,7 @@ export default function ResearchPage() {
             <div className="flex gap-1 bg-gray-100/80 rounded-2xl p-1 w-fit">
               {[
                 { key: 'fundamentals', label: 'Fundamentals' },
+                { key: 'review', label: 'Draft & Review' },
                 { key: 'thesis', label: 'Research Workspace' },
               ].map(tab => (
                 <button
@@ -1036,7 +1324,7 @@ export default function ResearchPage() {
                 </button>
               ))}
             </div>
-            {activeResearchTab === 'thesis' && thesis && (
+            {(activeResearchTab === 'thesis' || activeResearchTab === 'review') && thesis && (
               <button
                 onClick={() => saveThesis()}
                 disabled={thesisSaving || !thesisDirty}
@@ -1117,11 +1405,40 @@ export default function ResearchPage() {
               <div className="skeleton h-48 rounded-2xl" />
               <div className="skeleton h-64 rounded-2xl" />
             </div>
-          ) : thesis ? (
+          ) : !thesis ? null : activeResearchTab === 'review' ? (
+            <DraftReview
+              ticker={selectedTicker}
+              paper={draftReview.paper}
+              threads={draftReview.threads}
+              onPaperChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, paper: value }), persist)}
+              onThreadsChange={(threads, persist = false) => updateDraftReview(dr => ({ ...dr, threads }), persist)}
+            />
+          ) : (
             <div className="space-y-8" onBlur={() => saveThesis()}>
               <Card>
-                <h2 className="text-lg font-bold text-gray-900 mb-1">Company Overview</h2>
-                <p className="text-sm text-gray-500 mb-6">In-depth notes on the business; model, segments, customers, moat, competitive landscape. Paste images directly into the text area.</p>
+                <div className="flex items-start justify-between gap-4 mb-1">
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">Company Overview</h2>
+                    <p className="text-sm text-gray-500">In-depth notes on the business; model, segments, customers, moat, competitive landscape. Paste images directly into the text area.</p>
+                  </div>
+                  {!isDemo && (
+                    <button
+                      onClick={generateCompanyOverview}
+                      disabled={overviewGenerating}
+                      title="Generate a business overview from the latest 10-K (Item 1: Business) and 10-Q using AI"
+                      className="flex-shrink-0 flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white hover:from-violet-700 hover:to-fuchsia-700 shadow-sm shadow-violet-200/50 transition-all duration-200 disabled:opacity-40"
+                    >
+                      {overviewGenerating
+                        ? <RefreshCw size={14} className="animate-spin" />
+                        : <Sparkles size={14} />}
+                      {overviewGenerating ? 'Generating…' : 'Generate from SEC filings'}
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-400 mb-5 flex items-center gap-1.5">
+                  <Sparkles size={11} className="text-violet-400" />
+                  AI grounds the overview in the latest 10-K (Item 1: Business) and 10-Q. Generated text is fully editable and appends below your notes.
+                </p>
 
                 <RichTextArea
                   value={thesis?.underwriting?.companyOverview || ''}
@@ -1135,8 +1452,29 @@ export default function ResearchPage() {
               </Card>
 
               <Card>
-                <h2 className="text-lg font-bold text-gray-900 mb-1">Thesis Structure</h2>
-                <p className="text-sm text-gray-500 mb-6">Capture the core fundamentals first, then answer the diligence and dislocation questions in full underneath.</p>
+                <div className="flex items-start justify-between gap-4 mb-1">
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">Thesis Structure</h2>
+                    <p className="text-sm text-gray-500">Capture the core fundamentals first, then answer the diligence and dislocation questions in full underneath.</p>
+                  </div>
+                  {!isDemo && (
+                    <button
+                      onClick={generateThesisFundamentals}
+                      disabled={fundamentalsGenerating}
+                      title="Fill all four boxes from the latest TTM figures in the Fundamentals tab using AI"
+                      className="flex-shrink-0 flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white hover:from-violet-700 hover:to-fuchsia-700 shadow-sm shadow-violet-200/50 transition-all duration-200 disabled:opacity-40"
+                    >
+                      {fundamentalsGenerating
+                        ? <RefreshCw size={14} className="animate-spin" />
+                        : <Sparkles size={14} />}
+                      {fundamentalsGenerating ? 'Generating…' : 'Generate from fundamentals'}
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-400 mb-5 flex items-center gap-1.5">
+                  <Sparkles size={11} className="text-violet-400" />
+                  AI fills all four boxes from trailing-twelve-month figures in the Fundamentals tab. Generated text is editable and appends below your notes.
+                </p>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {FUNDAMENTALS_BOXES.map(({ key, label, color, placeholder }) => {
@@ -1439,7 +1777,7 @@ export default function ResearchPage() {
                 </div>
               </Card>
             </div>
-          ) : null}
+          )}
         </>
       )}
 

@@ -1,0 +1,22 @@
+llm:
+  provider: "ollama"
+  model: "llama3.1:8b"  # any local Ollama model (override with OLLAMA_CHAT_MODEL)
+  base_url: "${OLLAMA_BASE_URL}"  # default http://localhost:11434
+  api_key: "${OLLAMA_API_KEY}"    # optional (Bearer token or CF-Access "id:secret")
+  temperature: 0.3  # Lower for more consistent analysis
+  max_tokens: 8192
+
+context:
+  max_tokens: 128000  # local models: keep assembled context under the model window
+  priority_order:
+    - fundamentals       # Revenue, margins, buybacks, EPS, FCF
+    - research_pdf       # News/equity report
+    - price_data         # Daily prices
+
+pdf_processing:
+  chunk_size: 2000  # tokens per chunk
+
+output:
+  save_full_reasoning: true
+  log_level: "INFO"
+  output_dir: "outputs"

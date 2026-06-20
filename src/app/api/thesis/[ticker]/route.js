@@ -24,6 +24,10 @@ const DEFAULT_THESIS = {
       dueDiligenceItems: [],
       dislocationItems: [],
     },
+    draftReview: {
+      paper: [],
+      threads: [],
+    },
   },
   newsUpdates: [],
   todos: [],
