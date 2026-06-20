@@ -75,6 +75,24 @@ function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed
   // truncating) — re-measure on mount and whenever the title or collapse changes.
   useEffect(() => { autoSizeTitle(titleRef.current); }, [thread.title, collapsed]);
 
+  // The wrapped line count depends on the box width, which changes when the
+  // Review panel is resized (collapse/expand) or the window resizes. Re-measure
+  // height on width change so stale extra lines don't linger. Guard on width so
+  // our own height writes don't feed back into the observer.
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let lastWidth = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== lastWidth) {
+        lastWidth = el.clientWidth;
+        autoSizeTitle(el);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // A just-added point grabs focus so you can type its title immediately
   // (preventScroll: the parent handles the smooth scroll-into-view).
   useEffect(() => {
