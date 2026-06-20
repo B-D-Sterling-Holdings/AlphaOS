@@ -30,7 +30,12 @@ function escapeHtml(str) {
 
 function toDisplayHTML(val) {
   if (!val) return '';
-  const looksLikeHtml = /<\/?(p|br|b|i|u|strong|em|span|div|font|table|thead|tbody|tr|td|th|img|ul|ol|li)\b/i.test(val);
+  // Treat the value as HTML if it has tags OR HTML entities. contentEditable
+  // serializes a typed "&" as "&amp;", so entity-only content (e.g. "Tom &amp;
+  // Jerry") is already HTML and must NOT be re-escaped — otherwise every render
+  // compounds it into "&amp;amp;".
+  const looksLikeHtml = /<\/?(p|br|b|i|u|strong|em|span|div|font|table|thead|tbody|tr|td|th|img|ul|ol|li)\b/i.test(val)
+    || /&(?:amp|lt|gt|quot|#\d+|nbsp);/i.test(val);
   if (looksLikeHtml) return val;
   return escapeHtml(val).replace(/\n/g, '<br>');
 }
