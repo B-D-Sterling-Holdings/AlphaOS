@@ -75,6 +75,24 @@ function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed
   // truncating) — re-measure on mount and whenever the title or collapse changes.
   useEffect(() => { autoSizeTitle(titleRef.current); }, [thread.title, collapsed]);
 
+  // The wrapped line count depends on the box width, which changes when the
+  // Review panel is resized (collapse/expand) or the window resizes. Re-measure
+  // height on width change so stale extra lines don't linger. Guard on width so
+  // our own height writes don't feed back into the observer.
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let lastWidth = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== lastWidth) {
+        lastWidth = el.clientWidth;
+        autoSizeTitle(el);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // A just-added point grabs focus so you can type its title immediately
   // (preventScroll: the parent handles the smooth scroll-into-view).
   useEffect(() => {
@@ -345,6 +363,10 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
   const openCount = threads.filter(t => !t.resolved).length;
   const resolvedCount = threads.length - openCount;
 
+  // Display order only (stored order is untouched): resolved threads sink to the
+  // bottom, with relative order preserved within each group (Array.sort is stable).
+  const orderedThreads = [...threads].sort((a, b) => Number(!!a.resolved) - Number(!!b.resolved));
+
   const addThread = () => {
     const thread = { id: makeId(), title: '', resolved: false, createdAt: new Date().toISOString(), messages: [] };
     onThreadsChange([...threads, thread], true);
@@ -363,6 +385,30 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
 
   return (
     <div className="flex flex-col lg:flex-row gap-4 items-start">
+      <style jsx global>{`
+        .dr-scroll {
+          scrollbar-width: thin;
+          scrollbar-color: rgb(209 213 219) transparent;
+        }
+        .dr-scroll::-webkit-scrollbar {
+          width: 10px;
+        }
+        .dr-scroll::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .dr-scroll::-webkit-scrollbar-thumb {
+          background-color: rgb(229 231 235);
+          border-radius: 9999px;
+          border: 3px solid transparent;
+          background-clip: content-box;
+        }
+        .dr-scroll:hover::-webkit-scrollbar-thumb {
+          background-color: rgb(209 213 219);
+        }
+        .dr-scroll::-webkit-scrollbar-thumb:hover {
+          background-color: rgb(156 163 175);
+        }
+      `}</style>
       {/* Paper */}
       {paperCollapsed ? (
         <button
@@ -426,7 +472,7 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
           <span className="text-[11px] font-semibold [writing-mode:vertical-rl]">Review</span>
         </button>
       ) : (
-        <div className={`min-w-0 w-full lg:w-auto lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-1 space-y-4 ${paperCollapsed ? 'lg:flex-1' : 'lg:flex-[1_1_0%]'}`}>
+        <div className={`dr-scroll min-w-0 w-full lg:w-auto lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-3 space-y-4 ${paperCollapsed ? 'lg:flex-1' : 'lg:flex-[1_1_0%]'}`}>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
@@ -477,7 +523,7 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
             </div>
           ) : (
             <div className="space-y-3">
-              {threads.map((thread, idx) => (
+              {orderedThreads.map((thread, idx) => (
                 <div key={thread.id} ref={thread.id === pendingScrollId ? newThreadRef : null} className="scroll-mt-4">
                   <Thread
                     thread={thread}
