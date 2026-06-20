@@ -54,7 +54,7 @@ function autoSizeTitle(el) {
   el.style.height = `${el.scrollHeight}px`;
 }
 
-function Thread({ thread, index, ticker, collapsed, onToggleCollapsed, onChange, onRemove }) {
+function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed, onChange, onRemove }) {
   const titleRef = useRef(null);
   const [composing, setComposing] = useState(false);
   const [draft, setDraft] = useState([{ type: 'text', value: '' }]);
@@ -74,6 +74,13 @@ function Thread({ thread, index, ticker, collapsed, onToggleCollapsed, onChange,
   // Keep the title box tall enough to show the whole title (it wraps instead of
   // truncating) — re-measure on mount and whenever the title or collapse changes.
   useEffect(() => { autoSizeTitle(titleRef.current); }, [thread.title, collapsed]);
+
+  // A just-added point grabs focus so you can type its title immediately
+  // (preventScroll: the parent handles the smooth scroll-into-view).
+  useEffect(() => {
+    if (autoFocus) titleRef.current?.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const patch = (updates, persist = false) => onChange({ ...thread, ...updates }, persist);
 
@@ -310,6 +317,19 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
   const [expanded, setExpanded] = useState(() => new Set());
   const allExpanded = threads.length > 0 && threads.every(t => expanded.has(t.id));
 
+  // After "Add point", scroll the freshly added thread into view (and focus it)
+  // so you don't have to hunt for it at the bottom of the list.
+  const newThreadRef = useRef(null);
+  const [pendingScrollId, setPendingScrollId] = useState(null);
+
+  useEffect(() => {
+    if (!pendingScrollId) return;
+    const el = newThreadRef.current;
+    if (!el) return; // the new thread hasn't rendered yet — wait for threads to update
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setPendingScrollId(null);
+  }, [pendingScrollId, threads]);
+
   const toggleThread = (id) => {
     setExpanded(prev => {
       const next = new Set(prev);
@@ -330,6 +350,7 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
     onThreadsChange([...threads, thread], true);
     // A freshly added point opens so you can type its title and first comment.
     setExpanded(prev => new Set(prev).add(thread.id));
+    setPendingScrollId(thread.id);
   };
 
   const updateThread = (id, nextThread, persist) => {
@@ -457,16 +478,18 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
           ) : (
             <div className="space-y-3">
               {threads.map((thread, idx) => (
-                <Thread
-                  key={thread.id}
-                  thread={thread}
-                  index={idx}
-                  ticker={ticker}
-                  collapsed={!expanded.has(thread.id)}
-                  onToggleCollapsed={() => toggleThread(thread.id)}
-                  onChange={(next, persist) => updateThread(thread.id, next, persist)}
-                  onRemove={() => removeThread(thread.id)}
-                />
+                <div key={thread.id} ref={thread.id === pendingScrollId ? newThreadRef : null} className="scroll-mt-4">
+                  <Thread
+                    thread={thread}
+                    index={idx}
+                    ticker={ticker}
+                    autoFocus={thread.id === pendingScrollId}
+                    collapsed={!expanded.has(thread.id)}
+                    onToggleCollapsed={() => toggleThread(thread.id)}
+                    onChange={(next, persist) => updateThread(thread.id, next, persist)}
+                    onRemove={() => removeThread(thread.id)}
+                  />
+                </div>
               ))}
             </div>
           )}
