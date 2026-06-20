@@ -6,7 +6,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Briefcase, Search, Eye, FolderOpen, LogOut, ClipboardList,
-  ChevronDown, PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles, Workflow,
+  ChevronDown, PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles,
 } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -47,7 +47,6 @@ const NAV_GROUPS = [
 const STANDALONE = [
   { href: '/strategic-hub', label: 'Strategic Hub', icon: Target },
   { href: '/workspace', label: 'Workspace', icon: Sparkles },
-  { href: '/ai-pipeline', label: 'AI Pipeline', icon: Workflow },
 ];
 
 // Shared classes for a top-level nav pill (dropdown trigger or standalone link).

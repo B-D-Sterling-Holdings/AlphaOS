@@ -104,6 +104,163 @@ def analyze_command(args):
         print(f"{'='*60}")
 
 
+def company_overview_command(args):
+    """Generate an SEC-grounded business overview for one ticker.
+
+    Fetches the latest 10-K (Item 1. Business as the primary source) and 10-Q
+    (MD&A as a secondary source for recent updates), runs them through the
+    company_overview prompt, and emits the result as JSON on stdout wrapped in
+    sentinels so the calling API route can parse it cleanly past any log noise.
+    """
+    import logging as _logging
+
+    from .data_ingestion import SECFilingsFetcher
+    from .llm_engine import GeminiClient, PromptLoader
+
+    # Keep stdout clean for the JSON payload: route all logging to stderr.
+    _logging.basicConfig(level=_logging.INFO, stream=sys.stderr, force=True)
+
+    _, config_dir, _ = get_default_paths()
+    if args.config_dir:
+        config_dir = Path(args.config_dir)
+
+    ticker = args.ticker.upper()
+
+    def emit(payload: dict):
+        print("===PRISM_OVERVIEW_BEGIN===")
+        print(json.dumps(payload))
+        print("===PRISM_OVERVIEW_END===")
+
+    try:
+        user_agent = os.environ.get("SEC_USER_AGENT")
+        fetcher = SECFilingsFetcher(user_agent=user_agent)
+        filings = fetcher.fetch_company_filings(ticker)
+
+        if not filings.tenk and not filings.tenq:
+            emit({"error": f"No 10-K or 10-Q filings found on SEC EDGAR for {ticker}."})
+            return
+
+        context = fetcher.build_filing_context(filings)
+
+        prompt_loader = PromptLoader(config_dir / "prompts")
+        system_prompt = prompt_loader.load_prompt("company_overview")
+
+        resolved_model = args.model or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
+        llm = GeminiClient(model=resolved_model, temperature=0.2)
+
+        full_prompt = (
+            system_prompt
+            + "\n\n---\n\n## Filing Excerpts\n\n"
+            + context
+            + "\n\n---\n\nReturn only the JSON object specified above."
+        )
+        raw = llm.generate(full_prompt, response_mime_type="application/json")
+
+        try:
+            overview = json.loads(raw)
+        except json.JSONDecodeError:
+            # Best-effort: strip code fences / surrounding text and retry.
+            cleaned = raw.strip()
+            cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+            overview = json.loads(cleaned)
+
+        # Attach authoritative source metadata so the UI can cite filings even if
+        # the model's own sources_cited list is sparse.
+        def filing_meta(f):
+            if not f:
+                return None
+            return {
+                "form": f.form,
+                "accession": f.accession,
+                "filing_date": f.filing_date,
+                "report_date": f.report_date,
+                "url": f.url,
+                "sections_used": f.sections_used,
+            }
+
+        emit({
+            "ticker": filings.ticker,
+            "company_name": filings.company_name,
+            "model": resolved_model,
+            "overview": overview,
+            "sources": {
+                "tenk": filing_meta(filings.tenk),
+                "tenq": filing_meta(filings.tenq),
+            },
+        })
+    except Exception as e:
+        emit({"error": str(e)})
+
+
+def thesis_fundamentals_command(args):
+    """Fill the four thesis fundamentals boxes from TTM data.
+
+    Reads a JSON payload from stdin ({"ticker", "fundamentals": {...}}) — the
+    TTM figures pre-computed from the equity research Fundamentals tab — runs
+    them through the thesis_fundamentals prompt, and emits a JSON object with
+    the four box strings, wrapped in sentinels for the calling API route.
+    """
+    import logging as _logging
+
+    from .llm_engine import GeminiClient, PromptLoader
+
+    _logging.basicConfig(level=_logging.INFO, stream=sys.stderr, force=True)
+
+    _, config_dir, _ = get_default_paths()
+    if args.config_dir:
+        config_dir = Path(args.config_dir)
+
+    def emit(payload: dict):
+        print("===PRISM_THESIS_BEGIN===")
+        print(json.dumps(payload))
+        print("===PRISM_THESIS_END===")
+
+    try:
+        raw_in = sys.stdin.read()
+        payload = json.loads(raw_in) if raw_in.strip() else {}
+        ticker = (payload.get("ticker") or (args.ticker or "")).upper()
+        fundamentals = payload.get("fundamentals") or {}
+
+        if not fundamentals:
+            emit({"error": "No fundamentals data provided. Generate data for this ticker first."})
+            return
+
+        prompt_loader = PromptLoader(config_dir / "prompts")
+        system_prompt = prompt_loader.load_prompt("thesis_fundamentals")
+
+        resolved_model = args.model or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
+        llm = GeminiClient(model=resolved_model, temperature=0.2)
+
+        context = (
+            f"Ticker: {ticker}\n"
+            f"As of (latest quarter): {fundamentals.get('asOf')}\n\n"
+            "TTM fundamentals (pre-computed from the equity research Fundamentals tab):\n\n"
+            + json.dumps(fundamentals, indent=2)
+        )
+        full_prompt = (
+            system_prompt
+            + "\n\n---\n\n## Fundamentals Data\n\n"
+            + context
+            + "\n\n---\n\nReturn only the JSON object with the four box keys."
+        )
+        raw = llm.generate(full_prompt, response_mime_type="application/json")
+
+        try:
+            boxes = json.loads(raw)
+        except json.JSONDecodeError:
+            cleaned = raw.strip()
+            cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+            boxes = json.loads(cleaned)
+
+        # Only keep the recognized box keys; coerce everything to strings.
+        keys = ["revenueGrowth", "profitability", "capitalReturn", "misc"]
+        boxes = {k: str(boxes.get(k, "") or "") for k in keys}
+
+        emit({"ticker": ticker, "model": resolved_model, "boxes": boxes})
+    except Exception as e:
+        emit({"error": str(e)})
+
+
 def batch_command(args):
     """Generate batch report for multiple tickers."""
     data_dir, config_dir, output_dir = get_default_paths()
@@ -221,8 +378,10 @@ def main():
     analyze_parser.add_argument("--all", "-a", action="store_true", help="Analyze all tickers")
     analyze_parser.add_argument("--sector", "-s", help="Sector for sector-specific analysis")
     analyze_parser.add_argument("--prompt", "-p", help="Custom prompt file path")
-    analyze_parser.add_argument("--mode", choices=["balanced"],
-                               default="balanced", help="Analysis mode (single DHQ investment philosophy)")
+    analyze_parser.add_argument("--mode", choices=["balanced", "critique"],
+                               default="balanced",
+                               help="Analysis mode: 'balanced' (standard DHQ analysis) or "
+                                    "'critique' (red-team the analyst's saved thesis)")
     analyze_parser.add_argument("--model", "-m",
                                default=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
                                help="Gemini model to use (or set GEMINI_MODEL)")
@@ -232,6 +391,31 @@ def main():
     analyze_parser.add_argument("--no-save", action="store_true", help="Don't save output files")
     analyze_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     analyze_parser.set_defaults(func=analyze_command)
+
+    # Company overview command (SEC-grounded business overview)
+    overview_parser = subparsers.add_parser(
+        "company-overview",
+        help="Generate an SEC-grounded business overview (10-K Item 1 + 10-Q)",
+    )
+    overview_parser.add_argument("--ticker", "-t", required=True, help="Ticker symbol")
+    overview_parser.add_argument("--model", "-m",
+                                 default=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+                                 help="Gemini model to use (or set GEMINI_MODEL)")
+    overview_parser.add_argument("--config-dir", help="Config directory path")
+    overview_parser.set_defaults(func=company_overview_command)
+
+    # Thesis fundamentals command (fills the 4 thesis boxes from TTM data)
+    thesis_parser = subparsers.add_parser(
+        "thesis-fundamentals",
+        help="Fill the four thesis fundamentals boxes from TTM data (reads JSON on stdin)",
+    )
+    thesis_parser.add_argument("--ticker", "-t",
+                               help="Ticker symbol (optional; the stdin payload takes precedence)")
+    thesis_parser.add_argument("--model", "-m",
+                               default=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+                               help="Gemini model to use (or set GEMINI_MODEL)")
+    thesis_parser.add_argument("--config-dir", help="Config directory path")
+    thesis_parser.set_defaults(func=thesis_fundamentals_command)
 
     # Batch command
     batch_parser = subparsers.add_parser("batch-report", help="Generate batch report")

@@ -60,6 +60,10 @@ class PromptLoader:
         """Load the position sizing prompt."""
         return self.load_prompt("position_sizing")
 
+    def load_thesis_critique(self) -> str:
+        """Load the thesis-critique addendum (used in critique mode)."""
+        return self.load_prompt("thesis_critique")
+
     def load_sector_prompt(self, sector: str) -> Optional[str]:
         """
         Load a sector-specific prompt.

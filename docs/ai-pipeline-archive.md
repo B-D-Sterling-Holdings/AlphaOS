@@ -1,3 +1,67 @@
+# AI Pipeline — Archived Frontend (removed from the app)
+
+This document is a **complete, self-contained archive** of the "AI Pipeline"
+feature that was removed from the app navbar and routes. Keep it so the feature
+can be rebuilt later. The full verbatim source of every removed file is embedded
+below; the underlying Python pipeline (`prism_ai/`) was **not** removed and still
+exists in the repo.
+
+## What it was
+
+A standalone dashboard page (`/ai-pipeline`) that gave a UI over the `prism_ai`
+Python pipeline:
+
+- **Pipeline tab** — run `make` targets (`analyze`, `analyze-all`, `generate-data`,
+  `plot`, `list`, `info`, `install`) against a ticker, with a live log terminal,
+  model display, run confirmation for heavy commands, and cancel.
+- **History tab** — browse past runs and the `prism_recommendations` signal
+  history (BUY/HOLD/AVOID), per-ticker timelines, and recommendation detail.
+- Document/data upload + browse for the pipeline (`/api/prism/documents`,
+  `/api/prism/data`, `/api/prism/upload`, `/api/prism/tickers`).
+
+It was backed entirely by the `/api/prism/*` Next.js routes, which shell out to
+the `prism_ai` Makefile / write to Supabase (`prism_runs`, `prism_recommendations`).
+
+## How to restore
+
+1. Re-create the files listed below at their original paths (full source embedded
+   in each section).
+2. Re-add the navbar entry in `src/components/Navbar.jsx`:
+   - Add `Workflow` back to the `lucide-react` import.
+   - Add to the `STANDALONE` array:
+     ```jsx
+     { href: '/ai-pipeline', label: 'AI Pipeline', icon: Workflow },
+     ```
+3. The Python side (`prism_ai/`, its `Makefile`, prompts, Supabase tables) is
+   still present, so no backend work is needed to restore.
+
+## Removed files (original paths)
+
+- `src/app/(dashboard)/ai-pipeline/page.jsx`
+- `src/app/api/prism/run/route.js`
+- `src/app/api/prism/tickers/route.js`
+- `src/app/api/prism/upload/route.js`
+- `src/app/api/prism/data/route.js`
+- `src/app/api/prism/data/[id]/route.js`
+- `src/app/api/prism/documents/route.js`
+- `src/app/api/prism/documents/[id]/route.js`
+- `src/app/api/prism/history/route.js`
+- `src/app/api/prism/history/[ticker]/route.js`
+- `src/app/api/prism/history/[ticker]/timeline/route.js`
+- `src/app/api/prism/recommendations/[id]/route.js`
+
+> Note: `/api/prism/*` routes were used **only** by this page. The Research
+> workspace's AI features (`/api/research/company-overview`,
+> `/api/research/thesis-fundamentals`) are independent and were kept.
+
+---
+
+# Source
+
+
+## `src/app/(dashboard)/ai-pipeline/page.jsx`
+
+```jsx
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -1142,3 +1206,717 @@ function DatasetEditor({ dataset, onSave, onClose }) {
     </Card>
   );
 }
+
+```
+
+## `src/app/api/prism/run/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { getDb } from '@/lib/db';
+
+const PRISM_DIR = path.resolve(process.cwd(), 'prism_ai');
+const STATUS_FILE = '/tmp/prism-run-status.json';
+const LOG_FILE = '/tmp/prism-run-output.log';
+
+// `make` targets the Pipeline tab is allowed to run.
+const VALID_COMMANDS = ['install', 'generate-data', 'plot', 'analyze', 'analyze-all', 'list', 'info'];
+
+function loadEnvFile() {
+  const env = {};
+  try {
+    const candidates = [
+      path.resolve(process.cwd(), '.env.local'),
+      path.join(PRISM_DIR, '.env'),
+    ];
+    for (const envPath of candidates) {
+      if (!fs.existsSync(envPath)) continue;
+      const content = fs.readFileSync(envPath, 'utf8');
+      content.split('\n').forEach((line) => {
+        const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/i);
+        if (match) env[match[1]] = match[2].replace(/^["']|["']$/g, '');
+      });
+    }
+  } catch {
+    // Read-only filesystem in prod: env comes from process.env instead.
+  }
+  return env;
+}
+
+async function updateRunRecord(runId, fields) {
+  if (!runId) return;
+  const supabase = await getDb();
+  try {
+    await supabase.from('prism_runs').update(fields).eq('id', runId);
+  } catch {}
+}
+
+async function pruneRuns() {
+  const supabase = await getDb();
+  try {
+    const { data: recent } = await supabase
+      .from('prism_runs')
+      .select('id')
+      .order('started_at', { ascending: false })
+      .limit(10);
+    if (recent && recent.length === 10) {
+      const keepIds = recent.map((r) => r.id);
+      await supabase.from('prism_runs').delete().not('id', 'in', `(${keepIds.join(',')})`);
+    }
+  } catch {}
+}
+
+// Read the JSON analyses on disk and upsert them into prism_recommendations so
+// the Signal History tab reflects every completed analysis. Keyed by source_file
+// (idempotent), so re-running is safe and also backfills the seeded samples.
+// POST - start a pipeline command
+export async function POST(req) {
+  const supabase = await getDb();
+  // Demo sessions are read-only: running the pipeline spawns heavy Python
+  // processes (Ollama inference, data fetches). Demo reads seeded history only.
+  if (supabase.isDemo) {
+    return NextResponse.json(
+      { error: 'Running the analysis pipeline is disabled in demo mode.' },
+      { status: 403 }
+    );
+  }
+
+  try {
+    const { command, ticker, mode } = await req.json();
+    if (!VALID_COMMANDS.includes(command)) {
+      return NextResponse.json({ error: `Invalid command: ${command}` }, { status: 400 });
+    }
+
+    const needsTicker = ['generate-data', 'plot', 'info'].includes(command);
+    const cleanTicker = (ticker || '').trim().toUpperCase();
+    if (command === 'analyze' && !cleanTicker) {
+      return NextResponse.json({ error: 'A ticker is required for analyze.' }, { status: 400 });
+    }
+    if (needsTicker && !cleanTicker) {
+      return NextResponse.json({ error: `A ticker is required for ${command}.` }, { status: 400 });
+    }
+
+    // Reject if a run is already in progress.
+    if (fs.existsSync(STATUS_FILE)) {
+      try {
+        const status = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'));
+        if (status.running && status.pid) {
+          try {
+            process.kill(status.pid, 0);
+            return NextResponse.json({ error: 'A run is already in progress', status: 'running' }, { status: 409 });
+          } catch {
+            // stale pid, fall through
+          }
+        }
+      } catch { /* corrupted status, proceed */ }
+    }
+
+    const fileEnv = loadEnvFile();
+    const startedAt = new Date().toISOString();
+
+    fs.writeFileSync(STATUS_FILE, JSON.stringify({ running: true, command, ticker: cleanTicker, startedAt, pid: null }));
+    fs.writeFileSync(LOG_FILE, `[${startedAt}] Starting: make ${command}${cleanTicker ? ` TICKER=${cleanTicker}` : ''}\n`);
+
+    // Record the run.
+    let runId = null;
+    try {
+      const { data } = await supabase
+        .from('prism_runs')
+        .insert({ run_type: command, ticker: cleanTicker || null, status: 'running', started_at: startedAt })
+        .select('id')
+        .single();
+      if (data) runId = data.id;
+    } catch { /* Supabase optional */ }
+
+    // Build env for the make process: forward OLLAMA_* / ALPHA_VANTAGE plus the
+    // command args the Makefile reads (TICKER, ANALYSIS_MODE).
+    const childEnv = { ...process.env, ...fileEnv };
+    if (cleanTicker) childEnv.TICKER = cleanTicker;
+    if (command === 'analyze' && mode) childEnv.ANALYSIS_MODE = mode;
+
+    const proc = spawn('make', [command], {
+      cwd: PRISM_DIR,
+      shell: '/bin/bash',
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    fs.writeFileSync(STATUS_FILE, JSON.stringify({ running: true, command, ticker: cleanTicker, startedAt, pid: proc.pid }));
+
+    proc.stdout.on('data', (d) => fs.appendFileSync(LOG_FILE, d.toString()));
+    proc.stderr.on('data', (d) => fs.appendFileSync(LOG_FILE, d.toString()));
+
+    proc.on('close', async (code) => {
+      const completedAt = new Date().toISOString();
+      fs.writeFileSync(STATUS_FILE, JSON.stringify({
+        running: false, command, ticker: cleanTicker, startedAt, completedAt, exitCode: code, pid: proc.pid,
+      }));
+      fs.appendFileSync(LOG_FILE, `\n[${completedAt}] Finished with exit code ${code}\n`);
+
+      const log = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, 'utf8') : '';
+      await updateRunRecord(runId, {
+        status: code === 0 ? 'completed' : 'failed',
+        completed_at: completedAt,
+        exit_code: code,
+        log_output: log.slice(-10000),
+      });
+
+      // Recommendations are written directly to Supabase by the Python pipeline
+      // (see _save_result); no disk-sync step is needed here.
+      await pruneRuns();
+    });
+
+    return NextResponse.json({ status: 'started', command, ticker: cleanTicker, pid: proc.pid });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// GET - poll status + recent run history (or one run's log via ?history=<id>)
+export async function GET(req) {
+  const supabase = await getDb();
+  try {
+    const { searchParams } = new URL(req.url);
+    const historyId = searchParams.get('history');
+
+    if (historyId) {
+      const { data } = await supabase
+        .from('prism_runs')
+        .select('id, run_type, ticker, status, started_at, completed_at, log_output')
+        .eq('id', historyId)
+        .single();
+      return NextResponse.json({ run: data || null });
+    }
+
+    const status = fs.existsSync(STATUS_FILE)
+      ? JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))
+      : { running: false };
+    const log = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, 'utf8') : '';
+
+    let history = [];
+    try {
+      const { data } = await supabase
+        .from('prism_runs')
+        .select('id, run_type, ticker, status, started_at, completed_at')
+        .order('started_at', { ascending: false })
+        .limit(5);
+      if (data) history = data;
+    } catch { /* ignore */ }
+
+    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    return NextResponse.json({ ...status, log, history, model });
+  } catch (err) {
+    return NextResponse.json({ running: false, log: '', history: [], error: err.message });
+  }
+}
+
+// DELETE - cancel the running command
+export async function DELETE() {
+  const supabase = await getDb();
+  if (supabase.isDemo) {
+    return NextResponse.json({ error: 'Disabled in demo mode.' }, { status: 403 });
+  }
+  try {
+    if (!fs.existsSync(STATUS_FILE)) return NextResponse.json({ cancelled: false });
+    const status = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'));
+    if (status.running && status.pid) {
+      try {
+        process.kill(status.pid, 'SIGKILL');
+      } catch { /* already gone */ }
+      const completedAt = new Date().toISOString();
+      fs.writeFileSync(STATUS_FILE, JSON.stringify({ ...status, running: false, completedAt, exitCode: -1 }));
+      fs.appendFileSync(LOG_FILE, `\n[${completedAt}] Cancelled by user\n`);
+      return NextResponse.json({ cancelled: true });
+    }
+    return NextResponse.json({ cancelled: false });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/tickers/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
+import { getDb } from '@/lib/db';
+
+const DATA_DIR = path.resolve(process.cwd(), 'prism_ai', 'data');
+
+// GET - tickers available for the pipeline dropdowns. Primary source is Supabase
+// (prism_ticker_data); the local data/ folder is unioned in so bundled sample
+// tickers still appear before they are migrated.
+export async function GET() {
+  const supabase = await getDb();
+  const tickers = new Set();
+
+  try {
+    const { data } = await supabase.from('prism_ticker_data').select('ticker');
+    for (const row of data || []) if (row.ticker) tickers.add(String(row.ticker).toUpperCase());
+  } catch { /* table may not exist yet */ }
+
+  try {
+    if (fs.existsSync(DATA_DIR)) {
+      for (const d of fs.readdirSync(DATA_DIR, { withFileTypes: true })) {
+        if (d.isDirectory() && !d.name.startsWith('.')) tickers.add(d.name.toUpperCase());
+      }
+    }
+  } catch { /* ignore */ }
+
+  return NextResponse.json({ tickers: [...tickers].sort() });
+}
+
+```
+
+## `src/app/api/prism/upload/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import path from 'path';
+import { getDb } from '@/lib/db';
+
+// POST - upload a research document into Supabase (prism_ticker_documents) so the
+// analysis pipeline reads it from Supabase, not the local folder. Pipeline step 3.
+// Body: { ticker, filename, file (base64) }.
+export async function POST(req) {
+  const supabase = await getDb();
+  if (supabase.isDemo) {
+    return NextResponse.json({ error: 'Uploads are disabled in demo mode.' }, { status: 403 });
+  }
+  try {
+    const { ticker, filename, file } = await req.json();
+    const cleanTicker = (ticker || '').trim().toUpperCase();
+    if (!cleanTicker) return NextResponse.json({ error: 'Ticker is required' }, { status: 400 });
+    if (!filename || !file) return NextResponse.json({ error: 'filename and file are required' }, { status: 400 });
+
+    const safeName = path.basename(filename);
+    const base64 = file.includes(',') ? file.split(',').pop() : file;
+
+    const { error } = await supabase
+      .from('prism_ticker_documents')
+      .upsert(
+        { ticker: cleanTicker, filename: safeName, content_base64: base64, updated_at: new Date().toISOString() },
+        { onConflict: 'ticker,filename' }
+      );
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    const size = Math.floor((base64.length * 3) / 4);
+    return NextResponse.json({ success: true, filename: safeName, size });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/data/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+
+// GET - list generated ticker datasets (prism_ticker_data). Optional ?ticker=
+// filter. Excludes csv_content to keep the payload light.
+export async function GET(request) {
+  const supabase = await getDb();
+  try {
+    const ticker = request.nextUrl.searchParams.get('ticker');
+    let query = supabase
+      .from('prism_ticker_data')
+      .select('id, ticker, category, rows, updated_at')
+      .order('ticker', { ascending: true })
+      .order('category', { ascending: true });
+    if (ticker) query = query.eq('ticker', String(ticker).toUpperCase());
+
+    const { data, error } = await query;
+    if (error) return NextResponse.json({ datasets: [], error: error.message }, { status: 500 });
+    return NextResponse.json({ datasets: data || [] });
+  } catch (err) {
+    return NextResponse.json({ datasets: [], error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/data/[id]/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+
+// Row count matches the seed convention (scripts/seed-prism-data.mjs): lines
+// minus the header.
+function countRows(csv) {
+  const lines = String(csv || '').trim().split('\n');
+  return Math.max(0, lines.length - 1);
+}
+
+// GET - one dataset including its csv_content (for the editor).
+export async function GET(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const { data, error } = await supabase
+      .from('prism_ticker_data')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (error || !data) return NextResponse.json({ error: 'Dataset not found' }, { status: 404 });
+    return NextResponse.json(data);
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// PATCH - edit a dataset's CSV content and/or category. `rows` is recomputed
+// from the new CSV.
+export async function PATCH(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const body = await request.json();
+
+    const update = {};
+    if (typeof body.csv_content === 'string') {
+      update.csv_content = body.csv_content;
+      update.rows = countRows(body.csv_content);
+    }
+    if (typeof body.category === 'string' && body.category.trim()) {
+      update.category = body.category.trim();
+    }
+    if (!Object.keys(update).length) {
+      return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+    }
+    update.updated_at = new Date().toISOString();
+
+    const { data, error } = await supabase
+      .from('prism_ticker_data')
+      .update(update)
+      .eq('id', id)
+      .select('id, ticker, category, rows, updated_at')
+      .single();
+    if (error) {
+      const conflict = error.code === '23505';
+      return NextResponse.json(
+        { error: conflict ? 'A dataset with that category already exists for this ticker.' : error.message },
+        { status: conflict ? 409 : 500 },
+      );
+    }
+    return NextResponse.json(data);
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// DELETE - remove a generated dataset.
+export async function DELETE(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const { error } = await supabase.from('prism_ticker_data').delete().eq('id', id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/documents/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+
+// GET - list uploaded research documents (prism_ticker_documents). Optional
+// ?ticker= filter. Excludes content_base64 to keep the payload light.
+export async function GET(request) {
+  const supabase = await getDb();
+  try {
+    const ticker = request.nextUrl.searchParams.get('ticker');
+    let query = supabase
+      .from('prism_ticker_documents')
+      .select('id, ticker, filename, updated_at')
+      .order('ticker', { ascending: true })
+      .order('filename', { ascending: true });
+    if (ticker) query = query.eq('ticker', String(ticker).toUpperCase());
+
+    const { data, error } = await query;
+    if (error) return NextResponse.json({ documents: [], error: error.message }, { status: 500 });
+    return NextResponse.json({ documents: data || [] });
+  } catch (err) {
+    return NextResponse.json({ documents: [], error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/documents/[id]/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import path from 'path';
+import { getDb } from '@/lib/db';
+
+// PATCH - rename a document and/or reassign it to another ticker.
+// Body: { filename?, ticker? }. The (ticker, filename) pair is unique.
+export async function PATCH(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const body = await request.json();
+
+    const update = {};
+    if (typeof body.filename === 'string' && body.filename.trim()) {
+      update.filename = path.basename(body.filename.trim());
+    }
+    if (typeof body.ticker === 'string' && body.ticker.trim()) {
+      update.ticker = body.ticker.trim().toUpperCase();
+    }
+    if (!Object.keys(update).length) {
+      return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+    }
+    update.updated_at = new Date().toISOString();
+
+    const { data, error } = await supabase
+      .from('prism_ticker_documents')
+      .update(update)
+      .eq('id', id)
+      .select('id, ticker, filename, updated_at')
+      .single();
+    if (error) {
+      const conflict = error.code === '23505';
+      return NextResponse.json(
+        { error: conflict ? 'A document with that name already exists for this ticker.' : error.message },
+        { status: conflict ? 409 : 500 },
+      );
+    }
+    return NextResponse.json(data);
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// DELETE - remove an uploaded document.
+export async function DELETE(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const { error } = await supabase.from('prism_ticker_documents').delete().eq('id', id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/history/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { summarizeHistories } from '@/lib/prismSignal';
+
+// GET - per-ticker recommendation-history summaries (Signal History landing).
+export async function GET() {
+  const supabase = await getDb();
+  try {
+    const { data, error } = await supabase
+      .from('prism_recommendations')
+      .select('ticker, analysis_date, signal, conviction')
+      .order('analysis_date', { ascending: true });
+
+    if (error) return NextResponse.json({ histories: [], error: error.message }, { status: 500 });
+    return NextResponse.json({ histories: summarizeHistories(data || []) });
+  } catch (err) {
+    return NextResponse.json({ histories: [], error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/history/[ticker]/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { buildTickerHistory } from '@/lib/prismSignal';
+
+const COLUMNS =
+  'id, source_file, ticker, analysis_date, signal, conviction, position_size_pct, price_target, expected_return_pct, model, analysis_mode';
+
+// GET - full ordered history (entries + summary) for one ticker.
+export async function GET(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { ticker } = await params;
+    const upper = String(ticker).toUpperCase();
+    const { data, error } = await supabase
+      .from('prism_recommendations')
+      .select(COLUMNS)
+      .eq('ticker', upper);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(buildTickerHistory(upper, data || []));
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/history/[ticker]/timeline/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { buildTimeline } from '@/lib/prismSignal';
+
+const COLUMNS =
+  'id, source_file, ticker, analysis_date, signal, conviction, position_size_pct, price_target, expected_return_pct, model, analysis_mode';
+
+// GET - timeline points (dot view) for one ticker.
+export async function GET(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { ticker } = await params;
+    const upper = String(ticker).toUpperCase();
+    const { data, error } = await supabase
+      .from('prism_recommendations')
+      .select(COLUMNS)
+      .eq('ticker', upper);
+
+    if (error) return NextResponse.json({ timeline: [], error: error.message }, { status: 500 });
+    return NextResponse.json({ ticker: upper, timeline: buildTimeline(upper, data || []) });
+  } catch (err) {
+    return NextResponse.json({ timeline: [], error: err.message }, { status: 500 });
+  }
+}
+
+```
+
+## `src/app/api/prism/recommendations/[id]/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { normalizeSignal } from '@/lib/prismSignal';
+
+// Top-level columns the UI is allowed to edit. These drive the Signal History
+// timeline/table; the JSONB `recommendation` is kept in sync below so the detail
+// panel matches.
+const EDITABLE = ['signal', 'conviction', 'position_size_pct', 'price_target', 'expected_return_pct', 'analysis_date'];
+const NUMERIC = new Set(['position_size_pct', 'price_target', 'expected_return_pct']);
+
+// `id` is the row id, or a source_file name (ends in .json) as a fallback.
+function keyAndColumn(id) {
+  const key = decodeURIComponent(id);
+  return { key, column: key.endsWith('.json') ? 'source_file' : 'id' };
+}
+
+// GET - one full recommendation (detail panel).
+export async function GET(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const { key, column } = keyAndColumn(id);
+
+    const { data, error } = await supabase
+      .from('prism_recommendations')
+      .select('*')
+      .eq(column, key)
+      .single();
+
+    if (error || !data) {
+      return NextResponse.json({ error: 'Recommendation not found' }, { status: 404 });
+    }
+    return NextResponse.json(data);
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// PATCH - edit a recommendation. Body may contain any of EDITABLE plus `reasoning`.
+// Updates the canonical columns and mirrors the change into the `recommendation`
+// JSONB so the detail view stays consistent with the timeline.
+export async function PATCH(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const { key, column } = keyAndColumn(id);
+    const body = await request.json();
+
+    const { data: current, error: fetchErr } = await supabase
+      .from('prism_recommendations')
+      .select('*')
+      .eq(column, key)
+      .single();
+    if (fetchErr || !current) {
+      return NextResponse.json({ error: 'Recommendation not found' }, { status: 404 });
+    }
+
+    const update = {};
+    for (const field of EDITABLE) {
+      if (!(field in body)) continue;
+      let value = body[field];
+      if (NUMERIC.has(field)) value = value === '' || value == null ? null : Number(value);
+      if (field === 'signal' && value) value = normalizeSignal(value);
+      update[field] = value;
+    }
+
+    // Mirror edits into the JSONB recommendation (detail panel reads from here).
+    const rec = { ...(current.recommendation || {}) };
+    if ('signal' in update) rec.signal = update.signal;
+    if ('conviction' in update) rec.conviction = update.conviction;
+    if ('position_size_pct' in update) rec.position_size_pct = update.position_size_pct;
+    if ('price_target' in update) rec.price_target_12mo = update.price_target;
+    if ('expected_return_pct' in update) rec.expected_return_pct = update.expected_return_pct;
+    if (typeof body.reasoning === 'string') rec.reasoning = body.reasoning;
+    update.recommendation = rec;
+
+    if (Object.keys(update).length === 1) {
+      // Only the (unchanged) recommendation mirror — nothing to do.
+      return NextResponse.json(current);
+    }
+
+    const { data, error } = await supabase
+      .from('prism_recommendations')
+      .update(update)
+      .eq(column, key)
+      .select('*')
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(data);
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// DELETE - remove a recommendation from the signal history.
+export async function DELETE(request, { params }) {
+  const supabase = await getDb();
+  try {
+    const { id } = await params;
+    const { key, column } = keyAndColumn(id);
+
+    const { error } = await supabase
+      .from('prism_recommendations')
+      .delete()
+      .eq(column, key);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+```

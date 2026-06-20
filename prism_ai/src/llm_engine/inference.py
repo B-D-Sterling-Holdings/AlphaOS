@@ -12,6 +12,7 @@ from .gemini_client import GeminiClient
 from .prompt_loader import PromptLoader
 from .response_parser import ResponseParser, AnalysisResult
 from ..context_builder import ContextAssembler
+from ..context_builder.context_assembler import format_analyst_notes
 from ..data_ingestion import CSVParser, PDFExtractor
 from ..utils.supabase_store import SupabaseStore
 
@@ -97,11 +98,16 @@ class InferenceEngine:
         csv_data = self.csv_parser.load_company_data(ticker)
         pdf_text = self.pdf_extractor.extract_from_company(self.data_dir, ticker)
 
+        # Pull the analyst's own thesis notes (if any) so the model can build on
+        # — and in critique mode, challenge — the human's written research.
+        analyst_notes = self._load_analyst_notes(ticker)
+
         # Assemble context
         context = self.context_assembler.assemble_context(
             ticker=ticker,
             csv_data=csv_data,
             pdf_text=pdf_text,
+            analyst_notes=analyst_notes,
         )
 
         # Load prompt
@@ -113,6 +119,13 @@ class InferenceEngine:
                 sector=sector,
                 mode=mode,
             )
+            # In critique mode, append the thesis-critique framing so the model
+            # red-teams the analyst's notes (carried in the assembled context).
+            if mode == "critique":
+                try:
+                    system_prompt += "\n\n---\n\n" + self.prompt_loader.load_thesis_critique()
+                except FileNotFoundError:
+                    logger.warning("Thesis critique prompt not found; running standard analysis")
 
         # Run inference against the local Ollama model
         logger.info(f"Sending request to Gemini ({self.llm.model_name}) for {ticker}")
@@ -290,6 +303,25 @@ class InferenceEngine:
             f.write(f"*Generated: {now.strftime('%Y-%m-%d %H:%M')}*\n\n")
             f.write(result.full_response)
         logger.debug(f"Saved full response to {md_filepath}")
+
+    def _load_analyst_notes(self, ticker: str) -> Optional[str]:
+        """Fetch + format the analyst's saved thesis for a ticker (best effort).
+
+        Returns None when Supabase is unconfigured, no thesis exists, or the
+        fetch fails — analysis then proceeds on data alone, exactly as before.
+        """
+        if not self.store.is_configured():
+            return None
+        try:
+            thesis = self.store.get_thesis(ticker)
+            notes = format_analyst_notes(thesis)
+            if notes:
+                logger.info(f"Loaded analyst thesis notes for {ticker} ({len(notes)} chars)")
+                return notes
+            return None
+        except Exception as e:
+            logger.warning(f"Could not load analyst thesis for {ticker}: {e}")
+            return None
 
     def get_data_summary(self, ticker: str) -> dict:
         """Get summary of available data for a ticker."""

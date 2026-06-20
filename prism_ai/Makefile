@@ -1,4 +1,4 @@
-.PHONY: install analyze clean test lint format help setup-ticker analyze-all batch list info generate-data plot
+.PHONY: install analyze clean test lint format help setup-ticker analyze-all batch list info generate-data plot company-overview thesis-fundamentals
 
 PYTHON := uv run python
 TICKER ?= AAPL
@@ -9,6 +9,7 @@ help:
 	@echo "  make install      - Set up virtual environment and install dependencies"
 	@echo "  make analyze      - Analyze a company (use TICKER=AAPL)"
 	@echo "  make analyze-all  - Analyze all companies in data/ folder"
+	@echo "  make company-overview - SEC-grounded business overview (use TICKER=AAPL)"
 	@echo "  make list         - List available tickers"
 	@echo "  make info         - Show data summary (use TICKER=AAPL)"
 	@echo "  make test         - Run test suite"
@@ -29,6 +30,12 @@ analyze:
 
 analyze-all:
 	$(PYTHON) -m src.main analyze --all
+
+company-overview:
+	$(PYTHON) -m src.main company-overview --ticker $(TICKER)
+
+thesis-fundamentals:
+	$(PYTHON) -m src.main thesis-fundamentals --ticker $(TICKER)
 
 batch:
 	$(PYTHON) -m src.main batch-report --tickers $(TICKERS) --output outputs/batch_report.json

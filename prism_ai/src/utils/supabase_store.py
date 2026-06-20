@@ -141,3 +141,22 @@ class SupabaseStore:
             "select": "filename,content_base64",
         })
         return self._request("GET", f"prism_ticker_documents?{query}") or []
+
+    # ------------------------------------------------------------------ #
+    # Analyst thesis (the human research workspace, written in the app)
+    # ------------------------------------------------------------------ #
+
+    def get_thesis(self, ticker: str) -> Optional[dict]:
+        """Return the analyst's saved thesis row for a ticker, or None.
+
+        The ``theses`` table is written by the AlphaOS Research workspace
+        (see src/app/api/thesis/[ticker]/route.js). We pull it so the pipeline
+        can fold the analyst's own notes into its context.
+        """
+        query = urllib.parse.urlencode({
+            "ticker": f"eq.{ticker.upper()}",
+            "select": "ticker,core_reasons,assumptions,valuation,underwriting",
+            "limit": "1",
+        })
+        result = self._request("GET", f"theses?{query}")
+        return result[0] if result else None

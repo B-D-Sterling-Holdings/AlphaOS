@@ -2,7 +2,7 @@
 
 import pandas as pd
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import logging
 
 from .token_manager import TokenManager
@@ -34,6 +34,7 @@ class ContextAssembler:
         ticker: str,
         csv_data: dict[str, pd.DataFrame],
         pdf_text: Optional[str] = None,
+        analyst_notes: Optional[str] = None,
         include_summary: bool = True,
     ) -> str:
         """
@@ -74,6 +75,10 @@ class ContextAssembler:
         if pdf_text:
             pdf_section = self._format_pdf_section(pdf_text)
             sections.append(pdf_section)
+
+        # Add the analyst's own working thesis if available
+        if analyst_notes:
+            sections.append(self._format_analyst_section(analyst_notes))
 
         # Combine all sections
         full_context = "\n\n---\n\n".join(sections)
@@ -179,6 +184,16 @@ class ContextAssembler:
         lines.append(pdf_text)
         return "\n".join(lines)
 
+    def _format_analyst_section(self, notes: str) -> str:
+        """Format the analyst's working thesis into a context section."""
+        return (
+            "## Analyst's Working Thesis\n"
+            "The internal analyst has recorded the notes below for this name. "
+            "Use them as additional context, but verify every claim against the "
+            "financial data above — do not accept the analyst's conclusions "
+            "uncritically.\n\n" + notes
+        )
+
     def _truncate_context(self, sections: list[str]) -> str:
         """
         Truncate context to fit within token budget.
@@ -277,3 +292,84 @@ class ContextAssembler:
         stats["section_count"] = context.count("## ")
         stats["table_count"] = context.count("|---")
         return stats
+
+
+def _plain_text(value: Any) -> str:
+    """Coerce a workspace field to plain text.
+
+    Fields written by RichTextArea may be either a string or a list of blocks
+    ``[{"type": "text", "value": "..."}, ...]``; both are flattened here.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = []
+        for block in value:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("value")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+        return "\n".join(parts).strip()
+    return ""
+
+
+def format_analyst_notes(thesis: Optional[dict]) -> str:
+    """Render an analyst ``theses`` row into a markdown notes block.
+
+    Returns an empty string when there is nothing worth sending, so callers can
+    simply check truthiness. Mirrors the Research workspace structure
+    (companyOverview, fundamentals boxes, due-diligence / dislocation Q&A,
+    narrative) defined in src/app/api/thesis/[ticker]/route.js.
+    """
+    if not thesis:
+        return ""
+
+    parts: list[str] = []
+    underwriting = thesis.get("underwriting") or {}
+
+    overview = _plain_text(underwriting.get("companyOverview"))
+    if overview:
+        parts.append(f"### Company Overview\n{overview}")
+
+    workspace = underwriting.get("researchWorkspace") or {}
+
+    note = _plain_text(workspace.get("note"))
+    if note:
+        parts.append(f"### Why this name is in research\n{note}")
+
+    fundamentals = workspace.get("fundamentals") or {}
+    fundamental_lines = []
+    for key, label in (
+        ("revenueGrowth", "Revenue & Growth"),
+        ("profitability", "Profitability"),
+        ("capitalReturn", "Capital Returned to Shareholders"),
+        ("misc", "Misc"),
+    ):
+        text = _plain_text(fundamentals.get(key))
+        if text:
+            fundamental_lines.append(f"- **{label}:** {text}")
+    if fundamental_lines:
+        parts.append("### Analyst's Fundamental Notes\n" + "\n".join(fundamental_lines))
+
+    for field, label in (
+        ("dueDiligenceItems", "Due Diligence Questions"),
+        ("dislocationItems", "Dislocation Questions"),
+    ):
+        items = workspace.get(field) or []
+        q_lines = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            question = _plain_text(item.get("text"))
+            answer = _plain_text(item.get("answer"))
+            if not question and not answer:
+                continue
+            q_lines.append(f"- Q: {question or '(no question text)'}\n  A: {answer or '(unanswered)'}")
+        if q_lines:
+            parts.append(f"### {label}\n" + "\n".join(q_lines))
+
+    narrative = _plain_text(thesis.get("assumptions"))
+    if narrative:
+        parts.append(f"### Analyst Narrative\n{narrative}")
+
+    return "\n\n".join(parts)
