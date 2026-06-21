@@ -6,6 +6,7 @@ import {
   ThumbsUp, Meh, CloudRain, AlertTriangle,
   Scissors, Plus, LogOut as ExitIcon, FileText, ArrowRight,
   BarChart3, Shield, X, RefreshCw, Crosshair, ChevronUp, ChevronDown, ClipboardList, Target,
+  FlaskConical, Trash2,
 } from 'lucide-react';
 import TaskBoardPage from '../tasks/page';
 import { getValuationExpectedReturn } from '@/lib/valuationModel';
@@ -78,6 +79,22 @@ function PriorityBadge({ priority }) {
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${p.color}`}>
       {p.label}
+    </span>
+  );
+}
+
+const CANDIDATE_STATUSES = [
+  { value: 'researching', label: 'Researching', color: 'bg-blue-100 text-blue-700' },
+  { value: 'watching', label: 'Watching', color: 'bg-amber-100 text-amber-700' },
+  { value: 'ready', label: 'Ready to Buy', color: 'bg-emerald-100 text-emerald-700' },
+  { value: 'passed', label: 'Passed', color: 'bg-gray-100 text-gray-500' },
+];
+
+function StatusBadge({ status }) {
+  const s = CANDIDATE_STATUSES.find(x => x.value === status) || CANDIDATE_STATUSES[0];
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${s.color}`}>
+      {s.label}
     </span>
   );
 }
@@ -212,6 +229,157 @@ function EditModal({ holding, onSave, onClose }) {
   );
 }
 
+/* ── Candidate (Research Pipeline) Modal ── */
+function CandidateModal({ candidate, onSave, onDelete, onClose }) {
+  const isNew = !candidate.id;
+  const [form, setForm] = useState({
+    id: candidate.id || null,
+    ticker: candidate.ticker || '',
+    status: candidate.status || 'researching',
+    sentiment: candidate.sentiment || 'neutral',
+    conviction: candidate.conviction ?? 3,
+    priority: candidate.priority || 'normal',
+    target_weight: candidate.target_weight ?? '',
+    notes: candidate.notes || '',
+  });
+  const formRef = useRef(form);
+
+  const set = (k, v) => setForm(prev => {
+    const next = { ...prev, [k]: v };
+    formRef.current = next;
+    return next;
+  });
+
+  // Auto-save on unmount (clicking off) — only if a ticker was entered
+  useEffect(() => {
+    return () => {
+      const f = formRef.current;
+      if (f.ticker && f.ticker.trim()) onSave(f);
+    };
+  }, [onSave]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/15"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-md mx-4">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <FlaskConical size={15} className="text-blue-500" />
+            <h3 className="text-sm font-bold text-gray-900">{isNew ? 'New Candidate' : form.ticker}</h3>
+          </div>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          {/* Ticker */}
+          <div>
+            <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">Ticker</label>
+            <input value={form.ticker} onChange={e => set('ticker', e.target.value.toUpperCase())}
+              autoFocus={isNew} placeholder="e.g. NVDA"
+              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold text-gray-800 uppercase tracking-wide focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+          </div>
+
+          {/* Status */}
+          <div>
+            <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">Status</label>
+            <div className="grid grid-cols-2 gap-2">
+              {CANDIDATE_STATUSES.map(s => {
+                const active = form.status === s.value;
+                return (
+                  <button key={s.value} onClick={() => set('status', s.value)}
+                    className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-all ${
+                      active ? `${s.color} border-current` : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                    }`}>
+                    {s.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Sentiment */}
+          <div>
+            <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">Sentiment</label>
+            <div className="flex gap-2">
+              {SENTIMENTS.map(s => {
+                const active = form.sentiment === s.value;
+                const Icon = s.icon;
+                const colors = {
+                  emerald: active ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'border-gray-200 text-gray-500 hover:border-emerald-200',
+                  amber: active ? 'bg-amber-100 text-amber-700 border-amber-300' : 'border-gray-200 text-gray-500 hover:border-amber-200',
+                  red: active ? 'bg-red-100 text-red-700 border-red-300' : 'border-gray-200 text-gray-500 hover:border-red-200',
+                };
+                return (
+                  <button key={s.value} onClick={() => set('sentiment', s.value)}
+                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-all ${colors[s.color]}`}>
+                    <Icon size={13} /> {s.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Conviction */}
+          <div>
+            <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">Conviction</label>
+            <div className="flex gap-1.5">
+              {[1, 2, 3, 4, 5].map(level => {
+                const active = form.conviction === level;
+                const c = CONVICTION_COLORS[level];
+                return (
+                  <button key={level} onClick={() => set('conviction', level)}
+                    className={`flex-1 py-2 rounded-xl border text-xs font-semibold transition-all ${
+                      active ? c.btn : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                    }`}>
+                    {CONVICTION_LABELS[level]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Priority + Target Weight */}
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">Priority</label>
+              <select value={form.priority} onChange={e => set('priority', e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400">
+                {PRIORITIES.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+            <div className="flex-1">
+              <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">Target Wt %</label>
+              <input type="number" step="0.1" value={form.target_weight}
+                onChange={e => set('target_weight', e.target.value)} placeholder="—"
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-800 tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400" />
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 block">Notes</label>
+            <textarea spellCheck={true} value={form.notes} onChange={e => set('notes', e.target.value)}
+              ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } }}
+              onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
+              rows={3} placeholder="Why it's interesting, what to research, valuation read..."
+              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 resize-none overflow-hidden" />
+          </div>
+        </div>
+        {!isNew && (
+          <div className="px-5 py-3 border-t border-gray-100 flex justify-end">
+            <button
+              onClick={() => { formRef.current = { ...formRef.current, ticker: '' }; onDelete(candidate.id); }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors">
+              <Trash2 size={13} /> Remove
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Main Page ── */
 export default function StrategicHubPage() {
   const router = useRouter();
@@ -219,6 +387,8 @@ export default function StrategicHubPage() {
   const [quotes, setQuotes] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editTicker, setEditTicker] = useState(null);
+  const [candidates, setCandidates] = useState([]);
+  const [editCandidate, setEditCandidate] = useState(null); // candidate object (or {id:null,...} for new)
   const [sortBy, setSortBy] = useState('priority'); // priority | weight | completeness | sentiment | action
   const [filterAction, setFilterAction] = useState('all');
   const [filterSentiment, setFilterSentiment] = useState('all');
@@ -269,6 +439,35 @@ export default function StrategicHubPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const loadCandidates = useCallback(async () => {
+    try {
+      const res = await fetch('/api/strategic-candidates');
+      const rows = await res.json();
+      setCandidates(Array.isArray(rows) ? rows : []);
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadCandidates(); }, [loadCandidates]);
+
+  const handleSaveCandidate = useCallback(async (form) => {
+    await fetch('/api/strategic-candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    });
+    await loadCandidates();
+  }, [loadCandidates]);
+
+  const handleDeleteCandidate = useCallback(async (id) => {
+    setEditCandidate(null);
+    await fetch('/api/strategic-candidates', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    await loadCandidates();
+  }, [loadCandidates]);
 
   const handleSaveNote = useCallback(async (ticker, form) => {
     await fetch('/api/strategic-notes', {
@@ -571,6 +770,73 @@ export default function StrategicHubPage() {
                   </td>
                 </tr>
               ))}
+
+              {/* ── Research Pipeline (candidates) — same table so columns align ── */}
+              <tr>
+                <td colSpan={8} className="pt-7 pb-2">
+                  <div className="flex items-center justify-between border-t border-gray-100 pt-4">
+                    <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+                      Research Pipeline
+                    </h3>
+                    <button
+                      onClick={() => setEditCandidate({ id: null, ticker: '', status: 'researching', conviction: 3, priority: 'normal', target_weight: '', notes: '' })}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-blue-600 transition-colors">
+                      <Plus size={12} /> Add
+                    </button>
+                  </div>
+                </td>
+              </tr>
+
+              {/* Column labels for the candidate rows (align with positions above) */}
+              <tr className="border-b border-gray-100">
+                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-2">Ticker</th>
+                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Priority</th>
+                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Sentiment</th>
+                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Conv.</th>
+                <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Tgt Weight</th>
+                <th className="pb-2"></th>
+                <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Status</th>
+                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-8 pr-2">Notes</th>
+              </tr>
+
+              {candidates.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-3 pl-2">
+                    <button
+                      onClick={() => setEditCandidate({ id: null, ticker: '', status: 'researching', conviction: 3, priority: 'normal', target_weight: '', notes: '' })}
+                      className="text-[11px] text-gray-300 hover:text-blue-500 transition-colors">
+                      + Add a name you&apos;re researching
+                    </button>
+                  </td>
+                </tr>
+              ) : candidates.map(c => (
+                <tr key={c.id}
+                  className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors cursor-pointer group"
+                  onClick={() => setEditCandidate(c)}>
+                  <td className="py-3 pl-2">
+                    <span className="text-xs font-bold text-gray-900">{c.ticker}</span>
+                  </td>
+                  <td className="py-3"><PriorityBadge priority={c.priority} /></td>
+                  <td className="py-3"><SentimentBadge sentiment={c.sentiment} /></td>
+                  <td className="py-3"><ConvictionDots level={c.conviction} /></td>
+                  <td className="py-3 text-right">
+                    {c.target_weight != null ? (
+                      <span className="text-xs font-semibold text-gray-800 tabular-nums">{Number(c.target_weight).toFixed(1)}%</span>
+                    ) : (
+                      <span className="text-[10px] text-gray-300">—</span>
+                    )}
+                  </td>
+                  <td className="py-3 text-right"></td>
+                  <td className="py-3 text-right"><StatusBadge status={c.status} /></td>
+                  <td className="py-3 pl-8 pr-2" style={{ width: '260px', maxWidth: '260px' }}>
+                    {c.notes ? (
+                      <div className="text-[11px] text-gray-500 truncate" style={{ width: '240px' }} title={c.notes}>{c.notes}</div>
+                    ) : (
+                      <span className="text-[10px] text-gray-300">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -598,6 +864,16 @@ export default function StrategicHubPage() {
       {/* ── Edit Modal ── */}
       {editHolding && (
         <EditModal holding={editHolding} onSave={handleSaveNote} onClose={() => setEditTicker(null)} />
+      )}
+
+      {/* ── Candidate Modal ── */}
+      {editCandidate && (
+        <CandidateModal
+          candidate={editCandidate}
+          onSave={handleSaveCandidate}
+          onDelete={handleDeleteCandidate}
+          onClose={() => setEditCandidate(null)}
+        />
       )}
     </div>
   );

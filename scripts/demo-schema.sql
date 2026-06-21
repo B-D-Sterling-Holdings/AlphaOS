@@ -28,7 +28,8 @@ DECLARE
     'contacts','interactions','contact_files','tasks','research_links',
     'documents','theses','valuation_models','holdings','portfolio_cash',
     'watchlists','ticker_fundamentals','ticker_prices','allocation_config',
-    'sector_config','factor_config','fund_nav_data','strategic_notes','ideas',
+    'sector_config','factor_config','fund_nav_data','strategic_notes',
+    'candidate_positions','ideas',
     'macro_regime_runs','macro_regime_results','macro_regime_config',
     'prism_runs','prism_recommendations','prism_ticker_data','prism_ticker_documents'
   ];

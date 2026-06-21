@@ -333,6 +333,27 @@ CREATE INDEX IF NOT EXISTS idx_strategic_notes_ticker ON strategic_notes(ticker)
 
 
 -- ============================================================
+-- 19.5 CANDIDATE POSITIONS (research pipeline — names being researched
+--      or with potential to enter the portfolio; not yet held)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS candidate_positions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  ticker TEXT NOT NULL,
+  status TEXT DEFAULT 'researching',       -- researching, watching, ready, passed
+  sentiment TEXT DEFAULT 'neutral',        -- uneasy, neutral, feeling_good (our read)
+  conviction INTEGER DEFAULT 3,            -- 1-5
+  priority TEXT DEFAULT 'normal',          -- urgent, high, normal, low
+  target_weight NUMERIC,                   -- prospective portfolio weight %
+  notes TEXT DEFAULT '',
+  sort_order NUMERIC DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_positions_status ON candidate_positions(status);
+
+
+-- ============================================================
 -- 20. IDEAS (free-form workspace; not tied to any ticker)
 -- category: idea, question, todo, note, random
 -- color:    yellow, blue, green, pink, purple, gray, orange
