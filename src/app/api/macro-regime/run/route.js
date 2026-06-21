@@ -370,9 +370,22 @@ export async function GET(req) {
       return NextResponse.json({ run: data || null });
     }
 
-    const status = fs.existsSync(STATUS_FILE)
+    let status = fs.existsSync(STATUS_FILE)
       ? JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))
       : { running: false };
+
+    // Guard against a stale "running" flag left behind by an interrupted run
+    // (server restart / redeploy / crash). Without this, the recorded PID is
+    // dead but the UI keeps every run button disabled forever. POST already
+    // does this liveness check; GET must too so the buttons recover on reload.
+    if (status.running && status.pid) {
+      let alive = false;
+      try { process.kill(status.pid, 0); alive = true; } catch { alive = false; }
+      if (!alive) {
+        status = { ...status, running: false, exitCode: status.exitCode ?? -1, stale: true };
+        try { fs.writeFileSync(STATUS_FILE, JSON.stringify(status)); } catch { /* read-only fs in prod */ }
+      }
+    }
 
     const log = fs.existsSync(LOG_FILE)
       ? fs.readFileSync(LOG_FILE, 'utf8')

@@ -50,7 +50,10 @@ class Config:
         "treasury_10y":     "DGS10",
         "treasury_2y":      "DGS2",
         "fed_funds":        "FEDFUNDS",
-        "credit_spread":    "BAMLH0A0HYM2",
+        # Baa corporate bond yield minus 10Y Treasury. Daily, full history from
+        # 1986. Replaces ICE BofA HY OAS (BAMLH0A0HYM2), which FRED now truncates
+        # to only ~3 recent years due to ICE historical-data licensing.
+        "credit_spread":    "BAA10Y",
         "industrial_prod":  "INDPRO",
     })
 
@@ -109,7 +112,7 @@ class Config:
         """Backdate start_date so the model has enough training data and
         predictions begin AT start_date.  Accounts for min_train_months,
         forecast horizon, macro lag, feature-engineering lookback, and
-        late-starting FRED series (credit spread starts Jan 1997)."""
+        late-starting FRED series (credit spread BAA10Y starts Jan 1986)."""
         import pandas as pd
         dt = pd.Timestamp(self.start_date)
         # 12 = YoY inflation lookback, 3 = credit_spread diff(3),

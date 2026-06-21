@@ -1165,21 +1165,46 @@ export default function MacroRegimePage() {
               {[
                 { cmd: 'predict', icon: Zap, label: 'Predict', desc: 'Quick signal from latest backtest' },
                 { cmd: 'fast', icon: RefreshCw, label: 'Fast Run', desc: 'Lightweight backtest' },
-                { cmd: 'run', icon: Play, label: 'Full Run', desc: 'Complete backtest run' },
+                { cmd: 'run', icon: Play, label: 'Full Run', desc: 'Complete backtest run', primary: true },
                 { cmd: 'validate', icon: Shield, label: 'Validate', desc: 'Model validation checks' },
-              ].map(({ cmd, icon: I, label, desc }) => (
-                <button key={cmd} onClick={() => handleRun(cmd)} disabled={runStatus.running}
-                  className="group flex flex-col items-start rounded-xl bg-white ring-1 ring-gray-100 p-4 text-left hover:ring-gray-300 hover:shadow-sm disabled:opacity-30 transition-all">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <div className="h-6 w-6 flex items-center justify-center rounded-md bg-gray-50 ring-1 ring-gray-200 group-hover:bg-gray-900 group-hover:text-white group-hover:ring-gray-900 transition-all">
-                      <I size={11} />
+              ].map(({ cmd, icon: I, label, desc, primary }) => {
+                const active = runStatus.running && runStatus.command === cmd;
+                return (
+                  <button key={cmd} onClick={() => handleRun(cmd)} disabled={runStatus.running}
+                    className={`group flex flex-col items-start rounded-xl p-4 text-left transition-all disabled:cursor-not-allowed disabled:opacity-40 ${
+                      primary
+                        ? 'bg-gray-900 text-white ring-1 ring-gray-900 hover:bg-black hover:shadow-md'
+                        : 'bg-white ring-1 ring-gray-200 text-gray-900 hover:ring-gray-400 hover:shadow-sm'
+                    }`}>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <div className={`h-6 w-6 flex items-center justify-center rounded-md transition-all ${
+                        primary ? 'bg-white/15 text-white' : 'bg-gray-50 ring-1 ring-gray-200 group-hover:bg-gray-900 group-hover:text-white group-hover:ring-gray-900'
+                      }`}>
+                        {active ? <Loader2 size={11} className="animate-spin" /> : <I size={11} />}
+                      </div>
+                      <span className="text-[12px] font-semibold">{label}</span>
                     </div>
-                    <span className="text-[12px] font-semibold text-gray-900">{label}</span>
-                  </div>
-                  <span className="text-[10px] text-gray-400 leading-relaxed">{desc}</span>
-                </button>
-              ))}
+                    <span className={`text-[10px] leading-relaxed ${primary ? 'text-gray-300' : 'text-gray-400'}`}>{desc}</span>
+                  </button>
+                );
+              })}
             </div>
+
+            {/* Inline run status — makes it obvious a run is in flight or just finished */}
+            {runStatus.running ? (
+              <div className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2.5 text-[11px] font-medium text-amber-700">
+                <Loader2 size={12} className="animate-spin" />
+                Running <span className="font-semibold">{runStatus.command}</span>… this can take a minute. Output appears below.
+              </div>
+            ) : runStatus.exitCode != null && (
+              <div className={`flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-[11px] font-medium border ${
+                runStatus.exitCode === 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-600'
+              }`}>
+                {runStatus.exitCode === 0
+                  ? <><Check size={12} /> Last run (<span className="font-semibold">{runStatus.command}</span>) completed.</>
+                  : <><Shield size={12} /> Last run (<span className="font-semibold">{runStatus.command}</span>) failed (exit {runStatus.exitCode}). Check the output log below.</>}
+              </div>
+            )}
 
             {/* Log output */}
             <div>
