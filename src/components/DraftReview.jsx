@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft } from 'lucide-react';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2 } from 'lucide-react';
 import Card from '@/components/Card';
 import RichTextArea from '@/components/RichTextArea';
 
@@ -323,7 +323,7 @@ function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed
   );
 }
 
-export default function DraftReview({ ticker, paper, threads, onPaperChange, onThreadsChange }) {
+export default function DraftReview({ ticker, paper, threads, author, reviewer, onPaperChange, onThreadsChange, onAuthorChange, onReviewerChange, onNotify }) {
   // null = both panels open; 'paper' = paper collapsed (review fills the row);
   // 'review' = review collapsed (paper fills the row). Collapse is an lg-only
   // affordance — on mobile both panels always stack full-width.
@@ -362,6 +362,65 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
 
   const openCount = threads.filter(t => !t.resolved).length;
   const resolvedCount = threads.length - openCount;
+
+  const [showConfig, setShowConfig] = useState(false);
+  const [notifying, setNotifying] = useState(false);
+  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const notifyRef = useRef(null);
+  const safeAuthor = author || { name: '', email: '' };
+  const safeReviewer = reviewer || { name: '', email: '' };
+
+  // Unresolved comments waiting on a response: a comment waits on whoever should
+  // speak next (opposite of the last message's role). Empty comments (no replies
+  // yet) aren't included — there's nothing to respond to.
+  const pendingList = useMemo(() => {
+    const list = [];
+    for (const t of threads) {
+      if (t.resolved) continue;
+      const msgs = t.messages || [];
+      if (!msgs.length) continue;
+      const last = msgs[msgs.length - 1].role;
+      list.push({ id: t.id, title: t.title, role: last === 'reviewer' ? 'author' : 'reviewer' });
+    }
+    return list;
+  }, [threads]);
+  const pendingTotal = pendingList.length;
+
+  // Open the menu with every pending comment pre-checked; closing/opening resets.
+  const toggleNotifyMenu = () => {
+    if (notifyOpen) { setNotifyOpen(false); return; }
+    setSelectedIds(new Set(pendingList.map(p => p.id)));
+    setNotifyOpen(true);
+  };
+
+  const toggleSelected = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const allSelected = pendingTotal > 0 && pendingList.every(p => selectedIds.has(p.id));
+  const toggleAllSelected = () => setSelectedIds(allSelected ? new Set() : new Set(pendingList.map(p => p.id)));
+
+  // Close the menu on an outside click.
+  useEffect(() => {
+    if (!notifyOpen) return;
+    const onDown = (e) => { if (notifyRef.current && !notifyRef.current.contains(e.target)) setNotifyOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [notifyOpen]);
+
+  const handleSend = async () => {
+    if (!onNotify || notifying || selectedIds.size === 0) return;
+    setNotifying(true);
+    try {
+      await onNotify([...selectedIds]);
+      setNotifyOpen(false);
+    } finally {
+      setNotifying(false);
+    }
+  };
 
   // Display order only (stored order is untouched): resolved threads sink to the
   // bottom, with relative order preserved within each group (Array.sort is stable).
@@ -485,13 +544,99 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-1 shrink-0">
+            <div className="flex items-center gap-0.5 shrink-0">
               <button
                 onClick={addThread}
-                className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 px-3 py-1.5 rounded-lg hover:bg-emerald-50 transition-colors"
+                className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 transition-colors"
               >
                 <Plus size={13} />
                 Add point
+              </button>
+              <div className="w-px h-5 bg-gray-200 mx-1" />
+              <div ref={notifyRef} className="relative">
+                <button
+                  onClick={toggleNotifyMenu}
+                  title={pendingTotal === 0 ? 'No comments are awaiting a response' : `Choose who to email (${pendingTotal} awaiting)`}
+                  className={`relative flex items-center p-1.5 rounded-lg transition-colors ${notifyOpen ? 'bg-blue-50 text-blue-600' : pendingTotal > 0 ? 'text-blue-600 hover:bg-blue-50' : 'text-gray-300 hover:bg-gray-50'}`}
+                >
+                  {notifying ? <Loader2 size={15} className="animate-spin" /> : <Bell size={15} />}
+                  {pendingTotal > 0 && !notifying && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center tabular-nums">
+                      {pendingTotal}
+                    </span>
+                  )}
+                </button>
+                {notifyOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 z-30 w-72 rounded-xl border border-gray-200 bg-white shadow-xl p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wide">Notify</span>
+                      {pendingTotal > 0 && (
+                        <span className="text-[10px] text-gray-400 tabular-nums">{selectedIds.size} of {pendingTotal} selected</span>
+                      )}
+                    </div>
+                    {pendingTotal === 0 ? (
+                      <p className="text-[12px] text-gray-400 py-2">No comments are awaiting a response.</p>
+                    ) : (
+                      <>
+                        <div className="max-h-64 overflow-y-auto -mx-1 px-1 space-y-3">
+                          {['reviewer', 'author'].map(role => {
+                            const items = pendingList.filter(p => p.role === role);
+                            if (!items.length) return null;
+                            const meta = ROLE_META[role];
+                            const person = role === 'reviewer' ? safeReviewer : safeAuthor;
+                            return (
+                              <div key={role}>
+                                <div className="flex items-center gap-1.5 mb-1 px-1">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
+                                  <span className={`text-[11px] font-semibold ${meta.text}`}>{meta.label}</span>
+                                  <span className={`text-[10px] truncate ${person.email ? 'text-gray-400' : 'text-amber-500'}`}>
+                                    {person.email || 'no email set'}
+                                  </span>
+                                </div>
+                                <div className="space-y-0.5">
+                                  {items.map(item => (
+                                    <label key={item.id} className="flex items-start gap-2 px-2 py-1 rounded-lg hover:bg-gray-50 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedIds.has(item.id)}
+                                        onChange={() => toggleSelected(item.id)}
+                                        className="mt-0.5 accent-blue-600"
+                                      />
+                                      <span className="text-[12px] text-gray-700 leading-snug">{item.title?.trim() || 'Untitled comment'}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex items-center justify-between gap-2 mt-2.5 pt-2.5 border-t border-gray-100">
+                          <button
+                            onClick={toggleAllSelected}
+                            className="text-[11px] font-semibold text-gray-400 hover:text-gray-600 transition-colors"
+                          >
+                            {allSelected ? 'Clear all' : 'Select all'}
+                          </button>
+                          <button
+                            onClick={handleSend}
+                            disabled={selectedIds.size === 0 || notifying}
+                            className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          >
+                            {notifying ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />}
+                            Send{selectedIds.size > 0 ? ` ${selectedIds.size}` : ''}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => setShowConfig(v => !v)}
+                title="Set author & reviewer emails"
+                className={`flex items-center p-1.5 rounded-lg transition-colors ${showConfig ? 'text-emerald-600 bg-emerald-50' : 'text-gray-300 hover:text-gray-600 hover:bg-gray-50'}`}
+              >
+                <Users size={15} />
               </button>
               <button
                 onClick={() => setCollapsed('review')}
@@ -502,6 +647,41 @@ export default function DraftReview({ ticker, paper, threads, onPaperChange, onT
               </button>
             </div>
           </div>
+
+          {showConfig && (
+            <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3.5 space-y-3">
+              <p className="text-[11px] text-gray-400">
+                Who&apos;s on this review? &ldquo;Notify&rdquo; emails whoever needs to respond — the
+                Author when it&apos;s their turn, the Reviewer when it&apos;s theirs.
+              </p>
+              {[
+                { role: 'reviewer', person: safeReviewer, onChange: onReviewerChange, dot: ROLE_META.reviewer },
+                { role: 'author', person: safeAuthor, onChange: onAuthorChange, dot: ROLE_META.author },
+              ].map(({ role, person, onChange, dot }) => (
+                <div key={role} className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <span className={`flex items-center gap-1.5 text-[11px] font-semibold w-20 shrink-0 ${dot.text}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${dot.dot}`} />
+                    {dot.label}
+                  </span>
+                  <input
+                    value={person.name}
+                    onChange={(e) => onChange?.({ ...person, name: e.target.value })}
+                    onBlur={(e) => onChange?.({ ...person, name: e.target.value }, true)}
+                    placeholder="Name"
+                    className="flex-1 min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
+                  />
+                  <input
+                    type="email"
+                    value={person.email}
+                    onChange={(e) => onChange?.({ ...person, email: e.target.value })}
+                    onBlur={(e) => onChange?.({ ...person, email: e.target.value }, true)}
+                    placeholder="email@example.com"
+                    className="flex-[1.4] min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
 
           {threads.length > 0 && (
             <div className="flex justify-end">

@@ -138,6 +138,10 @@ function normalizeThread(thread) {
   };
 }
 
+function normalizePerson(person) {
+  return { name: person?.name || '', email: person?.email || '' };
+}
+
 function buildDraftReview(thesis) {
   const draftReview = thesis?.underwriting?.draftReview || {};
   const paper = draftReview.paper;
@@ -146,6 +150,8 @@ function buildDraftReview(thesis) {
       ? paper
       : (typeof paper === 'string' && paper.trim() ? [{ type: 'text', value: paper }] : []),
     threads: (draftReview.threads || []).map(normalizeThread),
+    author: normalizePerson(draftReview.author),
+    reviewer: normalizePerson(draftReview.reviewer),
   };
 }
 
@@ -791,6 +797,44 @@ export default function ResearchPage() {
     if (persist) saveThesis(updated);
   }, [saveThesis, thesis]);
 
+  const notifyReview = useCallback(async (threadIds) => {
+    const dr = buildDraftReview(thesis);
+    const res = await fetch('/api/notify-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticker: selectedTicker,
+        author: dr.author,
+        reviewer: dr.reviewer,
+        threads: dr.threads,
+        threadIds: Array.isArray(threadIds) ? threadIds : undefined,
+      }),
+    });
+    const result = await res.json();
+    if (!res.ok) {
+      setToast({ message: result.error || 'Failed to send notifications', type: 'error' });
+      return;
+    }
+    if (result.message) {
+      setToast({ message: result.message, type: 'info' });
+      return;
+    }
+    const sentMsg = (result.sent || [])
+      .map(s => `${s.role === 'author' ? 'Author' : 'Reviewer'} (${s.count})`)
+      .join(', ');
+    if (result.skipped?.length) {
+      const skipMsg = result.skipped
+        .map(s => `${s.role === 'author' ? 'Author' : 'Reviewer'}: ${s.reason}`)
+        .join('; ');
+      setToast({
+        message: sentMsg ? `Notified ${sentMsg}. Skipped — ${skipMsg}` : `Skipped — ${skipMsg}`,
+        type: sentMsg ? 'success' : 'error',
+      });
+    } else {
+      setToast({ message: `Notified ${sentMsg}`, type: 'success' });
+    }
+  }, [thesis, selectedTicker]);
+
   const addNewsUpdate = () => {
     setThesis(prev => ({
       ...prev,
@@ -1410,8 +1454,13 @@ export default function ResearchPage() {
               ticker={selectedTicker}
               paper={draftReview.paper}
               threads={draftReview.threads}
+              author={draftReview.author}
+              reviewer={draftReview.reviewer}
               onPaperChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, paper: value }), persist)}
               onThreadsChange={(threads, persist = false) => updateDraftReview(dr => ({ ...dr, threads }), persist)}
+              onAuthorChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, author: value }), persist)}
+              onReviewerChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, reviewer: value }), persist)}
+              onNotify={notifyReview}
             />
           ) : (
             <div className="space-y-8" onBlur={() => saveThesis()}>
