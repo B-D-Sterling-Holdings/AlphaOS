@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { useCache } from '@/lib/CacheContext';
 import { formatMoneyPrecise, formatPct, formatLargeNumber } from '@/lib/formatters';
-import { Plus, X, ArrowRight, ArrowLeft, Eye, FlaskConical, TrendingUp, TrendingDown, Square, CheckSquare, ChevronDown, Pencil, Trash2, Check, List, ClipboardList, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Plus, X, ArrowRight, ArrowLeft, Eye, FlaskConical, TrendingUp, TrendingDown, Square, CheckSquare, ChevronDown, Pencil, Trash2, Check, List, ClipboardList, ChevronRight, ChevronLeft, Sparkles, RefreshCw, Loader2, AlertCircle } from 'lucide-react';
 import { Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -641,6 +641,180 @@ function DislocationChecklist({ items, onUpdate }) {
   );
 }
 
+/* ── AI Perspective (DHQ triage) ──────────────────────────────── */
+const DHQ_FIT_STYLES = {
+  GREEN: { dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', label: 'DHQ FIT' },
+  AMBER: { dot: 'bg-amber-500', chip: 'bg-amber-50 text-amber-700 border-amber-200', label: 'MIXED' },
+  RED:   { dot: 'bg-red-500', chip: 'bg-red-50 text-red-700 border-red-200', label: 'FAILS DHQ' },
+};
+
+const VERDICT_STYLES = {
+  PASS:           'bg-emerald-100 text-emerald-700',
+  TEMPORARY:      'bg-emerald-100 text-emerald-700',
+  SOFT_FAIL:      'bg-amber-100 text-amber-700',
+  HARD_FAIL:      'bg-red-100 text-red-700',
+  STRUCTURAL:     'bg-red-100 text-red-700',
+  NO_DISLOCATION: 'bg-gray-100 text-gray-600',
+  NONE:           'bg-gray-100 text-gray-600',
+  UNCLEAR:        'bg-gray-100 text-gray-500',
+};
+
+function verdictStyle(v) {
+  return VERDICT_STYLES[String(v || '').toUpperCase()] || 'bg-gray-100 text-gray-500';
+}
+
+function DHQChip({ fit }) {
+  const s = DHQ_FIT_STYLES[String(fit || '').toUpperCase()];
+  if (!s) return null;
+  return (
+    <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide border px-2 py-0.5 rounded-full ${s.chip}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+      {s.label}
+    </span>
+  );
+}
+
+function Gate({ title, verdict, headline, factors }) {
+  return (
+    <div className="bg-gray-50/70 border border-gray-200 rounded-xl p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{title}</span>
+        <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${verdictStyle(verdict)}`}>
+          {String(verdict || 'UNCLEAR').replace(/_/g, ' ')}
+        </span>
+      </div>
+      {headline && <p className="mt-1.5 text-xs font-medium text-gray-700">{headline}</p>}
+      {Array.isArray(factors) && factors.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5">
+          {factors.map((f, i) => (
+            <li key={i} className="text-[11px] text-gray-500 flex gap-1.5">
+              <span className="text-gray-300 mt-0.5">•</span>
+              <span>{f}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function AIPerspectivePanel({ stock, onGenerate }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const perspective = stock.aiPerspective;
+
+  const run = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      await onGenerate(stock.ticker);
+    } catch (e) {
+      setError(e?.message || 'Could not generate AI perspective.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generatedAt = perspective?.generatedAt
+    ? new Date(perspective.generatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : null;
+
+  return (
+    <div className="mt-4 border-t border-gray-100 pt-4">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-semibold text-violet-600 uppercase tracking-wide flex items-center gap-1.5">
+          <Sparkles size={12} />
+          AI Perspective
+        </label>
+        {perspective ? (
+          <button
+            onClick={run}
+            disabled={loading}
+            className="flex items-center gap-1 text-[11px] font-semibold text-violet-500 hover:text-violet-700 disabled:opacity-50 transition-colors"
+            title="Regenerate"
+          >
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={11} />}
+            {loading ? 'Analyzing…' : 'Refresh'}
+          </button>
+        ) : null}
+      </div>
+
+      {!perspective && !loading && (
+        <button
+          onClick={run}
+          className="mt-2 w-full flex items-center justify-center gap-2 text-xs font-semibold text-violet-600 bg-violet-50 hover:bg-violet-100 border border-violet-200/60 rounded-lg px-3 py-2 transition-colors"
+        >
+          <Sparkles size={13} />
+          Get a DHQ read on {stock.ticker}
+        </button>
+      )}
+
+      {loading && !perspective && (
+        <div className="mt-2 flex items-center gap-2 text-xs text-gray-400 bg-gray-50 border border-gray-200 rounded-lg px-3 py-3">
+          <Loader2 size={14} className="animate-spin text-violet-500" />
+          Running quality &amp; dislocation gates…
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-2 flex items-start gap-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {perspective && (
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <DHQChip fit={perspective.dhq_fit} />
+            {generatedAt && (
+              <span className="text-[10px] text-gray-400">
+                {generatedAt}{perspective.model ? ` · ${perspective.model}` : ''}
+              </span>
+            )}
+          </div>
+          {perspective.variant_view && (
+            <div className="bg-violet-50/70 border border-violet-200/70 rounded-xl p-3">
+              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-violet-600">
+                <Sparkles size={11} />
+                Variant View
+              </div>
+              <p className="mt-1 text-xs text-gray-700 leading-relaxed">{perspective.variant_view}</p>
+            </div>
+          )}
+          {perspective.key_question && (
+            <div className="flex items-start gap-2 bg-blue-50/60 border border-blue-200/60 rounded-xl p-3">
+              <AlertCircle size={14} className="flex-shrink-0 mt-0.5 text-blue-500" />
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Check Next</span>
+                <p className="mt-0.5 text-xs text-gray-700 leading-relaxed">{perspective.key_question}</p>
+              </div>
+            </div>
+          )}
+          {perspective.summary && (
+            <p className="text-xs text-gray-600 leading-relaxed">{perspective.summary}</p>
+          )}
+          <Gate
+            title="Quality"
+            verdict={perspective.quality?.verdict}
+            headline={perspective.quality?.headline}
+            factors={perspective.quality?.deciding_factors}
+          />
+          <Gate
+            title="Dislocation"
+            verdict={perspective.dislocation?.verdict}
+            headline={perspective.dislocation?.headline}
+            factors={perspective.dislocation?.deciding_factors}
+          />
+          <p className="text-[10px] text-gray-400 italic">
+            First-pass triage, not underwriting. Verify before acting.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Stock Card ───────────────────────────────────────────────── */
 function StockCard({
   stock,
@@ -650,6 +824,7 @@ function StockCard({
   onMoveOrder,
   onUpdateNote,
   onUpdateResearch,
+  onGeneratePerspective,
   onSyncNoteRows,
   canMoveLeft = false,
   canMoveRight = false,
@@ -703,6 +878,7 @@ function StockCard({
                 IN RESEARCH
               </span>
             )}
+            {stock.aiPerspective?.dhq_fit && <DHQChip fit={stock.aiPerspective.dhq_fit} />}
           </div>
           {quote?.price && (
             <div className="flex items-center gap-2 mt-0.5">
@@ -785,6 +961,9 @@ function StockCard({
           onBlur={(e) => onUpdateNote(stock.ticker, e.target.value)}
         />
       </div>
+
+      {/* AI Perspective — DHQ triage */}
+      <AIPerspectivePanel stock={stock} onGenerate={onGeneratePerspective} />
 
       {/* Researching sections */}
       {isResearching && (
@@ -1328,6 +1507,47 @@ export default function WatchlistPage() {
     ));
   };
 
+  const generatePerspective = useCallback(async (ticker) => {
+    const stock = stocks.find(s => s.ticker === ticker);
+    // Hand the model the analyst's actual work — boxes + open questions — so it
+    // reacts to a real thesis instead of guessing from price alone.
+    const flattenQuestions = (items) =>
+      normalizeQuestionItems(items)
+        .map(q => ({
+          question: q.text,
+          answer: q.answer || '',
+          subQuestions: (q.subQuestions || []).map(sq => sq.text).filter(Boolean),
+        }))
+        .filter(q => q.question);
+    const analystResearch = {
+      fundamentals: stock?.fundamentals || {},
+      dueDiligence: flattenQuestions(stock?.dueDiligenceItems),
+      dislocationQuestions: flattenQuestions(stock?.dislocationItems),
+    };
+    const res = await fetch('/api/watchlist/ai-perspective', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticker,
+        quote: quotes[ticker] || {},
+        note: stock?.note || '',
+        analystResearch,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'Could not generate AI perspective.');
+    }
+    const aiPerspective = {
+      ...data.perspective,
+      model: data.model,
+      generatedAt: data.generatedAt,
+    };
+    await saveStocks(stocks.map(s =>
+      s.ticker === ticker ? { ...s, aiPerspective } : s
+    ));
+  }, [stocks, quotes, saveStocks]);
+
   const watching = stocks.filter(s => s.stage === 'watching');
   const researching = stocks.filter(s => s.stage === 'researching');
   const research = stocks.filter(s => s.stage === 'research');
@@ -1521,6 +1741,7 @@ export default function WatchlistPage() {
                     onMoveOrder={moveStockOrder}
                     onUpdateNote={updateNote}
                     onUpdateResearch={updateResearch}
+                    onGeneratePerspective={generatePerspective}
                     onSyncNoteRows={syncNoteRows}
                     canMoveLeft={index > 0}
                     canMoveRight={index < watching.length - 1}
@@ -1551,6 +1772,7 @@ export default function WatchlistPage() {
                     onMoveOrder={moveStockOrder}
                     onUpdateNote={updateNote}
                     onUpdateResearch={updateResearch}
+                    onGeneratePerspective={generatePerspective}
                     onSyncNoteRows={syncNoteRows}
                     canMoveLeft={index > 0}
                     canMoveRight={index < researching.length - 1}
@@ -1580,6 +1802,7 @@ export default function WatchlistPage() {
                     onMoveOrder={moveStockOrder}
                     onUpdateNote={updateNote}
                     onUpdateResearch={updateResearch}
+                    onGeneratePerspective={generatePerspective}
                     onSyncNoteRows={syncNoteRows}
                     canMoveLeft={index > 0}
                     canMoveRight={index < research.length - 1}

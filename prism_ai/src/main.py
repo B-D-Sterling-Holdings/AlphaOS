@@ -261,6 +261,75 @@ def thesis_fundamentals_command(args):
         emit({"error": str(e)})
 
 
+def watchlist_perspective_command(args):
+    """Fast DHQ triage on a freshly-added watchlist name.
+
+    Reads a JSON payload from stdin ({"ticker", "quote", "fundamentals",
+    "priceChanges", "note"}) assembled by the /api/watchlist/ai-perspective
+    route, runs it through the investment philosophy + watchlist_perspective
+    triage prompt, and emits a compact two-gate verdict (quality + dislocation)
+    plus an overall DHQ-fit, wrapped in sentinels for the calling route.
+    """
+    import logging as _logging
+
+    from .llm_engine import GeminiClient, PromptLoader
+
+    _logging.basicConfig(level=_logging.INFO, stream=sys.stderr, force=True)
+
+    _, config_dir, _ = get_default_paths()
+    if args.config_dir:
+        config_dir = Path(args.config_dir)
+
+    def emit(payload: dict):
+        print("===PRISM_PERSPECTIVE_BEGIN===")
+        print(json.dumps(payload))
+        print("===PRISM_PERSPECTIVE_END===")
+
+    try:
+        raw_in = sys.stdin.read()
+        payload = json.loads(raw_in) if raw_in.strip() else {}
+        ticker = (payload.get("ticker") or (args.ticker or "")).upper()
+        if not ticker:
+            emit({"error": "No ticker provided."})
+            return
+
+        prompt_loader = PromptLoader(config_dir / "prompts")
+        philosophy = prompt_loader.load_prompt("investment_philosophy")
+        triage = prompt_loader.load_prompt("watchlist_perspective")
+
+        resolved_model = args.model or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash"
+        llm = GeminiClient(model=resolved_model, temperature=0.2)
+
+        context = {
+            "ticker": ticker,
+            "quote": payload.get("quote") or {},
+            "valuation": payload.get("fundamentals") or {},
+            "priceChanges": payload.get("priceChanges") or {},
+            "analystNote": payload.get("note") or "",
+            "analystResearch": payload.get("analystResearch") or {},
+        }
+        full_prompt = (
+            philosophy
+            + "\n\n---\n\n"
+            + triage
+            + "\n\n---\n\n## Triage Payload\n\n"
+            + json.dumps(context, indent=2)
+            + "\n\n---\n\nReturn only the JSON object defined in Watchlist Triage Mode."
+        )
+        raw = llm.generate(full_prompt, response_mime_type="application/json")
+
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            cleaned = raw.strip()
+            cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+            result = json.loads(cleaned)
+
+        emit({"ticker": ticker, "model": resolved_model, "perspective": result})
+    except Exception as e:
+        emit({"error": str(e)})
+
+
 def batch_command(args):
     """Generate batch report for multiple tickers."""
     data_dir, config_dir, output_dir = get_default_paths()
@@ -416,6 +485,19 @@ def main():
                                help="Gemini model to use (or set GEMINI_MODEL)")
     thesis_parser.add_argument("--config-dir", help="Config directory path")
     thesis_parser.set_defaults(func=thesis_fundamentals_command)
+
+    # Watchlist perspective command (fast DHQ triage; reads JSON on stdin)
+    perspective_parser = subparsers.add_parser(
+        "watchlist-perspective",
+        help="Fast DHQ triage on a watchlist name (reads JSON on stdin)",
+    )
+    perspective_parser.add_argument("--ticker", "-t",
+                                    help="Ticker symbol (optional; the stdin payload takes precedence)")
+    perspective_parser.add_argument("--model", "-m",
+                                    default=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+                                    help="Gemini model to use (or set GEMINI_MODEL)")
+    perspective_parser.add_argument("--config-dir", help="Config directory path")
+    perspective_parser.set_defaults(func=watchlist_perspective_command)
 
     # Batch command
     batch_parser = subparsers.add_parser("batch-report", help="Generate batch report")
