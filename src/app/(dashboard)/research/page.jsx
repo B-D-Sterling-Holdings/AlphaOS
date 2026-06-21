@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, Image as ImageIcon, X, ZoomIn, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ChevronDown, Star, Sparkles } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
@@ -563,6 +564,9 @@ function QuestionSection({
 export default function ResearchPage() {
   const cache = useCache();
   const { isDemo } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const appliedTickerParam = useRef(null);
   const [allData, setAllData] = useState(() => cache.get('deep_research_watchlist') || null);
   const [selectedTicker, setSelectedTicker] = useState(() => cache.get('deep_research_selectedTicker') || '');
   const [tickerData, setTickerData] = useState(() => cache.get('deep_research_tickerData') || null);
@@ -673,6 +677,20 @@ export default function ResearchPage() {
       cache.set('deep_research_selectedTicker', nextTicker);
     }
   }, [cache, researchStocks, selectedTicker]);
+
+  // Deep-link support: /research?ticker=XYZ (e.g. from the command palette).
+  // Select the requested ticker if it exists as a research-stage stock, then
+  // strip the query param so it doesn't override later manual selections.
+  useEffect(() => {
+    const requested = searchParams.get('ticker')?.toUpperCase();
+    if (!requested || appliedTickerParam.current === requested) return;
+    if (researchStocks.some(stock => stock.ticker === requested)) {
+      appliedTickerParam.current = requested;
+      setSelectedTicker(requested);
+      cache.set('deep_research_selectedTicker', requested);
+      router.replace('/research');
+    }
+  }, [searchParams, researchStocks, cache, router]);
 
   useEffect(() => {
     if (!selectedTicker) return;

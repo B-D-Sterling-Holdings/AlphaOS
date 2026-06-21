@@ -251,6 +251,17 @@ export default function ResearchPage() {
       .catch(() => setLoading(false));
   }, []);
 
+  // Honor /position-review?ticker=XYZ (e.g. from the command palette) even when
+  // the page is already mounted — select it if it's an existing holding.
+  useEffect(() => {
+    if (!urlTicker) return;
+    const t = urlTicker.toUpperCase();
+    if (t !== selectedTicker && (portfolio?.holdings || []).some(h => h.ticker === t)) {
+      setSelectedTicker(t);
+      cache.set('research_selectedTicker', t);
+    }
+  }, [urlTicker, portfolio]);
+
   const loadTickerData = useCallback(async (ticker) => {
     if (!ticker) return;
     // Use cache if available for this ticker
