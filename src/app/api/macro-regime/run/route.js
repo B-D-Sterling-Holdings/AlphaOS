@@ -233,6 +233,49 @@ export async function POST(req) {
       return NextResponse.json({ error: `Invalid command: ${command}` }, { status: 400 });
     }
 
+    // Vercel's serverless runtime can't spawn the Python pipeline (no make/uv/
+    // python, read-only FS, short timeouts — hence `make: command not found` /
+    // exit 127). Instead, trigger the GitHub Actions workflow that runs it on a
+    // real runner and syncs results back to Supabase. `predict` only reads
+    // Supabase, so it works here and never reaches this branch.
+    if (command !== 'predict' && (process.env.VERCEL || process.env.MACRO_RUN_DISABLED === '1')) {
+      const dispatchable = ['run', 'fast', 'validate'];
+      const token = process.env.GH_DISPATCH_TOKEN;
+      const repo = process.env.GH_DISPATCH_REPO; // "owner/repo"
+      if (token && repo && dispatchable.includes(command)) {
+        const workflow = process.env.GH_DISPATCH_WORKFLOW || 'macro-regime.yml';
+        const ref = process.env.GH_DISPATCH_REF || 'main';
+        try {
+          const ghRes = await fetch(
+            `https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ ref, inputs: { command } }),
+            },
+          );
+          if (ghRes.status === 204) {
+            return NextResponse.json({ status: 'dispatched', command, via: 'github-actions' });
+          }
+          const detail = await ghRes.text();
+          return NextResponse.json(
+            { error: `GitHub Actions dispatch failed (${ghRes.status}): ${detail.slice(0, 300)}` },
+            { status: 502 },
+          );
+        } catch (e) {
+          return NextResponse.json({ error: `GitHub Actions dispatch error: ${e.message}` }, { status: 502 });
+        }
+      }
+      return NextResponse.json({
+        error: 'Model runs can’t execute on this deployment (no Python runtime). Set GH_DISPATCH_TOKEN + GH_DISPATCH_REPO to trigger the GitHub Actions backtest, or run locally — results sync to Supabase and appear here. "Predict" works on this deployment.',
+      }, { status: 501 });
+    }
+
     // Check if already running
     if (fs.existsSync(STATUS_FILE)) {
       try {

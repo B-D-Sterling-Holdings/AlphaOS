@@ -542,6 +542,12 @@ export default function MacroRegimePage() {
     try {
       const d = await fetch('/api/macro-regime/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: cmd }) }).then(r => r.json());
       if (d.error) { setToast({ message: d.error, type: 'error' }); return; }
+      // On Vercel the run is handed off to GitHub Actions — there's no local
+      // process to poll, so just confirm it was triggered.
+      if (d.status === 'dispatched') {
+        setToast({ message: `Run triggered on GitHub Actions (${cmd}). Results sync to Supabase and appear here in a few minutes.`, type: 'success' });
+        return;
+      }
       setRunStatus({ running: true, command: cmd }); setRunLog(''); setShowLog(true);
     } catch (e) { setToast({ message: e.message, type: 'error' }); }
   };

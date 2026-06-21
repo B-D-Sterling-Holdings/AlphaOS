@@ -1,0 +1,94 @@
+name: Macro Regime Backtest
+
+# Runs the macro-regime allocator pipeline on a GitHub runner (it can't run on
+# Vercel's serverless runtime) and syncs results to Supabase, which the deployed
+# app reads. Triggered monthly on a schedule, manually, or via the API from the
+# app's "Run" button (repository_dispatch / workflow_dispatch).
+on:
+  schedule:
+    # 12:00 UTC on the 5th of each month — after the prior month's macro data
+    # (CPI, unemployment) has been published to FRED.
+    - cron: '0 12 5 * *'
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Pipeline command'
+        type: choice
+        options: [run, fast, validate]
+        default: run
+      end_date:
+        description: 'Data end date (YYYY-MM-DD). Blank = today.'
+        type: string
+        default: ''
+
+# Never run two backtests at once (they share the Supabase results table).
+concurrency:
+  group: macro-regime
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv (and Python)
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install Node deps (for Supabase sync)
+        run: npm ci
+
+      - name: Install Python deps
+        working-directory: macro_regime_allocator
+        run: uv sync
+
+      - name: Run pipeline and sync to Supabase
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+
+          # The Makefile sources ../.env.local for FRED_API_KEY.
+          echo "FRED_API_KEY=${FRED_API_KEY}" > .env.local
+
+          CMD="${{ github.event.inputs.command }}"
+          [ -z "$CMD" ] && CMD=run
+
+          END_DATE="${{ github.event.inputs.end_date }}"
+          [ -z "$END_DATE" ] && END_DATE="$(date -u +%F)"
+
+          STARTED="$(date -u +%FT%TZ)"
+
+          # Pull the UI's saved config from Supabase, then pin end_date so the
+          # run picks up the latest available month of data.
+          node scripts/macro-sync.mjs pull-config --end-date "$END_DATE"
+
+          mkdir -p macro_regime_allocator/outputs
+
+          # Run the pipeline, capturing output + exit code without aborting.
+          set +e
+          ( cd macro_regime_allocator && make "$CMD" ) 2>&1 | tee macro_regime_allocator/outputs/run.log
+          EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "Pipeline exited with code $EXIT"
+
+          # Push results (and the run record) to Supabase. Propagates failure.
+          node scripts/macro-sync.mjs push-results \
+            --command "$CMD" --exit "$EXIT" --started "$STARTED" \
+            --log macro_regime_allocator/outputs/run.log
+
+          exit "$EXIT"
