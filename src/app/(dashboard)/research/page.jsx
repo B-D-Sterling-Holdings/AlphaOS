@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, Image as ImageIcon, X, ZoomIn, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ChevronDown, Star, Sparkles } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
@@ -138,6 +139,10 @@ function normalizeThread(thread) {
   };
 }
 
+function normalizePerson(person) {
+  return { name: person?.name || '', email: person?.email || '' };
+}
+
 function buildDraftReview(thesis) {
   const draftReview = thesis?.underwriting?.draftReview || {};
   const paper = draftReview.paper;
@@ -146,6 +151,8 @@ function buildDraftReview(thesis) {
       ? paper
       : (typeof paper === 'string' && paper.trim() ? [{ type: 'text', value: paper }] : []),
     threads: (draftReview.threads || []).map(normalizeThread),
+    author: normalizePerson(draftReview.author),
+    reviewer: normalizePerson(draftReview.reviewer),
   };
 }
 
@@ -557,6 +564,9 @@ function QuestionSection({
 export default function ResearchPage() {
   const cache = useCache();
   const { isDemo } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const appliedTickerParam = useRef(null);
   const [allData, setAllData] = useState(() => cache.get('deep_research_watchlist') || null);
   const [selectedTicker, setSelectedTicker] = useState(() => cache.get('deep_research_selectedTicker') || '');
   const [tickerData, setTickerData] = useState(() => cache.get('deep_research_tickerData') || null);
@@ -667,6 +677,20 @@ export default function ResearchPage() {
       cache.set('deep_research_selectedTicker', nextTicker);
     }
   }, [cache, researchStocks, selectedTicker]);
+
+  // Deep-link support: /research?ticker=XYZ (e.g. from the command palette).
+  // Select the requested ticker if it exists as a research-stage stock, then
+  // strip the query param so it doesn't override later manual selections.
+  useEffect(() => {
+    const requested = searchParams.get('ticker')?.toUpperCase();
+    if (!requested || appliedTickerParam.current === requested) return;
+    if (researchStocks.some(stock => stock.ticker === requested)) {
+      appliedTickerParam.current = requested;
+      setSelectedTicker(requested);
+      cache.set('deep_research_selectedTicker', requested);
+      router.replace('/research');
+    }
+  }, [searchParams, researchStocks, cache, router]);
 
   useEffect(() => {
     if (!selectedTicker) return;
@@ -790,6 +814,44 @@ export default function ResearchPage() {
     setThesisDirty(true);
     if (persist) saveThesis(updated);
   }, [saveThesis, thesis]);
+
+  const notifyReview = useCallback(async (threadIds) => {
+    const dr = buildDraftReview(thesis);
+    const res = await fetch('/api/notify-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticker: selectedTicker,
+        author: dr.author,
+        reviewer: dr.reviewer,
+        threads: dr.threads,
+        threadIds: Array.isArray(threadIds) ? threadIds : undefined,
+      }),
+    });
+    const result = await res.json();
+    if (!res.ok) {
+      setToast({ message: result.error || 'Failed to send notifications', type: 'error' });
+      return;
+    }
+    if (result.message) {
+      setToast({ message: result.message, type: 'info' });
+      return;
+    }
+    const sentMsg = (result.sent || [])
+      .map(s => `${s.role === 'author' ? 'Author' : 'Reviewer'} (${s.count})`)
+      .join(', ');
+    if (result.skipped?.length) {
+      const skipMsg = result.skipped
+        .map(s => `${s.role === 'author' ? 'Author' : 'Reviewer'}: ${s.reason}`)
+        .join('; ');
+      setToast({
+        message: sentMsg ? `Notified ${sentMsg}. Skipped — ${skipMsg}` : `Skipped — ${skipMsg}`,
+        type: sentMsg ? 'success' : 'error',
+      });
+    } else {
+      setToast({ message: `Notified ${sentMsg}`, type: 'success' });
+    }
+  }, [thesis, selectedTicker]);
 
   const addNewsUpdate = () => {
     setThesis(prev => ({
@@ -1410,8 +1472,13 @@ export default function ResearchPage() {
               ticker={selectedTicker}
               paper={draftReview.paper}
               threads={draftReview.threads}
+              author={draftReview.author}
+              reviewer={draftReview.reviewer}
               onPaperChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, paper: value }), persist)}
               onThreadsChange={(threads, persist = false) => updateDraftReview(dr => ({ ...dr, threads }), persist)}
+              onAuthorChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, author: value }), persist)}
+              onReviewerChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, reviewer: value }), persist)}
+              onNotify={notifyReview}
             />
           ) : (
             <div className="space-y-8" onBlur={() => saveThesis()}>
