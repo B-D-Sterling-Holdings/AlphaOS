@@ -48,7 +48,7 @@ def analyze_command(args):
 
     # Test API connection
     if not engine.test_api():
-        print("Failed to connect to Ollama. Is it running? Check OLLAMA_BASE_URL.")
+        print("Failed to connect to Gemini. Check GEMINI_API_KEY and network access.")
         sys.exit(1)
 
     # Run analysis

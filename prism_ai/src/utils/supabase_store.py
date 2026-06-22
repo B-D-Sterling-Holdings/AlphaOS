@@ -2,7 +2,7 @@
 
 Lets the Python pipeline store generated ticker data + research documents in
 Supabase and read them back, instead of the local ``data/`` folder. Uses only
-the standard library (urllib), matching the Ollama client's dependency-free style.
+the standard library (urllib) to stay dependency-free.
 
 Credentials are forwarded from AlphaOS via env (the run route merges .env.local):
     NEXT_PUBLIC_SUPABASE_URL   Supabase project URL
