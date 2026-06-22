@@ -14,6 +14,13 @@ export async function proxy(request) {
     return NextResponse.next();
   }
 
+  // Cron endpoints authenticate with their own shared secret (CRON_SECRET), not a
+  // user session — a scheduler has no cookie. Let them through; each route enforces
+  // the secret itself and fails closed (see src/app/api/cron/auto-notify/route.js).
+  if (pathname.startsWith('/api/cron/')) {
+    return NextResponse.next();
+  }
+
   // Check Authorization header first, then fall back to cookie
   const authHeader = request.headers.get('Authorization');
   let token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;

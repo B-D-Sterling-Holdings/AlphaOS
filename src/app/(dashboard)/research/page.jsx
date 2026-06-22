@@ -14,6 +14,7 @@ import ValuationModel from '@/components/ValuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import DraftReview from '@/components/DraftReview';
 import { useAuth } from '@/lib/AuthContext';
+import { normalizeAutoNotify } from '@/lib/autoNotify';
 
 const FUNDAMENTALS_BOXES = [
   { key: 'revenueGrowth', label: 'Revenue and Growth', color: 'blue', placeholder: 'Revenue CAGR, segment growth, unit economics, pricing, and demand drivers...' },
@@ -153,6 +154,7 @@ function buildDraftReview(thesis) {
     threads: (draftReview.threads || []).map(normalizeThread),
     author: normalizePerson(draftReview.author),
     reviewer: normalizePerson(draftReview.reviewer),
+    autoNotify: normalizeAutoNotify(draftReview.autoNotify),
   };
 }
 
@@ -1474,10 +1476,12 @@ export default function ResearchPage() {
               threads={draftReview.threads}
               author={draftReview.author}
               reviewer={draftReview.reviewer}
+              autoNotify={draftReview.autoNotify}
               onPaperChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, paper: value }), persist)}
               onThreadsChange={(threads, persist = false) => updateDraftReview(dr => ({ ...dr, threads }), persist)}
               onAuthorChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, author: value }), persist)}
               onReviewerChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, reviewer: value }), persist)}
+              onAutoNotifyChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, autoNotify: value }), persist)}
               onNotify={notifyReview}
             />
           ) : (
