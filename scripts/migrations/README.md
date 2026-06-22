@@ -37,3 +37,5 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 | `002_drop_prism_runs.sql` | Drop the orphaned `prism_runs` / `demo_prism_runs` tables. |
 | `003_add_updated_at_triggers.sql` | Auto-maintain `updated_at` on every table that has the column. |
 | `004_tighten_storage_policies.sql` | Drop public INSERT/DELETE on storage buckets (keep public read). |
+| `005_multitenancy.sql` | Row-level multitenancy: `tenant_id` on every data table, RLS-enforced. |
+| `006_autonotify_sent.sql` | RPC for the auto-notify cron to write its dedup map without clobbering concurrent thesis edits. |

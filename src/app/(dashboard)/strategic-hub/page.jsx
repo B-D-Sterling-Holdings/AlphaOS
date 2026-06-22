@@ -771,6 +771,14 @@ export default function StrategicHubPage() {
                 </tr>
               ))}
 
+              {displayed.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="py-8 text-center text-sm text-gray-400">
+                    No holdings yet. Add positions on the Holdings page to see them here.
+                  </td>
+                </tr>
+              )}
+
               {/* ── Research Pipeline (candidates) — same table so columns align ── */}
               <tr>
                 <td colSpan={8} className="pt-7 pb-2">

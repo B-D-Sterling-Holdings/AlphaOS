@@ -415,7 +415,9 @@ export default function HoldingsPage() {
     return { ticker: h.ticker, shares: h.shares, costBasis: h.cost_basis, price, value, cost, unrealizedPnl, unrealizedPnlPct, dayChange, dayChangePct, dailyPnl };
   });
 
-  const quotesLoaded = !quotesLoading && Object.keys(quotes).length > 0;
+  // With no holdings there are no quotes to fetch, so treat as "loaded" rather
+  // than showing skeleton loaders forever.
+  const quotesLoaded = !quotesLoading && (holdings.length === 0 || Object.keys(quotes).length > 0);
 
   const nav = positions.reduce((s, p) => s + p.value, 0);
   const totalAum = nav + cashVal;
@@ -537,10 +539,14 @@ export default function HoldingsPage() {
             }
             className="mb-6 animate-fade-in-up stagger-5"
           >
-            {quotesLoaded ? (
-              <Treemap positions={treemapPositions} mode={treemapMode} />
-            ) : (
+            {!quotesLoaded ? (
               <div className="h-64 w-full rounded-2xl skeleton" />
+            ) : treemapPositions.length === 0 ? (
+              <div className="h-64 flex items-center justify-center text-sm text-gray-400">
+                No holdings yet. Add a position to see the heatmap.
+              </div>
+            ) : (
+              <Treemap positions={treemapPositions} mode={treemapMode} />
             )}
           </Card>
 
@@ -1090,7 +1096,11 @@ export default function HoldingsPage() {
             </div>
           ) : !fundamentalsData ? (
             <Card className="text-center py-16">
-              <p className="text-gray-400">No fundamental data available.</p>
+              <p className="text-gray-400">
+                {holdings.length === 0
+                  ? 'No holdings yet. Add a position to see sector exposure.'
+                  : 'No fundamental data available.'}
+              </p>
             </Card>
           ) : (
             <>

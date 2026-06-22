@@ -582,3 +582,31 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+
+-- ============================================================
+-- DRAFT & REVIEW AUTO-NOTIFY (see scripts/migrations/006_autonotify_sent.sql)
+-- The auto-notify cron records what it has emailed in
+-- theses.underwriting->'draftReview'->'autoNotify'->'sent'. This updates ONLY
+-- that nested path so it can't clobber a user's concurrent thesis edit.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.set_draftreview_autonotify_sent(
+  p_tenant uuid,
+  p_ticker text,
+  p_sent   jsonb
+) RETURNS void
+LANGUAGE sql
+AS $$
+  UPDATE public.theses
+  SET underwriting = jsonb_set(
+        COALESCE(underwriting, '{}'::jsonb),
+        '{draftReview,autoNotify,sent}',
+        COALESCE(p_sent, '{}'::jsonb),
+        true
+      ),
+      updated_at = now()
+  WHERE tenant_id = p_tenant
+    AND ticker = p_ticker;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.set_draftreview_autonotify_sent(uuid, text, jsonb) TO service_role;

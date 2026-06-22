@@ -36,24 +36,6 @@ const riskFactorShortLabels = ['Vol', 'Reg', 'Disr', 'Val', 'EQ'];
 
 const defaultRiskFactorWeights = [0.9, 0.3, 0.7, 0.6, 0.8];
 
-const defaultTickers = ['MA', 'AMZN', 'GOOGL', 'UBER', 'ASML', 'HLT', 'BKNG', 'AAAU', 'UNH', 'ADBE', 'META', 'NFLX'];
-
-const defaultFactorExposures = {
-  MA:    [0.20, 0.50, 0.40, 0.30, 0.10],
-  AMZN:  [0.55, 0.10, 0.20, 0.35, 0.25],
-  GOOGL: [0.50, 0.20, 0.40, 0.20, 0.20],
-  UBER:  [0.70, 0.20, 0.60, 0.75, 0.35],
-  ASML:  [0.30, 0.15, 0.10, 0.25, 0.20],
-  HLT:   [0.25, 0.10, 0.30, 0.45, 0.25],
-  BKNG:  [0.25, 0.10, 0.30, 0.35, 0.25],
-  AAAU:  [0.20, 0.01, 0.01, 0.50, 0.01],
-  UNH:   [0.40, 0.60, 0.40, 0.15, 0.80],
-  ADBE:  [0.75, 0.10, 0.80, 0.35, 0.25],
-  CASH:  [0.00, 0.00, 0.00, 0.00, 0.00],
-  META:  [0.65, 0.20, 0.10, 0.75, 0.45],
-  NFLX:  [0.75, 0.10, 0.20, 0.75, 0.60],
-};
-
 const createAllocationRow = (overrides = {}) => ({
   id: crypto.randomUUID(),
   ticker: '',
@@ -63,15 +45,10 @@ const createAllocationRow = (overrides = {}) => ({
   ...overrides,
 });
 
+// New tenants start with a blank optimizer (no seeded tickers): a few empty
+// rows plus the CASH row required for cash-weight constraints.
 const createDefaultAllocations = () => [
-  ...defaultTickers.map((ticker) =>
-    createAllocationRow({
-      ticker,
-      expectedReturn: '',
-      factorExposures: defaultFactorExposures[ticker] || riskFactors.map(() => ''),
-      userWeight: '',
-    })
-  ),
+  ...Array.from({ length: 6 }, () => createAllocationRow()),
   createAllocationRow({
     ticker: 'CASH',
     expectedReturn: '0',
@@ -96,9 +73,9 @@ const createRebalanceRow = (overrides = {}) => ({
   ...overrides,
 });
 
-const defaultRebalanceTickers = ['MA', 'AMZN', 'GOOGL', 'UBER', 'ASML', 'HLT', 'BKNG', 'AAAU', 'UNH', 'ADBE', 'META', 'NFLX'];
-
-const createDefaultRebalanceHoldings = () => defaultRebalanceTickers.map((ticker) => createRebalanceRow({ ticker }));
+// Start the rebalancer empty (one blank row) when there's nothing to load,
+// rather than seeding example tickers.
+const createDefaultRebalanceHoldings = () => [createRebalanceRow()];
 
 const rebalanceExecutionPlan = ({
   currentValues,

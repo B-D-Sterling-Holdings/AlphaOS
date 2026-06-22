@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2, Zap, Clock } from 'lucide-react';
 import Card from '@/components/Card';
 import RichTextArea from '@/components/RichTextArea';
+import { DEFAULT_AUTO_NOTIFY, selectDueReminders, computeNextSent } from '@/lib/autoNotify';
 
 /**
  * DraftReview — the "write a paper, then review it back-and-forth" workspace.
@@ -39,6 +40,15 @@ const ROLE_META = {
   reviewer: { label: 'Reviewer', badge: 'bg-red-100 text-red-700', dot: 'bg-red-500', text: 'text-red-600', bar: 'bg-red-300' },
   author: { label: 'Author', badge: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500', text: 'text-emerald-600', bar: 'bg-emerald-300' },
 };
+
+// How long a comment may sit awaiting a response before auto-notify reminds.
+const AUTO_DELAY_OPTIONS = [
+  { hours: 24, label: '1 day' },
+  { hours: 48, label: '2 days' },
+  { hours: 72, label: '3 days' },
+  { hours: 120, label: '5 days' },
+  { hours: 168, label: '1 week' },
+];
 
 function bodyIsEmpty(value) {
   if (Array.isArray(value)) {
@@ -323,7 +333,7 @@ function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed
   );
 }
 
-export default function DraftReview({ ticker, paper, threads, author, reviewer, onPaperChange, onThreadsChange, onAuthorChange, onReviewerChange, onNotify }) {
+export default function DraftReview({ ticker, paper, threads, author, reviewer, autoNotify, onPaperChange, onThreadsChange, onAuthorChange, onReviewerChange, onAutoNotifyChange, onNotify }) {
   // null = both panels open; 'paper' = paper collapsed (review fills the row);
   // 'review' = review collapsed (paper fills the row). Collapse is an lg-only
   // affordance — on mobile both panels always stack full-width.
@@ -380,8 +390,15 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
       if (t.resolved) continue;
       const msgs = t.messages || [];
       if (!msgs.length) continue;
-      const last = msgs[msgs.length - 1].role;
-      list.push({ id: t.id, title: t.title, role: last === 'reviewer' ? 'author' : 'reviewer' });
+      const lastMsg = msgs[msgs.length - 1];
+      const awaitingSinceMs = Date.parse(lastMsg.createdAt);
+      list.push({
+        id: t.id,
+        title: t.title,
+        role: lastMsg.role === 'reviewer' ? 'author' : 'reviewer',
+        lastMessageId: lastMsg.id,
+        awaitingSinceMs: Number.isNaN(awaitingSinceMs) ? Date.now() : awaitingSinceMs,
+      });
     }
     return list;
   }, [threads]);
@@ -421,6 +438,53 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
       setNotifying(false);
     }
   };
+
+  // ---- Auto-notify ----------------------------------------------------------
+  // Emails reminders for comments left waiting past the configured delay. The
+  // server cron (src/app/api/cron/auto-notify) is the source of truth — it fires
+  // even when nobody is looking. This in-app check is the same logic run while the
+  // review is open (on mount + a 60s timer, since the threshold is wall-clock
+  // based) for immediate feedback. Both paths share one dedup map, `cfg.sent`, so
+  // whoever sends first stamps it and the other skips — they never double-send.
+  const cfg = autoNotify || DEFAULT_AUTO_NOTIFY;
+  const autoEnabled = !!cfg.enabled;
+  const setAutoNotify = (patch) => onAutoNotifyChange?.({ ...cfg, ...patch }, true);
+
+  const autoBusyRef = useRef(false);
+  const autoStateRef = useRef(null);
+  autoStateRef.current = {
+    cfg, threads, onNotify, onAutoNotifyChange,
+    emails: { reviewer: safeReviewer.email, author: safeAuthor.email },
+  };
+
+  const runAutoNotify = useCallback(async () => {
+    const { cfg: c, threads: th, onNotify: notify, onAutoNotifyChange: saveCfg, emails } = autoStateRef.current;
+    if (!c?.enabled || !notify || autoBusyRef.current) return;
+    const now = Date.now();
+    const due = selectDueReminders({ threads: th, autoNotify: c, emails, now });
+    const remindedIds = [...due.reviewer, ...due.author].map(t => t.id);
+    if (!remindedIds.length) return;
+    autoBusyRef.current = true;
+    try {
+      await notify(remindedIds);
+      const nextSent = computeNextSent({ threads: th, prevSent: c.sent, remindedIds, nowIso: new Date(now).toISOString() });
+      saveCfg?.({ ...c, sent: nextSent }, true);
+    } finally {
+      autoBusyRef.current = false;
+    }
+  }, []);
+
+  const pendingSignature = pendingList.map(p => `${p.id}:${p.lastMessageId}`).join('|');
+  useEffect(() => {
+    if (!autoEnabled) return;
+    runAutoNotify();
+    const iv = setInterval(runAutoNotify, 60 * 1000);
+    return () => clearInterval(iv);
+  }, [autoEnabled, cfg.afterHours, cfg.roles?.author, cfg.roles?.reviewer, pendingSignature, runAutoNotify]);
+
+  const autoMissingEmail =
+    (cfg.roles?.reviewer !== false && !safeReviewer.email) ||
+    (cfg.roles?.author !== false && !safeAuthor.email);
 
   // Display order only (stored order is untouched): resolved threads sink to the
   // bottom, with relative order preserved within each group (Array.sort is stable).
@@ -567,7 +631,7 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                   )}
                 </button>
                 {notifyOpen && (
-                  <div className="absolute right-0 top-full mt-1.5 z-30 w-72 rounded-xl border border-gray-200 bg-white shadow-xl p-3">
+                  <div className="absolute right-0 top-full mt-1.5 z-30 w-80 rounded-xl border border-gray-200 bg-white shadow-xl p-3">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wide">Notify</span>
                       {pendingTotal > 0 && (
@@ -628,6 +692,70 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                         </div>
                       </>
                     )}
+
+                    {/* Auto-notify — set-and-forget reminders for waiting comments. */}
+                    <div className="mt-3 pt-3 border-t border-gray-100">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wide">Auto-notify</span>
+                        </span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={autoEnabled}
+                          onClick={() => setAutoNotify({ enabled: !autoEnabled })}
+                          className={`relative w-8 h-[18px] rounded-full transition-colors shrink-0 ${autoEnabled ? 'bg-blue-600' : 'bg-gray-200'}`}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${autoEnabled ? 'translate-x-[14px]' : ''}`} />
+                        </button>
+                      </div>
+
+                      {autoEnabled && (
+                        <div className="mt-2.5 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600">
+                              <Clock size={12} className="text-gray-400" />
+                              Remind after
+                            </span>
+                            <select
+                              value={cfg.afterHours}
+                              onChange={(e) => setAutoNotify({ afterHours: Number(e.target.value) })}
+                              className="bg-white border border-gray-200 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 focus:border-transparent cursor-pointer"
+                            >
+                              {AUTO_DELAY_OPTIONS.map(o => (
+                                <option key={o.hours} value={o.hours}>{o.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-gray-600">Auto-send to</span>
+                            <div className="flex items-center gap-1">
+                              {['reviewer', 'author'].map(role => {
+                                const meta = ROLE_META[role];
+                                const on = cfg.roles?.[role] !== false;
+                                return (
+                                  <button
+                                    key={role}
+                                    type="button"
+                                    aria-pressed={on}
+                                    onClick={() => setAutoNotify({ roles: { ...cfg.roles, [role]: !on } })}
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors ${on ? `${meta.badge} border-transparent` : 'text-gray-400 border-gray-200 hover:border-gray-300'}`}
+                                  >
+                                    {meta.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          {autoMissingEmail && (
+                            <p className="flex items-start gap-1 text-[10px] text-amber-500 leading-snug">
+                              <Users size={11} className="mt-0.5 shrink-0" />
+                              Set an email for each role above (the <Users size={10} className="inline -mt-0.5" /> button) so reminders can reach them.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
