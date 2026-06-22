@@ -89,6 +89,52 @@ export async function setUserActive(id, isActive) {
   if (error) throw new Error(error.message);
 }
 
+// Every tenant-scoped data table (mirrors the list in migration 005). The
+// data tables carry a tenant_id but no FK cascade to `tenants`, so we purge
+// them explicitly before removing the user + tenant. The `users` row itself
+// cascades when its tenant is deleted (users.tenant_id ON DELETE CASCADE).
+const TENANT_DATA_TABLES = [
+  'contacts', 'interactions', 'contact_files', 'tasks', 'app_settings',
+  'research_links', 'documents', 'theses', 'valuation_models', 'holdings',
+  'portfolio_cash', 'watchlists', 'ticker_fundamentals', 'ticker_prices',
+  'allocation_config', 'sector_config', 'factor_config', 'fund_nav_data',
+  'strategic_notes', 'candidate_positions', 'ideas',
+  'prism_recommendations', 'prism_ticker_data', 'prism_ticker_documents',
+  'macro_regime_config', 'macro_regime_runs', 'macro_regime_results',
+  'macro_regime_weights',
+];
+
+/**
+ * Permanently delete a user and its entire isolated workspace: every
+ * tenant-scoped data row, then the tenant (which cascade-deletes the user).
+ * Built-in demo accounts cannot be deleted here.
+ */
+export async function deleteUser(id) {
+  if (!id) throw new Error('id is required');
+
+  const { data: user, error: fErr } = await supabaseAdmin
+    .from('users')
+    .select('id, tenant_id, is_demo')
+    .eq('id', id)
+    .maybeSingle();
+  if (fErr) throw new Error(fErr.message);
+  if (!user) throw new Error('user not found');
+  if (user.is_demo) throw new Error('the built-in demo account cannot be deleted');
+
+  // Purge all tenant-scoped data first (no FK cascade on these tables).
+  for (const table of TENANT_DATA_TABLES) {
+    const { error } = await supabaseAdmin.from(table).delete().eq('tenant_id', user.tenant_id);
+    // A table may not exist in every deployment — ignore "missing table" errors.
+    if (error && error.code !== '42P01' && !/does not exist/i.test(error.message)) {
+      throw new Error(`delete ${table}: ${error.message}`);
+    }
+  }
+
+  // Removing the tenant cascades to the user row.
+  const { error: tErr } = await supabaseAdmin.from('tenants').delete().eq('id', user.tenant_id);
+  if (tErr) throw new Error(tErr.message);
+}
+
 /** Insert the singleton config rows a fresh tenant needs (service role). */
 export async function seedTenantDefaults(tenantId) {
   const singletons = [

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/AuthContext';
-import { UserPlus, ShieldCheck, Loader2, Users } from 'lucide-react';
+import { UserPlus, ShieldCheck, Loader2, Users, Trash2 } from 'lucide-react';
 
 export default function AdminPage() {
   const { isAdmin, loading: authLoading } = useAuth();
@@ -14,6 +14,7 @@ export default function AdminPage() {
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState('');
+  const [deletingId, setDeletingId] = useState(null);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -70,6 +71,30 @@ export default function AdminPage() {
       loadUsers();
     } catch (e) {
       setError(e.message);
+    }
+  }
+
+  async function handleDelete(u) {
+    if (!window.confirm(
+      `Permanently delete "${u.username}" and its entire workspace?\n\nThis erases all of this user's data and cannot be undone.`
+    )) return;
+    setError('');
+    setNotice('');
+    setDeletingId(u.id);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: u.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+      setNotice(`Deleted "${u.username}" and its workspace.`);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -174,13 +199,24 @@ export default function AdminPage() {
                     {u.isActive ? 'active' : 'disabled'}
                   </span>
                 </td>
-                <td className="px-5 py-3 text-right">
-                  <button
-                    onClick={() => toggleActive(u)}
-                    className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
-                  >
-                    {u.isActive ? 'Disable' : 'Enable'}
-                  </button>
+                <td className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => toggleActive(u)}
+                      disabled={deletingId === u.id}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      {u.isActive ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      onClick={() => handleDelete(u)}
+                      disabled={deletingId === u.id}
+                      title="Delete user and workspace"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      {deletingId === u.id ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />} Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
