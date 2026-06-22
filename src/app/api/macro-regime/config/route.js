@@ -61,7 +61,7 @@ export async function PUT(req) {
 
     const { error } = await supabase
       .from(TABLE)
-      .upsert({ id: 1, config: merged, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+      .upsert({ id: 1, config: merged, updated_at: new Date().toISOString() }, { onConflict: 'tenant_id' });
 
     if (error) {
       console.error('Supabase save error:', error.message);

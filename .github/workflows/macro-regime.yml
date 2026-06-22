@@ -20,6 +20,10 @@ on:
         description: 'Data end date (YYYY-MM-DD). Blank = today.'
         type: string
         default: ''
+      tenant_id:
+        description: 'Tenant to run for. Blank = CIO tenant (scheduled runs).'
+        type: string
+        default: ''
 
 # Never run two backtests at once (they share the Supabase results table).
 concurrency:
@@ -59,6 +63,9 @@ jobs:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Scopes the Supabase sync to one tenant (macro-sync.mjs defaults to the
+          # CIO tenant when blank, e.g. for scheduled runs).
+          APP_TENANT_ID: ${{ github.event.inputs.tenant_id }}
         run: |
           set -euo pipefail
 

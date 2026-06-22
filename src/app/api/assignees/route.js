@@ -59,7 +59,7 @@ export async function PUT(req) {
 
     const { data, error } = await supabase
       .from(TABLE)
-      .upsert(row, { onConflict: 'key' })
+      .upsert(row, { onConflict: 'tenant_id,key' })
       .select()
       .single();
 

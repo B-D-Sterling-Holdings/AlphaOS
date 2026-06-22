@@ -256,7 +256,7 @@ export async function POST(req) {
                 'X-GitHub-Api-Version': '2022-11-28',
                 'Content-Type': 'application/json',
               },
-              body: JSON.stringify({ ref, inputs: { command } }),
+              body: JSON.stringify({ ref, inputs: { command, tenant_id: supabase.tenantId } }),
             },
           );
           if (ghRes.status === 204) {

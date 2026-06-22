@@ -80,7 +80,8 @@ export async function POST(req) {
       );
     }
 
-    const childEnv = { ...process.env, ...loadEnvFile() };
+    // Forward the tenant so the prism pipeline isolates its Supabase reads/writes.
+    const childEnv = { ...process.env, ...loadEnvFile(), APP_TENANT_ID: supabase.tenantId };
     const { code, stdout, stderr } = await runPython(
       { ticker: cleanTicker, fundamentals },
       childEnv

@@ -1,61 +1,90 @@
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
-import { createSession, SESSION_COOKIE_NAME } from '@/lib/auth';
+import {
+  createSession,
+  SESSION_COOKIE_NAME,
+  CIO_TENANT_ID,
+  DEMO_TENANT_ID,
+} from '@/lib/auth';
+import { findUserByUsername } from '@/lib/users';
+
+// Attach the session cookie to a JSON response.
+function withSession(body, token) {
+  const response = NextResponse.json(body);
+  response.cookies.set(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60 * 24 * 7, // 7 days, matches JWT expiry
+  });
+  return response;
+}
 
 export async function POST(request) {
   try {
     const { username, password } = await request.json();
+    if (!username || !password) {
+      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    }
 
-    // ── Demo account ── fully isolated from production (see src/lib/db.js).
-    // Credentials default to demo/demo and can be overridden via env.
+    // ── 1. Admin-created users (the users table). Each has its own tenant. ──
+    let user = null;
+    try {
+      user = await findUserByUsername(username);
+    } catch {
+      // users table not migrated yet — fall through to the bootstrap logins
+    }
+    if (user) {
+      if (!user.is_active) {
+        return NextResponse.json({ error: 'Account is disabled' }, { status: 403 });
+      }
+      if (!bcrypt.compareSync(password, user.password_hash)) {
+        return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+      }
+      const token = await createSession({
+        userId: user.id,
+        username: user.username,
+        tenantId: user.tenant_id,
+        role: user.role,
+        isDemo: user.is_demo,
+      });
+      return withSession(
+        { ok: true, role: user.role, accountType: user.is_demo ? 'demo' : 'prod' },
+        token
+      );
+    }
+
+    // ── 2. Bootstrap CIO admin from env — owns the CIO tenant (existing data). ──
+    const cioUsername = process.env.AUTH_USERNAME;
+    const cioHash = process.env.AUTH_PASSWORD_HASH;
+    if (cioUsername && cioHash && username === cioUsername && bcrypt.compareSync(password, cioHash)) {
+      const token = await createSession({
+        userId: 'cio-admin',
+        username: cioUsername,
+        tenantId: CIO_TENANT_ID,
+        role: 'admin',
+        isDemo: false,
+      });
+      return withSession({ ok: true, role: 'admin', accountType: 'prod' }, token);
+    }
+
+    // ── 3. Demo tenant (isolated, starts empty). ──
     const demoUsername = process.env.DEMO_USERNAME || 'demo';
     const demoPassword = process.env.DEMO_PASSWORD || 'demo';
     if (username === demoUsername && password === demoPassword) {
-      const token = await createSession(demoUsername, 'demo');
-      const response = NextResponse.json({ ok: true, accountType: 'demo' });
-      response.cookies.set(SESSION_COOKIE_NAME, token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 60 * 60 * 24 * 7,
+      const token = await createSession({
+        userId: 'demo',
+        username: demoUsername,
+        tenantId: DEMO_TENANT_ID,
+        role: 'user',
+        isDemo: true,
       });
-      return response;
+      return withSession({ ok: true, role: 'user', accountType: 'demo' }, token);
     }
 
-    const validUsername = process.env.AUTH_USERNAME;
-    const passwordHash = process.env.AUTH_PASSWORD_HASH;
-
-    if (!validUsername || !passwordHash) {
-      return NextResponse.json(
-        { error: 'Auth not configured' },
-        { status: 500 }
-      );
-    }
-
-    if (username !== validUsername || !bcrypt.compareSync(password, passwordHash)) {
-      return NextResponse.json(
-        { error: 'Invalid credentials' },
-        { status: 401 }
-      );
-    }
-
-    const token = await createSession(username, 'prod');
-
-    const response = NextResponse.json({ ok: true, accountType: 'prod' });
-    response.cookies.set(SESSION_COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7, // 7 days, matches JWT expiry
-    });
-
-    return response;
+    return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
   } catch {
-    return NextResponse.json(
-      { error: 'Invalid credentials' },
-      { status: 401 }
-    );
+    return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
   }
 }

@@ -28,7 +28,7 @@ async function setSetting(key, value) {
   const serialized = typeof value === 'string' ? value : JSON.stringify(value);
   await supabase
     .from(TABLE)
-    .upsert({ key, value: serialized }, { onConflict: 'key' });
+    .upsert({ key, value: serialized }, { onConflict: 'tenant_id,key' });
 }
 
 // GET — return { boards: [...], activeBoardId: '...' }

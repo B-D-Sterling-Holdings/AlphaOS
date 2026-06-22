@@ -30,7 +30,7 @@ export async function POST(request, { params }) {
       ticker: upper,
       inputs: body.inputs,
       updated_at: new Date().toISOString(),
-    });
+    }, { onConflict: 'tenant_id,ticker' });
 
     if (error) throw new Error(error.message);
     return NextResponse.json({ success: true, ticker: upper });

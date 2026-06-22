@@ -41,7 +41,7 @@ export async function POST(request) {
 
   const { data, error } = await supabase
     .from('strategic_notes')
-    .upsert(row, { onConflict: 'ticker' })
+    .upsert(row, { onConflict: 'tenant_id,ticker' })
     .select()
     .single();
 

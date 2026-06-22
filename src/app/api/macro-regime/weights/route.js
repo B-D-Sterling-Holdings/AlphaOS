@@ -40,7 +40,7 @@ export async function PUT(req) {
       .from(TABLE)
       .upsert(
         { id: 1, weights, updated_at: new Date().toISOString() },
-        { onConflict: 'id' }
+        { onConflict: 'tenant_id' }
       )
       .select()
       .single();

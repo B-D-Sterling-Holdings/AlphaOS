@@ -7,6 +7,7 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [accountType, setAccountType] = useState('prod');
+  const [role, setRole] = useState('user');
   const [loading, setLoading] = useState(true);
 
   // On mount, check for an existing session cookie
@@ -19,6 +20,7 @@ export function AuthProvider({ children }) {
           if (data.authenticated) {
             setAuthenticated(true);
             setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
+            setRole(data.role === 'admin' ? 'admin' : 'user');
           }
         }
       } catch {
@@ -45,6 +47,7 @@ export function AuthProvider({ children }) {
     const data = await res.json().catch(() => ({}));
     setAuthenticated(true);
     setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
+    setRole(data.role === 'admin' ? 'admin' : 'user');
     return true;
   }, []);
 
@@ -56,10 +59,11 @@ export function AuthProvider({ children }) {
     }
     setAuthenticated(false);
     setAccountType('prod');
+    setRole('user');
   }, []);
 
   return (
-    <AuthContext.Provider value={{ authenticated, accountType, isDemo: accountType === 'demo', loading, login, logout }}>
+    <AuthContext.Provider value={{ authenticated, accountType, isDemo: accountType === 'demo', role, isAdmin: role === 'admin', loading, login, logout }}>
       {children}
     </AuthContext.Provider>
   );
