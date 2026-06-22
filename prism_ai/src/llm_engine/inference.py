@@ -60,8 +60,8 @@ class InferenceEngine:
         self.response_parser = ResponseParser()
         self.store = SupabaseStore()
 
-        # Ollama keeps the model warm via keep_alive; there is no server-side
-        # context cache, so caching stays disabled regardless of this flag.
+        # Server-side context caching is not implemented for this Gemini client,
+        # so caching stays disabled regardless of this flag.
         self.enable_context_cache = False
         self.cache_ttl_seconds = cache_ttl_seconds
 
@@ -127,7 +127,7 @@ class InferenceEngine:
                 except FileNotFoundError:
                     logger.warning("Thesis critique prompt not found; running standard analysis")
 
-        # Run inference against the local Ollama model
+        # Run inference against the Gemini model
         logger.info(f"Sending request to Gemini ({self.llm.model_name}) for {ticker}")
         api_start = time.time()
         response = self.llm.generate_with_context(
@@ -332,7 +332,7 @@ class InferenceEngine:
         return self.csv_parser.get_available_tickers()
 
     def test_api(self) -> bool:
-        """Test the Ollama connection."""
+        """Test the Gemini connection."""
         return self.llm.test_connection()
 
     # ============ Context Cache Methods ============
