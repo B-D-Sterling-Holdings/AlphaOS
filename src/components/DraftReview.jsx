@@ -41,14 +41,28 @@ const ROLE_META = {
   author: { label: 'Author', badge: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500', text: 'text-emerald-600', bar: 'bg-emerald-300' },
 };
 
-// How long a comment may sit awaiting a response before auto-notify reminds.
-const AUTO_DELAY_OPTIONS = [
-  { hours: 24, label: '1 day' },
-  { hours: 48, label: '2 days' },
-  { hours: 72, label: '3 days' },
-  { hours: 120, label: '5 days' },
-  { hours: 168, label: '1 week' },
+// Cadence for the scheduled auto-notify reminder (fires every N days at a set time).
+const AUTO_CADENCE_OPTIONS = [
+  { days: 1, label: 'Daily' },
+  { days: 2, label: 'Every 2 days' },
+  { days: 3, label: 'Every 3 days' },
 ];
+
+// atMinutes (minutes from midnight) <-> "HH:MM" for the native time input.
+const minutesToHHMM = (m) => {
+  const v = Number.isFinite(m) ? m : 540;
+  return `${String(Math.floor(v / 60)).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
+};
+const hhmmToMinutes = (s) => {
+  const [h, m] = String(s || '').split(':').map(Number);
+  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : 540;
+};
+// The configuring browser's IANA zone, stamped on the config so the cron reads
+// the chosen time in the same wall clock the user picked it in.
+const browserTz = () => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+  catch { return 'UTC'; }
+};
 
 function bodyIsEmpty(value) {
   if (Array.isArray(value)) {
@@ -440,11 +454,12 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
   };
 
   // ---- Auto-notify ----------------------------------------------------------
-  // Emails reminders for comments left waiting past the configured delay. The
-  // server cron (src/app/api/cron/auto-notify) is the source of truth — it fires
-  // even when nobody is looking. This in-app check is the same logic run while the
-  // review is open (on mount + a 60s timer, since the threshold is wall-clock
-  // based) for immediate feedback. Both paths share one dedup map, `cfg.sent`, so
+  // Emails reminders for comments still waiting at their scheduled send time
+  // (every N days at a chosen time of day). The server cron
+  // (src/app/api/cron/auto-notify) is the source of truth — it fires even when
+  // nobody is looking. This in-app check is the same logic run while the review is
+  // open (on mount + a 60s timer, since fire times are wall-clock based) for
+  // immediate feedback. Both paths share one dedup map, `cfg.sent`, so
   // whoever sends first stamps it and the other skips — they never double-send.
   const cfg = autoNotify || DEFAULT_AUTO_NOTIFY;
   const autoEnabled = !!cfg.enabled;
@@ -480,7 +495,7 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
     runAutoNotify();
     const iv = setInterval(runAutoNotify, 60 * 1000);
     return () => clearInterval(iv);
-  }, [autoEnabled, cfg.afterHours, cfg.roles?.author, cfg.roles?.reviewer, pendingSignature, runAutoNotify]);
+  }, [autoEnabled, cfg.everyDays, cfg.atMinutes, cfg.tz, cfg.roles?.author, cfg.roles?.reviewer, pendingSignature, runAutoNotify]);
 
   const autoMissingEmail =
     (cfg.roles?.reviewer !== false && !safeReviewer.email) ||
@@ -715,17 +730,27 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                           <div className="flex items-center justify-between gap-2">
                             <span className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600">
                               <Clock size={12} className="text-gray-400" />
-                              Remind after
+                              Remind
                             </span>
-                            <select
-                              value={cfg.afterHours}
-                              onChange={(e) => setAutoNotify({ afterHours: Number(e.target.value) })}
-                              className="bg-white border border-gray-200 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 focus:border-transparent cursor-pointer"
-                            >
-                              {AUTO_DELAY_OPTIONS.map(o => (
-                                <option key={o.hours} value={o.hours}>{o.label}</option>
-                              ))}
-                            </select>
+                            <div className="flex items-center gap-1">
+                              <select
+                                value={cfg.everyDays ?? 1}
+                                onChange={(e) => setAutoNotify({ everyDays: Number(e.target.value), tz: browserTz() })}
+                                className="bg-white border border-gray-200 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 focus:border-transparent cursor-pointer"
+                              >
+                                {AUTO_CADENCE_OPTIONS.map(o => (
+                                  <option key={o.days} value={o.days}>{o.label}</option>
+                                ))}
+                              </select>
+                              <span className="text-[11px] text-gray-400">at</span>
+                              <input
+                                type="time"
+                                step={1800}
+                                value={minutesToHHMM(cfg.atMinutes)}
+                                onChange={(e) => setAutoNotify({ atMinutes: hhmmToMinutes(e.target.value), tz: browserTz() })}
+                                className="bg-white border border-gray-200 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 focus:border-transparent cursor-pointer"
+                              />
+                            </div>
                           </div>
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[11px] font-semibold text-gray-600">Auto-send to</span>
