@@ -24,8 +24,9 @@ function pillClasses(active) {
     }`;
 }
 
-function NavDropdown({ group, pathname, isOpen, onToggle, onClose }) {
+function NavDropdown({ group, pathname, isOpen, onToggle, onOpen, onClose }) {
   const ref = useRef(null);
+  const closeTimer = useRef(null);
   const Icon = group.icon;
   const groupActive = isGroupActive(group, pathname);
 
@@ -39,10 +40,26 @@ function NavDropdown({ group, pathname, isOpen, onToggle, onClose }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen, onClose]);
 
+  // Clear any pending close timer on unmount.
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
+
+  // Hover opens immediately; leaving closes after a short delay so the cursor
+  // can cross the gap between the trigger and the menu without it flickering shut.
+  const handleMouseEnter = () => {
+    clearTimeout(closeTimer.current);
+    onOpen();
+  };
+  const handleMouseLeave = () => {
+    clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(onClose, 120);
+  };
+
   return (
     <div
       ref={ref}
       className="relative"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
     >
       <button
@@ -264,7 +281,8 @@ export default function Navbar() {
                 pathname={pathname}
                 isOpen={openGroup === group.label}
                 onToggle={() => setOpenGroup(prev => (prev === group.label ? null : group.label))}
-                onClose={() => setOpenGroup(null)}
+                onOpen={() => setOpenGroup(group.label)}
+                onClose={() => setOpenGroup(prev => (prev === group.label ? null : prev))}
               />
             ))}
           </div>

@@ -15,7 +15,7 @@ DECLARE
     'demo_holdings','demo_watchlists','demo_research_links','demo_theses',
     'demo_valuation_models','demo_strategic_notes','demo_fund_nav_data',
     'demo_ticker_fundamentals','demo_ticker_prices','demo_macro_regime_results',
-    'demo_macro_regime_runs','demo_prism_recommendations','demo_prism_runs'
+    'demo_macro_regime_runs','demo_prism_recommendations'
   ];
 BEGIN
   FOREACH t IN ARRAY tbls LOOP
@@ -206,14 +206,6 @@ VALUES
    '{"signal":"BUY","conviction":"HIGH","position_size_pct":6.0,"price_target_12mo":215,"expected_return_pct":15.4,"key_catalysts":["Cloud growth","AI monetization"],"key_risks":["Antitrust"],"reasoning":"Underappreciated cloud and AI optionality with a reasonable valuation."}'::jsonb,
    '{"executive_summary":"Cloud and AI optionality underpriced by the market.","fundamental_analysis":"Strong revenue growth and FCF.","qualitative_factors":"Data and distribution moat.","risk_factors":"Regulatory and antitrust overhang."}'::jsonb,
    'demo_20260519_GOOGL_analysis.json');
-
--- A couple of completed pipeline runs for the run-history list.
-INSERT INTO demo_prism_runs (run_type, ticker, status, started_at, completed_at, exit_code, log_output) VALUES
-  ('analyze', 'AAPL', 'completed', now() - interval '5 days', now() - interval '5 days' + interval '22 seconds', 0,
-   E'Analyzing AAPL (mode: balanced)...\nAnalysis complete for AAPL: BUY (VERY_HIGH)'),
-  ('analyze', 'NFLX', 'completed', now() - interval '8 days', now() - interval '8 days' + interval '19 seconds', 0,
-   E'Analyzing NFLX (mode: growth)...\nAnalysis complete for NFLX: HOLD (MODERATE)');
-
 
 -- ── App settings (active selections) ─────────────────────────────────────────
 INSERT INTO demo_app_settings (key, value) VALUES
