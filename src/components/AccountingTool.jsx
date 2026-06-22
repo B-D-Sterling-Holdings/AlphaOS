@@ -15,8 +15,6 @@ import {
   updateContributionDate, closePeriod
 } from '@/lib/accounting';
 import { formatMoneyPrecise, formatPct, formatNumber } from '@/lib/formatters';
-import { useAuth } from '@/lib/AuthContext';
-import { clientDb } from '@/lib/clientDb';
 
 const STORAGE_KEY = 'fund-accounting-state';
 
@@ -1117,11 +1115,9 @@ function NavConverterTab({ computedTimeline, state }) {
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function AccountingTool() {
-  // Account-aware Supabase access: demo sessions persist to demo_app_settings,
-  // never the production row. AuthGate guarantees accountType is resolved before mount.
-  const { accountType } = useAuth();
-  const db = useMemo(() => clientDb(accountType), [accountType]);
-
+  // Persistence goes through /api/accounting-state, which uses the server-side,
+  // account-aware data layer (demo sessions hit demo_app_settings). The browser
+  // no longer touches Supabase directly — RLS locks the anon key out of the DB.
   const [state, setState] = useState(null);
   const [activeTab, setActiveTab] = useState('accounting'); // 'accounting' | 'investor-performance' | 'nav-converter'
   const [activeQuarter, setActiveQuarter] = useState(0);
@@ -1197,14 +1193,15 @@ export default function AccountingTool() {
     let cancelled = false;
 
     async function load() {
-      // One-time migration: if localStorage has data, push it to Supabase and delete local
+      // One-time migration: if localStorage has data, push it to the server and delete local
       try {
         const local = localStorage.getItem(STORAGE_KEY);
         if (local) {
           const parsed = backfillSP(JSON.parse(local));
-          await db.from('app_settings').upsert({
-            key: STORAGE_KEY,
-            value: JSON.stringify(parsed),
+          await fetch('/api/accounting-state', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: JSON.stringify(parsed) }),
           });
           localStorage.removeItem(STORAGE_KEY);
           if (!cancelled) setState(parsed);
@@ -1212,16 +1209,12 @@ export default function AccountingTool() {
         }
       } catch {}
 
-      // Normal load from Supabase (account-aware: demo sessions read demo_app_settings)
+      // Normal load (account-aware on the server: demo sessions read demo_app_settings)
       try {
-        const { data, error } = await db
-          .from('app_settings')
-          .select('value')
-          .eq('key', STORAGE_KEY)
-          .single();
-
-        if (!error && data?.value) {
-          const parsed = JSON.parse(data.value);
+        const res = await fetch('/api/accounting-state');
+        const { value } = await res.json();
+        if (res.ok && value) {
+          const parsed = JSON.parse(value);
           if (!cancelled) setState(backfillSP(parsed));
           return;
         }
@@ -1229,16 +1222,17 @@ export default function AccountingTool() {
 
       // Nothing anywhere — use seed
       const seed = createSeedState();
-      await db.from('app_settings').upsert({
-        key: STORAGE_KEY,
-        value: JSON.stringify(seed),
+      await fetch('/api/accounting-state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: JSON.stringify(seed) }),
       });
       if (!cancelled) setState(seed);
     }
 
     load();
     return () => { cancelled = true; };
-  }, [backfillSP, db]);
+  }, [backfillSP]);
 
   // Persist to Supabase on every state change (skip the initial load)
   const hasLoadedOnce = useRef(false);
@@ -1255,13 +1249,17 @@ export default function AccountingTool() {
     if (state === prevStateRef.current) return;
     prevStateRef.current = state;
 
-    db.from('app_settings').upsert({
-      key: STORAGE_KEY,
-      value: JSON.stringify(state),
-    }).then(({ error }) => {
-      if (error) console.error('Failed to persist accounting state:', error);
+    fetch('/api/accounting-state', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: JSON.stringify(state) }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const { error } = await res.json().catch(() => ({}));
+        console.error('Failed to persist accounting state:', error || res.status);
+      }
     });
-  }, [state, db]);
+  }, [state]);
 
   // Compute timeline — auto-set the last period's end date to today and AUM to live value
   const computedTimeline = useMemo(() => {

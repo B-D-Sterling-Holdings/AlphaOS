@@ -1,5 +1,5 @@
 import { cookies } from 'next/headers';
-import { supabase } from './supabase';
+import { supabaseAdmin as supabase } from './supabaseAdmin';
 import { SESSION_COOKIE_NAME, verifySession } from './auth';
 
 /*
@@ -19,9 +19,12 @@ import { SESSION_COOKIE_NAME, verifySession } from './auth';
   before. A demo session can never *name* a production table, which makes
   cross-contamination structurally impossible.
 
-  Note on RLS: the app talks to Supabase with the anon key and its own JWT (not a
-  Supabase Auth session), so auth.uid()-based RLS cannot distinguish demo from
-  prod. Isolation is therefore enforced here, at the data-access layer.
+  Note on RLS: RLS is enabled on all public tables with no anon policies, so the
+  public anon key (shipped to the browser) cannot touch the DB directly. Server
+  access runs through the service-role client (supabaseAdmin), which bypasses RLS.
+  The app authenticates with its own JWT (not a Supabase Auth session), so there
+  is no auth.uid() for RLS to key off — demo/prod isolation is enforced here, at
+  the data-access layer, via the demo_ table prefix. See scripts/migrations/001_enable_rls.sql.
 */
 
 const DEMO_PREFIX = 'demo_';

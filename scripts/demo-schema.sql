@@ -7,13 +7,15 @@
 --   * Safe to re-run (everything is guarded / IF NOT EXISTS).
 --
 -- The demo account (login: demo / demo) is routed entirely to these tables by
--- src/lib/db.js (server) and src/lib/clientDb.js (client). It can never name a
--- production table, so it cannot read or write real CIO Alpha data.
+-- src/lib/db.js (server). It can never name a production table, so it cannot read
+-- or write real CIO Alpha data.
 --
--- Note on RLS: the app uses the anon key with its own JWT (not Supabase Auth),
--- so auth.uid()-based RLS cannot tell demo from prod. Isolation is enforced in
--- the data-access layer. These tables are created without RLS, matching the
--- current production tables, so the anon key keeps working.
+-- Note on RLS: the app uses its own JWT (not Supabase Auth), so auth.uid()-based
+-- RLS cannot tell demo from prod. Isolation is enforced in the data-access layer.
+-- RLS is ENABLED on all public tables (including these demo_* tables) with no
+-- policies — the public anon key is locked out of the DB and all access runs
+-- through the server's service-role client. Run scripts/migrations/001_enable_rls.sql AFTER this
+-- file so the new demo_* tables are covered too.
 -- ============================================================
 
 
@@ -31,7 +33,7 @@ DECLARE
     'sector_config','factor_config','fund_nav_data','strategic_notes',
     'candidate_positions','ideas',
     'macro_regime_runs','macro_regime_results','macro_regime_config',
-    'prism_runs','prism_recommendations','prism_ticker_data','prism_ticker_documents'
+    'prism_recommendations','prism_ticker_data','prism_ticker_documents'
   ];
 BEGIN
   FOREACH t IN ARRAY tables LOOP

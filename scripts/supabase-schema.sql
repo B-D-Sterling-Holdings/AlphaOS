@@ -378,27 +378,7 @@ CREATE INDEX IF NOT EXISTS idx_ideas_archived ON ideas(archived);
 
 
 -- ============================================================
--- 21. PRISM AI — PIPELINE RUNS (analysis pipeline job history)
--- run_type: analyze, analyze-all, generate-data, plot, install, list, info
--- status:   running, completed, failed
--- ============================================================
-CREATE TABLE IF NOT EXISTS prism_runs (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  run_type TEXT NOT NULL,
-  ticker TEXT,
-  status TEXT DEFAULT 'running',
-  started_at TIMESTAMPTZ DEFAULT now(),
-  completed_at TIMESTAMPTZ,
-  exit_code INTEGER,
-  log_output TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_prism_runs_started ON prism_runs(started_at DESC);
-
-
--- ============================================================
--- 22. PRISM AI — RECOMMENDATIONS (parsed analysis outputs; signal history)
+-- 21. PRISM AI — RECOMMENDATIONS (parsed analysis outputs; signal history)
 -- One row per *_analysis.json written by `make analyze`.
 -- signal:     BUY, HOLD, AVOID
 -- conviction: VERY_HIGH, HIGH, MODERATE, LOW
@@ -426,7 +406,7 @@ CREATE INDEX IF NOT EXISTS idx_prism_recs_date ON prism_recommendations(analysis
 
 
 -- ============================================================
--- 23. PRISM AI — TICKER DATA (generated CSVs stored in Supabase, not on disk)
+-- 22. PRISM AI — TICKER DATA (generated CSVs stored in Supabase, not on disk)
 -- One row per dataset; category is e.g. 'fundamentals/revenue',
 -- 'price_data/daily_prices', 'ratios/valuation_ratios', 'valuation/valuation'.
 -- ============================================================
@@ -444,7 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_prism_ticker_data_ticker ON prism_ticker_data(tic
 
 
 -- ============================================================
--- 24. PRISM AI — TICKER DOCUMENTS (uploaded research PDFs, base64)
+-- 23. PRISM AI — TICKER DOCUMENTS (uploaded research PDFs, base64)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS prism_ticker_documents (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -456,6 +436,63 @@ CREATE TABLE IF NOT EXISTS prism_ticker_documents (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prism_ticker_docs_ticker ON prism_ticker_documents(ticker);
+
+
+-- ============================================================
+-- 25. MACRO REGIME — CONFIG (single-row table, id always = 1)
+-- UI-editable allocator settings; synced to config.yaml before each run.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS macro_regime_config (
+  id INTEGER PRIMARY KEY DEFAULT 1,
+  config JSONB,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+INSERT INTO macro_regime_config (id, config) VALUES (1, '{}'::jsonb)
+  ON CONFLICT (id) DO NOTHING;
+
+
+-- ============================================================
+-- 26. MACRO REGIME — RUNS (allocator pipeline job history)
+-- run_type: run, predict, fast, validate, clean
+-- status:   running, completed, failed
+-- The app keeps only the most recent 5 runs (see api/macro-regime/run).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS macro_regime_runs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  run_type TEXT NOT NULL,
+  status TEXT DEFAULT 'running',
+  started_at TIMESTAMPTZ DEFAULT now(),
+  completed_at TIMESTAMPTZ,
+  log_output TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_macro_regime_runs_started ON macro_regime_runs(started_at DESC);
+
+
+-- ============================================================
+-- 27. MACRO REGIME — RESULTS (parsed backtest/prediction outputs)
+-- One row per completed run; the app keeps only the most recent 3.
+-- run_id references macro_regime_runs(id) but is intentionally NOT a hard FK:
+-- runs and results are pruned on independent schedules, so a results row may
+-- outlive its run. backtest/metrics are JSON arrays; plots is { filename: base64 }.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS macro_regime_results (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  run_id UUID,
+  backtest JSONB DEFAULT '[]'::jsonb,
+  live_prediction JSONB,
+  metrics JSONB DEFAULT '[]'::jsonb,
+  report TEXT,
+  plots JSONB DEFAULT '{}'::jsonb,
+  validation_report TEXT,
+  validation_data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_macro_regime_results_created ON macro_regime_results(created_at DESC);
 
 
 -- ============================================================
@@ -480,32 +517,68 @@ INSERT INTO storage.buckets (id, name, public) VALUES ('research-images', 'resea
 
 
 -- ============================================================
--- STORAGE POLICIES (allow public read + authenticated upload)
+-- STORAGE POLICIES (public READ only)
+-- Uploads and deletes go through the server's service-role client (see
+-- src/lib/db.js), which bypasses storage RLS — so NO public INSERT/DELETE
+-- policies are needed. Public READ stays so getPublicUrl() links resolve.
+-- DROP-then-CREATE so the file is safe to re-run (CREATE POLICY has no
+-- IF NOT EXISTS); the DROPs also clean up the old public write policies.
 -- ============================================================
 
--- documents bucket policies (DROP-then-CREATE so the file is safe to re-run;
--- CREATE POLICY has no IF NOT EXISTS).
+-- documents bucket
 DROP POLICY IF EXISTS "Allow public read on documents" ON storage.objects;
 CREATE POLICY "Allow public read on documents" ON storage.objects
   FOR SELECT USING (bucket_id = 'documents');
 
 DROP POLICY IF EXISTS "Allow public insert on documents" ON storage.objects;
-CREATE POLICY "Allow public insert on documents" ON storage.objects
-  FOR INSERT WITH CHECK (bucket_id = 'documents');
-
 DROP POLICY IF EXISTS "Allow public delete on documents" ON storage.objects;
-CREATE POLICY "Allow public delete on documents" ON storage.objects
-  FOR DELETE USING (bucket_id = 'documents');
 
--- research-images bucket policies
+-- research-images bucket
 DROP POLICY IF EXISTS "Allow public read on research-images" ON storage.objects;
 CREATE POLICY "Allow public read on research-images" ON storage.objects
   FOR SELECT USING (bucket_id = 'research-images');
 
 DROP POLICY IF EXISTS "Allow public insert on research-images" ON storage.objects;
-CREATE POLICY "Allow public insert on research-images" ON storage.objects
-  FOR INSERT WITH CHECK (bucket_id = 'research-images');
-
 DROP POLICY IF EXISTS "Allow public delete on research-images" ON storage.objects;
-CREATE POLICY "Allow public delete on research-images" ON storage.objects
-  FOR DELETE USING (bucket_id = 'research-images');
+
+
+-- ============================================================
+-- updated_at TRIGGERS
+-- Auto-maintain updated_at on every table that has the column (see
+-- scripts/migrations/003_add_updated_at_triggers.sql). Runs last, after all
+-- tables exist.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN
+    SELECT c.table_name
+    FROM information_schema.columns c
+    JOIN information_schema.tables t
+      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+    WHERE c.table_schema = 'public'
+      AND c.column_name = 'updated_at'
+      AND t.table_type = 'BASE TABLE'
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgname = 'set_updated_at_' || r.table_name
+        AND tgrelid = format('public.%I', r.table_name)::regclass
+    ) THEN
+      EXECUTE format(
+        'CREATE TRIGGER %I BEFORE UPDATE ON public.%I
+           FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();',
+        'set_updated_at_' || r.table_name, r.table_name
+      );
+    END IF;
+  END LOOP;
+END $$;
