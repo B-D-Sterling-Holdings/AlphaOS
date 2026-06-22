@@ -1,0 +1,52 @@
+name: Auto-Notify Reminders
+
+# Drives the Draft & Review auto-notify endpoint on a schedule. This lives in
+# GitHub Actions rather than Vercel Cron because the project deploys on Vercel's
+# Hobby plan, which caps crons at once per day; Actions can run every 15 minutes.
+# The endpoint (src/app/api/cron/auto-notify/route.js) is built to be driven by
+# any scheduler and authenticates with the shared CRON_SECRET.
+on:
+  schedule:
+    # Every 15 minutes. GitHub's scheduled runs are best-effort and can fire
+    # late under load — fine for reminder nudges. (Min Actions interval is 5 min.)
+    - cron: '*/15 * * * *'
+  # Lets you trigger a run by hand from the Actions tab to test wiring.
+  workflow_dispatch: {}
+
+# Don't stack pings if one run runs long.
+concurrency:
+  group: auto-notify
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger auto-notify
+        env:
+          # Repository secrets — set both under Settings → Secrets and variables
+          # → Actions. APP_URL is the deployed origin, e.g. https://your-app.vercel.app
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::Set the APP_URL and CRON_SECRET repository secrets."
+            exit 1
+          fi
+          # Fail the job on any non-2xx so a broken cron shows up red in Actions.
+          code=$(curl -sS -X POST \
+            -o /tmp/auto-notify.out -w '%{http_code}' \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/auto-notify")
+          echo "HTTP $code"
+          cat /tmp/auto-notify.out || true
+          echo
+          case "$code" in
+            2*) ;;
+            *) echo "::error::auto-notify returned HTTP $code"; exit 1 ;;
+          esac
