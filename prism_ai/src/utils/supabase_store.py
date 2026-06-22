@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class SupabaseStore:
     """Thin PostgREST wrapper for the prism ticker-data / documents tables."""
 
-    def __init__(self, url: Optional[str] = None, key: Optional[str] = None):
+    def __init__(self, url: Optional[str] = None, key: Optional[str] = None, tenant_id: Optional[str] = None):
         self.url = (url or os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or "").rstrip("/")
         self.key = (
             key
@@ -38,9 +38,23 @@ class SupabaseStore:
             or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
             or ""
         )
+        # Tenant the pipeline is operating on, forwarded from AlphaOS as
+        # APP_TENANT_ID. The store uses the service-role key (which bypasses RLS),
+        # so isolation here is enforced by stamping/filtering tenant_id on every
+        # row — never let a write or read run without it.
+        self.tenant_id = (tenant_id or os.environ.get("APP_TENANT_ID") or "").strip()
 
     def is_configured(self) -> bool:
         return bool(self.url and self.key)
+
+    def _require_tenant(self) -> str:
+        if not self.tenant_id:
+            raise RuntimeError(
+                "APP_TENANT_ID is not set. The prism pipeline must be told which "
+                "tenant it operates on (AlphaOS forwards it as APP_TENANT_ID); "
+                "without it, reads/writes cannot be isolated."
+            )
+        return self.tenant_id
 
     # ------------------------------------------------------------------ #
     # HTTP helpers
@@ -93,26 +107,32 @@ class SupabaseStore:
         self._upsert(
             "prism_ticker_data",
             [{
+                "tenant_id": self._require_tenant(),
                 "ticker": ticker.upper(),
                 "category": category,
                 "csv_content": csv_content,
                 "rows": rows,
             }],
-            on_conflict="ticker,category",
+            on_conflict="tenant_id,ticker,category",
         )
 
     def get_ticker_data(self, ticker: str) -> dict[str, str]:
         """Return {category: csv_content} for a ticker (empty if none)."""
         query = urllib.parse.urlencode({
             "ticker": f"eq.{ticker.upper()}",
+            "tenant_id": f"eq.{self._require_tenant()}",
             "select": "category,csv_content",
         })
         result = self._request("GET", f"prism_ticker_data?{query}")
         return {row["category"]: row["csv_content"] for row in (result or [])}
 
     def list_tickers(self) -> list[str]:
-        """Distinct tickers that have any stored data."""
-        result = self._request("GET", "prism_ticker_data?select=ticker")
+        """Distinct tickers that have any stored data (this tenant only)."""
+        query = urllib.parse.urlencode({
+            "tenant_id": f"eq.{self._require_tenant()}",
+            "select": "ticker",
+        })
+        result = self._request("GET", f"prism_ticker_data?{query}")
         return sorted({row["ticker"] for row in (result or [])})
 
     # ------------------------------------------------------------------ #
@@ -120,8 +140,9 @@ class SupabaseStore:
     # ------------------------------------------------------------------ #
 
     def upsert_recommendation(self, row: dict) -> None:
-        """Store one parsed analysis result (keyed by source_file)."""
-        self._upsert("prism_recommendations", [row], on_conflict="source_file")
+        """Store one parsed analysis result (keyed by source_file, per tenant)."""
+        row = {**row, "tenant_id": self._require_tenant()}
+        self._upsert("prism_recommendations", [row], on_conflict="tenant_id,source_file")
 
     # ------------------------------------------------------------------ #
     # Research documents (PDFs as base64)
@@ -130,14 +151,20 @@ class SupabaseStore:
     def upsert_document(self, ticker: str, filename: str, content_base64: str) -> None:
         self._upsert(
             "prism_ticker_documents",
-            [{"ticker": ticker.upper(), "filename": filename, "content_base64": content_base64}],
-            on_conflict="ticker,filename",
+            [{
+                "tenant_id": self._require_tenant(),
+                "ticker": ticker.upper(),
+                "filename": filename,
+                "content_base64": content_base64,
+            }],
+            on_conflict="tenant_id,ticker,filename",
         )
 
     def get_documents(self, ticker: str) -> list[dict[str, str]]:
-        """Return [{filename, content_base64}, ...] for a ticker."""
+        """Return [{filename, content_base64}, ...] for a ticker (this tenant)."""
         query = urllib.parse.urlencode({
             "ticker": f"eq.{ticker.upper()}",
+            "tenant_id": f"eq.{self._require_tenant()}",
             "select": "filename,content_base64",
         })
         return self._request("GET", f"prism_ticker_documents?{query}") or []
@@ -155,6 +182,7 @@ class SupabaseStore:
         """
         query = urllib.parse.urlencode({
             "ticker": f"eq.{ticker.upper()}",
+            "tenant_id": f"eq.{self._require_tenant()}",
             "select": "ticker,core_reasons,assumptions,valuation,underwriting",
             "limit": "1",
         })

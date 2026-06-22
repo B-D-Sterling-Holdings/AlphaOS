@@ -4,7 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { LogOut, ChevronDown, Sparkles, Menu, X, Search } from 'lucide-react';
+import { LogOut, ChevronDown, Sparkles, Menu, X, Search, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import {
   NAV_GROUPS, isGroupActive, isItemActive,
@@ -145,7 +145,7 @@ function SearchTrigger() {
 }
 
 // Full-screen drawer for narrow screens.
-function MobileDrawer({ open, onClose, pathname, onLogout }) {
+function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin }) {
   if (!open) return null;
   return (
     <div className="lg:hidden fixed inset-0 z-[10000]">
@@ -199,6 +199,16 @@ function MobileDrawer({ open, onClose, pathname, onLogout }) {
           </div>
         ))}
 
+        {isAdmin && (
+          <Link
+            href="/admin"
+            onClick={onClose}
+            className="w-full flex items-center gap-2 px-3 py-2.5 mt-2 rounded-xl text-[14px] font-semibold text-gray-700 hover:bg-gray-50 transition-colors no-underline"
+          >
+            <ShieldCheck size={16} /> User management
+          </Link>
+        )}
+
         <button
           onClick={onLogout}
           className="w-full flex items-center gap-2 px-3 py-2.5 mt-2 rounded-xl text-[14px] font-semibold text-red-600 hover:bg-red-50 transition-colors"
@@ -212,7 +222,7 @@ function MobileDrawer({ open, onClose, pathname, onLogout }) {
 
 export default function Navbar() {
   const pathname = usePathname();
-  const { logout, isDemo } = useAuth();
+  const { logout, isDemo, isAdmin } = useAuth();
   const [scrolled, setScrolled] = useState(false);
   const [openGroup, setOpenGroup] = useState(null); // only one dropdown open at a time
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -289,6 +299,21 @@ export default function Navbar() {
 
           <SearchTrigger />
 
+          {isAdmin && (
+            <Link
+              href="/admin"
+              className={`flex items-center justify-center w-9 h-9 rounded-xl transition-all duration-200 no-underline ${
+                isItemActive('/admin', pathname)
+                  ? 'text-emerald-700 bg-white shadow-sm ring-1 ring-emerald-500/20'
+                  : 'text-gray-400 hover:text-emerald-600 hover:bg-emerald-50'
+              }`}
+              title="User management"
+              aria-label="User management"
+            >
+              <ShieldCheck size={17} />
+            </Link>
+          )}
+
           <button
             onClick={handleLogout}
             className="flex items-center justify-center w-9 h-9 rounded-xl text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all duration-200"
@@ -318,7 +343,7 @@ export default function Navbar() {
         </div>
       </div>
 
-      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} pathname={pathname} onLogout={handleLogout} />
+      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} pathname={pathname} onLogout={handleLogout} isAdmin={isAdmin} />
     </nav>
   );
 }

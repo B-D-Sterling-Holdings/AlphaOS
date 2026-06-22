@@ -27,6 +27,13 @@ const MACRO_DIR = path.join(REPO_ROOT, 'macro_regime_allocator');
 const OUTPUT_DIR = path.join(MACRO_DIR, 'outputs');
 const CONFIG_YAML = path.join(MACRO_DIR, 'config.yaml');
 
+// The macro tables are now tenant-scoped. CI runs via the service-role key
+// (bypasses RLS), so every read/write here must filter/stamp tenant_id
+// explicitly. The triggering tenant is forwarded as APP_TENANT_ID; scheduled
+// (cron) runs with no tenant default to the CIO tenant.
+const CIO_TENANT_ID = '11111111-1111-1111-1111-111111111111';
+const TENANT_ID = process.env.APP_TENANT_ID || CIO_TENANT_ID;
+
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -72,6 +79,7 @@ async function pullConfig() {
   const { data, error } = await supabase
     .from('macro_regime_config')
     .select('config')
+    .eq('tenant_id', TENANT_ID)
     .eq('id', 1)
     .single();
   if (error || !data?.config) {
@@ -124,6 +132,7 @@ async function pushResults(args) {
     const { data } = await supabase
       .from('macro_regime_runs')
       .insert({
+        tenant_id: TENANT_ID,
         run_type: command,
         status: exitCode === 0 ? 'completed' : 'failed',
         started_at: startedAt,
@@ -173,6 +182,7 @@ async function pushResults(args) {
   if (fs.existsSync(livePredPath)) result.live_prediction = JSON.parse(fs.readFileSync(livePredPath, 'utf8'));
 
   const { error } = await supabase.from('macro_regime_results').insert({
+    tenant_id: TENANT_ID,
     run_id: runId,
     backtest: result.backtest,
     live_prediction: result.live_prediction,
@@ -195,9 +205,11 @@ async function pushResults(args) {
 async function pruneRuns(supabase) {
   try {
     const { data } = await supabase.from('macro_regime_runs')
-      .select('id').order('started_at', { ascending: false }).limit(5);
+      .select('id').eq('tenant_id', TENANT_ID)
+      .order('started_at', { ascending: false }).limit(5);
     if (data && data.length === 5) {
       await supabase.from('macro_regime_runs').delete()
+        .eq('tenant_id', TENANT_ID)
         .not('id', 'in', `(${data.map((r) => r.id).join(',')})`);
     }
   } catch (e) { console.error('pruneRuns:', e.message); }
@@ -206,9 +218,11 @@ async function pruneRuns(supabase) {
 async function pruneResults(supabase) {
   try {
     const { data } = await supabase.from('macro_regime_results')
-      .select('id').order('created_at', { ascending: false }).limit(3);
+      .select('id').eq('tenant_id', TENANT_ID)
+      .order('created_at', { ascending: false }).limit(3);
     if (data && data.length === 3) {
       await supabase.from('macro_regime_results').delete()
+        .eq('tenant_id', TENANT_ID)
         .not('id', 'in', `(${data.map((r) => r.id).join(',')})`);
     }
   } catch (e) { console.error('pruneResults:', e.message); }

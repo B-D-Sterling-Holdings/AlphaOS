@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 
-// Key/value row in app_settings (demo sessions transparently hit demo_app_settings).
+// Key/value row in app_settings (RLS-scoped to the caller's tenant via getDb).
 const STORAGE_KEY = 'fund-accounting-state';
 
 // GET -> { value: string | null }  (value is the JSON-stringified accounting state)
@@ -31,7 +31,7 @@ export async function PUT(request) {
     const supabase = await getDb();
     const { error } = await supabase
       .from('app_settings')
-      .upsert({ key: STORAGE_KEY, value });
+      .upsert({ key: STORAGE_KEY, value }, { onConflict: 'tenant_id,key' });
 
     if (error) throw new Error(error.message);
     return NextResponse.json({ ok: true });

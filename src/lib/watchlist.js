@@ -61,7 +61,8 @@ export async function saveWatchlist(data) {
         id: w.id,
         name: w.name,
         stocks: orderStocks(w.stocks || []),
-      }))
+      })),
+      { onConflict: 'tenant_id,id' }
     );
     if (error) throw new Error(error.message);
   }
@@ -70,5 +71,5 @@ export async function saveWatchlist(data) {
   await supabase.from('app_settings').upsert({
     key: 'activeWatchlistId',
     value: activeWatchlistId || 'default',
-  });
+  }, { onConflict: 'tenant_id,key' });
 }

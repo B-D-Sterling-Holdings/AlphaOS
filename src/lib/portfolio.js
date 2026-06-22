@@ -33,7 +33,7 @@ export async function addHolding(ticker, shares, costBasis) {
       shares,
       cost_basis: costBasis,
       updated_at: now,
-    }, { onConflict: 'ticker' });
+    }, { onConflict: 'tenant_id,ticker' });
 
   if (error) throw new Error(error.message);
   return loadPortfolio();

@@ -9,14 +9,18 @@ export async function GET(request) {
   }
 
   const session = await verifySession(token);
-  if (!session) {
+  if (!session?.tenantId) {
     return NextResponse.json({ authenticated: false }, { status: 401 });
   }
+
+  const isDemo = !!session.isDemo;
+  const role = session.role === 'admin' ? 'admin' : 'user';
 
   return NextResponse.json({
     authenticated: true,
     user: { username: session.username },
-    accountType: session.accountType === 'demo' ? 'demo' : 'prod',
+    role,
+    accountType: isDemo ? 'demo' : 'prod',
     expiresAt: session.exp ? new Date(session.exp * 1000).toISOString() : null,
   });
 }

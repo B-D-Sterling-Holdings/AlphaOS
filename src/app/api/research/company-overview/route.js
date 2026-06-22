@@ -148,7 +148,9 @@ export async function POST(req) {
       return NextResponse.json({ error: 'A ticker is required.' }, { status: 400 });
     }
 
-    const childEnv = { ...process.env, ...loadEnvFile() };
+    // Forward the tenant so the prism pipeline (supabase_store.py) stamps and
+    // filters every Supabase row by it — no cross-tenant reads/writes.
+    const childEnv = { ...process.env, ...loadEnvFile(), APP_TENANT_ID: supabase.tenantId };
     const { code, stdout, stderr } = await runPython(cleanTicker, childEnv);
 
     // Pull the JSON payload from between the sentinels the command prints.

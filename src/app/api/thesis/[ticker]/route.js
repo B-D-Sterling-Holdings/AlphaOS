@@ -96,7 +96,7 @@ export async function POST(request, { params }) {
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase.from('theses').upsert(row);
+    const { error } = await supabase.from('theses').upsert(row, { onConflict: 'tenant_id,ticker' });
     if (error) throw new Error(error.message);
 
     return NextResponse.json({
