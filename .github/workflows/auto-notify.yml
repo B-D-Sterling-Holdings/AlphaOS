@@ -7,9 +7,9 @@ name: Auto-Notify Reminders
 # any scheduler and authenticates with the shared CRON_SECRET.
 on:
   schedule:
-    # Every 15 minutes. GitHub's scheduled runs are best-effort and can fire
+    # Every 30 minutes. GitHub's scheduled runs are best-effort and can fire
     # late under load — fine for reminder nudges. (Min Actions interval is 5 min.)
-    - cron: '*/15 * * * *'
+    - cron: '*/30 * * * *'
   # Lets you trigger a run by hand from the Actions tab to test wiring.
   workflow_dispatch: {}
 
