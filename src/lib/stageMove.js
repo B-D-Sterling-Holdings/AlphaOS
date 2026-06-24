@@ -1,7 +1,11 @@
 // Single source of truth for moving a watchlist name between pipeline stages.
 //
-// Pipeline order is Watchlist → Draft & Review → Research (positions come from the
-// portfolio, not a stage). The `stage` enum is: `watching` → `draft` → `research`.
+// Pipeline order is Watchlist → Draft & Review → Research → Position Review. The
+// `stage` enum is: `watching` → `draft` → `research` → `position`. Position Review
+// is a real pipeline stage that lives on the watchlist stock — it is NOT the
+// portfolio holdings table (that stays the actual book on /holdings). Promoting a
+// researched name just flips its stage to `position`, and it can be sent back to
+// Research at any time with no loss of work.
 //
 // The cardinal rule (every page that moves a name must obey it): moving a name
 // between stages NEVER destroys data. A stage move only flips `stock.stage`; every
@@ -11,7 +15,7 @@
 // seeding the research workspace on entry to Research, so that seed is strictly
 // one-time: it only fills an EMPTY workspace and never overwrites existing work.
 
-export const STAGES = ['watching', 'draft', 'research'];
+export const STAGES = ['watching', 'draft', 'research', 'position'];
 
 // Every page that renders the watchlist caches the same /api/watchlist payload, but
 // under its own key (the Watchlist, Draft & Review, Research and Workflow pages each
@@ -29,6 +33,7 @@ export const STAGE_LABELS = {
   watching: 'Watchlist',
   draft: 'Draft & Review',
   research: 'Research',
+  position: 'Position Review',
 };
 
 // Normalize the legacy/retired `researching` stage into `watching`.
@@ -132,4 +137,47 @@ export async function persistStageMove({ watchlistData, watchlistId, ticker, new
     }
   }
   return { next, thesis };
+}
+
+// Position Review is driven PURELY by the pipeline (`stage === 'position'` watchlist
+// stocks) — it has no link to the live portfolio `holdings` book. To keep existing
+// names from vanishing when that link is cut, this one-time idempotent backfill
+// represents every real holding as a pipeline stock at `stage: 'position'`, exactly
+// as if it had been added through the pipeline from the start.
+//
+// It ONLY adds tickers that aren't on ANY watchlist yet (at any stage), so:
+//   - a name later demoted out of Position Review is never silently re-added, and
+//   - nothing is ever deleted — the `holdings` table is independent and untouched.
+// Returns the next watchlist payload, or null when nothing needs migrating.
+export function withHoldingsBackfilled(watchlistData, holdings) {
+  const watchlists = watchlistData?.watchlists || [];
+  if (!watchlists.length) return null;
+  const known = new Set(watchlists.flatMap(w => (w.stocks || []).map(s => s.ticker)));
+  const missing = [...new Set((holdings || []).map(h => h?.ticker).filter(Boolean))]
+    .filter(ticker => !known.has(ticker));
+  if (!missing.length) return null;
+  const targetId = watchlists.some(w => w.id === watchlistData?.activeWatchlistId)
+    ? watchlistData.activeWatchlistId
+    : watchlists[0].id;
+  return {
+    ...watchlistData,
+    watchlists: watchlists.map(w =>
+      w.id === targetId
+        ? { ...w, stocks: [...(w.stocks || []), ...missing.map(ticker => ({ ticker, stage: 'position' }))] }
+        : w
+    ),
+  };
+}
+
+// Persist the holdings backfill. Returns the next payload (so callers can update
+// their state/cache), or null when there was nothing to migrate.
+export async function persistHoldingsBackfill({ watchlistData, holdings }) {
+  const next = withHoldingsBackfilled(watchlistData, holdings);
+  if (!next) return null;
+  await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(next),
+  });
+  return next;
 }

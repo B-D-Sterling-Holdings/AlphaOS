@@ -3,10 +3,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { RefreshCw, Save, CheckCircle, ChevronDown, MessagesSquare, ArrowLeft, ArrowRight, User } from 'lucide-react';
+import { RefreshCw, Save, CheckCircle, MessagesSquare, ArrowLeft, ArrowRight, User } from 'lucide-react';
 import Card from '@/components/Card';
 import Toast from '@/components/Toast';
 import DraftReview from '@/components/DraftReview';
+import TickerSearchSelect from '@/components/TickerSearchSelect';
 import { useCache } from '@/lib/CacheContext';
 import { normalizeAutoNotify } from '@/lib/autoNotify';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS } from '@/lib/stageMove';
@@ -294,21 +295,7 @@ export default function DraftReviewPage() {
       <Card className="mb-8 animate-fade-in-up stagger-2">
         <div className="flex items-center gap-4">
           <label className="text-xs text-gray-500 uppercase tracking-wider font-bold">Select Company</label>
-          <div className="relative">
-            <select
-              value={selectedTicker}
-              onChange={e => setSelectedTicker(e.target.value)}
-              className="appearance-none bg-gray-50/50 border border-gray-200 rounded-xl pl-4 pr-8 py-2.5 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-200 cursor-pointer"
-            >
-              <option value="">-- Select Ticker --</option>
-              {researchStocks.map(stock => (
-                <option key={`${stock.watchlistId}-${stock.ticker}`} value={stock.ticker}>
-                  {stock.ticker} · {stock.watchlistName}
-                </option>
-              ))}
-            </select>
-            <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-          </div>
+          <TickerSearchSelect items={researchStocks} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
 
           {selectedStock && draftReview.author?.name?.trim() && (
             <span

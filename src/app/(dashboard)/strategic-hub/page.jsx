@@ -6,10 +6,10 @@ import {
   ThumbsUp, Meh, CloudRain, AlertTriangle,
   Scissors, Plus, LogOut as ExitIcon, FileText, ArrowRight,
   BarChart3, Shield, X, RefreshCw, Crosshair, ChevronUp, ChevronDown, ClipboardList, Target,
-  FlaskConical, Trash2,
+  FlaskConical, Trash2, Eye, TrendingUp, TrendingDown, List,
 } from 'lucide-react';
-import TaskBoardPage from '../tasks/page';
 import { getValuationExpectedReturn } from '@/lib/valuationModel';
+import { normalizeStage } from '@/lib/stageMove';
 
 /* ── helpers ── */
 const fmt$ = v => {
@@ -380,6 +380,123 @@ function CandidateModal({ candidate, onSave, onDelete, onClose }) {
   );
 }
 
+/* ── Watchlist Review ──
+   Read & annotate names from a chosen watchlist without leaving the hub. Only names
+   actually on the watchlist (stage `watching`) show here — pipeline/position names
+   are filtered out upstream. Both "Why interested" (`note`) and "Things to think
+   about" (`thoughts`) are editable single-line fields saved back onto the stock. */
+function WatchlistReview({ watchlists, activeWlId, onSwitchWl, stocks, quotes, onSaveField }) {
+  return (
+    <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+          <Eye size={13} className="text-gray-400" /> Watchlist Review
+        </h2>
+        {watchlists.length > 0 && (
+          <div className="flex items-center gap-1.5">
+            <List size={13} className="text-gray-400" />
+            <select
+              value={activeWlId || ''}
+              onChange={e => onSwitchWl(e.target.value)}
+              className="text-[11px] font-medium text-gray-600 bg-gray-50 border-0 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-emerald-500/30">
+              {watchlists.map(w => (
+                <option key={w.id} value={w.id}>{w.name} ({(w.stocks || []).length})</option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-100">
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-2">Ticker</th>
+            <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Price</th>
+            <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Day</th>
+            <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Off 52W Hi</th>
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-6" style={{ width: '240px' }}>Why Interested</th>
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-6 pr-2" style={{ width: '280px' }}>Things to Think About</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stocks.length === 0 ? (
+            <tr>
+              <td colSpan={6} className="py-8 text-center text-sm text-gray-400">
+                No names on this watchlist yet. Add tickers on the Watchlist page.
+              </td>
+            </tr>
+          ) : stocks.map(s => {
+            const q = quotes?.[s.ticker];
+            const off52 = q?.price && q?.fiftyTwoWeekHigh
+              ? ((q.price - q.fiftyTwoWeekHigh) / q.fiftyTwoWeekHigh) * 100
+              : null;
+            return (
+              <tr key={s.ticker} className="border-b border-gray-50 align-top">
+                <td className="py-3 pl-2">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-bold text-gray-900">{s.ticker}</span>
+                    {q?.shortName && <span className="text-[10px] text-gray-400 truncate max-w-[140px]">{q.shortName}</span>}
+                  </div>
+                </td>
+                <td className="py-3 text-right">
+                  {q?.price ? (
+                    <span className="text-xs font-semibold text-gray-800 tabular-nums">${q.price.toFixed(2)}</span>
+                  ) : (
+                    <span className="text-[10px] text-gray-300">—</span>
+                  )}
+                </td>
+                <td className="py-3 text-right">
+                  {q?.dayChangePct != null ? (
+                    <span className={`inline-flex items-center justify-end gap-0.5 text-xs font-semibold tabular-nums ${q.dayChangePct >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {q.dayChangePct >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+                      {pct(q.dayChangePct)}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-gray-300">—</span>
+                  )}
+                </td>
+                <td className="py-3 text-right">
+                  {off52 != null ? (
+                    <span className={`text-xs font-semibold tabular-nums ${off52 <= -20 ? 'text-emerald-700' : off52 <= -10 ? 'text-amber-600' : 'text-gray-500'}`}>
+                      {off52.toFixed(1)}%
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-gray-300">—</span>
+                  )}
+                </td>
+                <td className="py-3 pl-6" style={{ width: '240px', maxWidth: '240px' }}>
+                  <input
+                    type="text"
+                    spellCheck={true}
+                    key={`${activeWlId}-${s.ticker}-note`}
+                    defaultValue={s.note || ''}
+                    placeholder="Why interested..."
+                    title={s.note || ''}
+                    onBlur={e => { if (e.target.value !== (s.note || '')) onSaveField(activeWlId, s.ticker, 'note', e.target.value); }}
+                    className="w-full text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 truncate focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-all"
+                  />
+                </td>
+                <td className="py-3 pl-6 pr-2" style={{ width: '280px', maxWidth: '280px' }}>
+                  <input
+                    type="text"
+                    spellCheck={true}
+                    key={`${activeWlId}-${s.ticker}-thoughts`}
+                    defaultValue={s.thoughts || ''}
+                    placeholder="Catalysts, valuation, what to watch for..."
+                    title={s.thoughts || ''}
+                    onBlur={e => { if (e.target.value !== (s.thoughts || '')) onSaveField(activeWlId, s.ticker, 'thoughts', e.target.value); }}
+                    className="w-full text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 truncate focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-all"
+                  />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /* ── Main Page ── */
 export default function StrategicHubPage() {
   const router = useRouter();
@@ -392,8 +509,11 @@ export default function StrategicHubPage() {
   const [sortBy, setSortBy] = useState('priority'); // priority | weight | completeness | sentiment | action
   const [filterAction, setFilterAction] = useState('all');
   const [filterSentiment, setFilterSentiment] = useState('all');
-  const [tab, setTab] = useState('hub');
   const [portfolioNotes, setPortfolioNotes] = useState('');
+  // Watchlist review (read + annotate watchlist names from the hub)
+  const [watchlistData, setWatchlistData] = useState(null); // { watchlists, activeWatchlistId }
+  const [activeWlId, setActiveWlId] = useState(null);
+  const [wlQuotes, setWlQuotes] = useState({});
   const [notesSaved, setNotesSaved] = useState(false);
   const notesTimer = useRef(null);
 
@@ -449,6 +569,47 @@ export default function StrategicHubPage() {
   }, []);
 
   useEffect(() => { loadCandidates(); }, [loadCandidates]);
+
+  // ── Watchlist review ──
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/watchlist');
+        const d = await res.json();
+        setWatchlistData(d);
+        setActiveWlId(prev => prev || d.activeWatchlistId || d.watchlists?.[0]?.id || null);
+
+        const allTickers = [...new Set((d.watchlists || []).flatMap(w => (w.stocks || []).map(s => s.ticker)))].filter(Boolean);
+        if (allTickers.length) {
+          const qRes = await fetch(`/api/quotes?tickers=${allTickers.join(',')}`);
+          const qData = await qRes.json();
+          setWlQuotes(qData.quotes || qData || {});
+        }
+      } catch {}
+    })();
+  }, []);
+
+  // Persist a per-stock field (e.g. `note` = why interested, `thoughts` = things to
+  // think about) back to the watchlist blob.
+  const saveWlField = useCallback(async (wlId, ticker, field, value) => {
+    setWatchlistData(prev => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        watchlists: prev.watchlists.map(w =>
+          w.id === wlId
+            ? { ...w, stocks: (w.stocks || []).map(s => s.ticker === ticker ? { ...s, [field]: value } : s) }
+            : w
+        ),
+      };
+      fetch('/api/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      }).catch(() => {});
+      return next;
+    });
+  }, []);
 
   const handleSaveCandidate = useCallback(async (form) => {
     await fetch('/api/strategic-candidates', {
@@ -636,6 +797,15 @@ export default function StrategicHubPage() {
 
   const editHolding = editTicker ? withWeights.find(h => h.ticker === editTicker) : null;
 
+  const activeWatchlist = watchlistData?.watchlists?.find(w => w.id === activeWlId) || null;
+  const wlStocks = useMemo(() => {
+    // Only names actually on the watchlist (stage `watching`) — exclude anything
+    // promoted into the pipeline (draft/research) or held as a position/holding
+    // (stage `position`, which is also where the holdings backfill lands).
+    const list = (activeWatchlist?.stocks || []).filter(s => normalizeStage(s.stage) === 'watching');
+    return [...list].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  }, [activeWatchlist]);
+
   if (loading) {
     return (
       <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16">
@@ -646,59 +816,34 @@ export default function StrategicHubPage() {
     );
   }
 
-  return (
-    <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16 space-y-6 animate-hub-fade-in relative">
-      <style jsx global>{`
-        @keyframes hubFadeIn {
-          0% { opacity: 0; }
-          100% { opacity: 1; }
-        }
-        .animate-hub-fade-in { animation: hubFadeIn 0.5s ease-out both; }
-      `}</style>
-      {/* ── Header ── */}
-      <div className="absolute right-6 lg:right-12 top-1 z-20 flex items-center gap-1 bg-gray-100 rounded-xl p-1">
-        <button onClick={() => setTab('hub')}
-          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${tab === 'hub' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-          <Target size={13} /> Strategic Hub
-        </button>
-        <button onClick={() => setTab('tasks')}
-          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${tab === 'tasks' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-          <ClipboardList size={13} /> Task Board
-        </button>
+  // ── Position Overview card ──
+  const positionOverviewCard = (
+    <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+          Position Overview
+        </h2>
+        <div className="flex items-center gap-2">
+          {/* Filters */}
+          <select value={filterSentiment} onChange={e => setFilterSentiment(e.target.value)}
+            className="text-[11px] font-medium text-gray-600 bg-gray-50 border-0 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-emerald-500/30">
+            <option value="all">All Sentiment</option>
+            <option value="feeling_good">Feeling Good</option>
+            <option value="neutral">Neutral</option>
+            <option value="uneasy">Uneasy</option>
+          </select>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+            className="text-[11px] font-medium text-gray-600 bg-gray-50 border-0 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-emerald-500/30">
+            <option value="priority">Sort: Priority</option>
+            <option value="weight">Sort: Weight</option>
+            <option value="gl">Sort: P&L</option>
+            <option value="sentiment">Sort: Sentiment</option>
+          </select>
+        </div>
       </div>
 
-      {tab === 'tasks' ? (
-        <div key="tasks" className="-mx-6 lg:-mx-12 animate-hub-fade-in"><TaskBoardPage /></div>
-      ) : (<div key="hub" className="space-y-6 animate-hub-fade-in">
-      <h1 className="text-3xl font-bold text-gray-900">Strategic Hub</h1>
-
-      {/* ── Full Position Grid ── */}
-      <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
-            Position Overview
-          </h2>
-          <div className="flex items-center gap-2">
-            {/* Filters */}
-            <select value={filterSentiment} onChange={e => setFilterSentiment(e.target.value)}
-              className="text-[11px] font-medium text-gray-600 bg-gray-50 border-0 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-emerald-500/30">
-              <option value="all">All Sentiment</option>
-              <option value="feeling_good">Feeling Good</option>
-              <option value="neutral">Neutral</option>
-              <option value="uneasy">Uneasy</option>
-            </select>
-            <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-              className="text-[11px] font-medium text-gray-600 bg-gray-50 border-0 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-emerald-500/30">
-              <option value="priority">Sort: Priority</option>
-              <option value="weight">Sort: Weight</option>
-              <option value="gl">Sort: P&L</option>
-              <option value="sentiment">Sort: Sentiment</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Table */}
-        <div>
+      {/* Table */}
+      <div>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100">
@@ -778,77 +923,112 @@ export default function StrategicHubPage() {
                   </td>
                 </tr>
               )}
-
-              {/* ── Research Pipeline (candidates) — same table so columns align ── */}
-              <tr>
-                <td colSpan={8} className="pt-7 pb-2">
-                  <div className="flex items-center justify-between border-t border-gray-100 pt-4">
-                    <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
-                      Research Pipeline
-                    </h3>
-                    <button
-                      onClick={() => setEditCandidate({ id: null, ticker: '', status: 'researching', conviction: 3, priority: 'normal', target_weight: '', notes: '' })}
-                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-blue-600 transition-colors">
-                      <Plus size={12} /> Add
-                    </button>
-                  </div>
-                </td>
-              </tr>
-
-              {/* Column labels for the candidate rows (align with positions above) */}
-              <tr className="border-b border-gray-100">
-                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-2">Ticker</th>
-                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Priority</th>
-                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Sentiment</th>
-                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Conv.</th>
-                <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Tgt Weight</th>
-                <th className="pb-2"></th>
-                <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Status</th>
-                <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-8 pr-2">Notes</th>
-              </tr>
-
-              {candidates.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-3 pl-2">
-                    <button
-                      onClick={() => setEditCandidate({ id: null, ticker: '', status: 'researching', conviction: 3, priority: 'normal', target_weight: '', notes: '' })}
-                      className="text-[11px] text-gray-300 hover:text-blue-500 transition-colors">
-                      + Add a name you&apos;re researching
-                    </button>
-                  </td>
-                </tr>
-              ) : candidates.map(c => (
-                <tr key={c.id}
-                  className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors cursor-pointer group"
-                  onClick={() => setEditCandidate(c)}>
-                  <td className="py-3 pl-2">
-                    <span className="text-xs font-bold text-gray-900">{c.ticker}</span>
-                  </td>
-                  <td className="py-3"><PriorityBadge priority={c.priority} /></td>
-                  <td className="py-3"><SentimentBadge sentiment={c.sentiment} /></td>
-                  <td className="py-3"><ConvictionDots level={c.conviction} /></td>
-                  <td className="py-3 text-right">
-                    {c.target_weight != null ? (
-                      <span className="text-xs font-semibold text-gray-800 tabular-nums">{Number(c.target_weight).toFixed(1)}%</span>
-                    ) : (
-                      <span className="text-[10px] text-gray-300">—</span>
-                    )}
-                  </td>
-                  <td className="py-3 text-right"></td>
-                  <td className="py-3 text-right"><StatusBadge status={c.status} /></td>
-                  <td className="py-3 pl-8 pr-2" style={{ width: '260px', maxWidth: '260px' }}>
-                    {c.notes ? (
-                      <div className="text-[11px] text-gray-500 truncate" style={{ width: '240px' }} title={c.notes}>{c.notes}</div>
-                    ) : (
-                      <span className="text-[10px] text-gray-300">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
             </tbody>
           </table>
-        </div>
       </div>
+    </div>
+  );
+
+  // ── Research Pipeline card ──
+  const researchPipelineCard = (
+    <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+          <FlaskConical size={13} className="text-blue-500" /> Research Pipeline
+        </h2>
+        <button
+          onClick={() => setEditCandidate({ id: null, ticker: '', status: 'researching', conviction: 3, priority: 'normal', target_weight: '', notes: '' })}
+          className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-400 hover:text-blue-600 transition-colors">
+          <Plus size={12} /> Add
+        </button>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-100">
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-2">Ticker</th>
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Priority</th>
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Sentiment</th>
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Conv.</th>
+            <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Tgt Weight</th>
+            <th className="text-right text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2">Status</th>
+            <th className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider pb-2 pl-8 pr-2" style={{ width: '260px' }}>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {candidates.length === 0 ? (
+            <tr>
+              <td colSpan={7} className="py-3 pl-2">
+                <button
+                  onClick={() => setEditCandidate({ id: null, ticker: '', status: 'researching', conviction: 3, priority: 'normal', target_weight: '', notes: '' })}
+                  className="text-[11px] text-gray-300 hover:text-blue-500 transition-colors">
+                  + Add a name you&apos;re researching
+                </button>
+              </td>
+            </tr>
+          ) : candidates.map(c => (
+            <tr key={c.id}
+              className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors cursor-pointer group"
+              onClick={() => setEditCandidate(c)}>
+              <td className="py-3 pl-2">
+                <span className="text-xs font-bold text-gray-900">{c.ticker}</span>
+              </td>
+              <td className="py-3"><PriorityBadge priority={c.priority} /></td>
+              <td className="py-3"><SentimentBadge sentiment={c.sentiment} /></td>
+              <td className="py-3"><ConvictionDots level={c.conviction} /></td>
+              <td className="py-3 text-right">
+                {c.target_weight != null ? (
+                  <span className="text-xs font-semibold text-gray-800 tabular-nums">{Number(c.target_weight).toFixed(1)}%</span>
+                ) : (
+                  <span className="text-[10px] text-gray-300">—</span>
+                )}
+              </td>
+              <td className="py-3 text-right"><StatusBadge status={c.status} /></td>
+              <td className="py-3 pl-8 pr-2" style={{ width: '260px', maxWidth: '260px' }}>
+                {c.notes ? (
+                  <div className="text-[11px] text-gray-500 truncate" style={{ width: '240px' }} title={c.notes}>{c.notes}</div>
+                ) : (
+                  <span className="text-[10px] text-gray-300">—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const hasCandidates = candidates.length > 0;
+
+  return (
+    <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16 space-y-6 animate-hub-fade-in relative">
+      <style jsx global>{`
+        @keyframes hubFadeIn {
+          0% { opacity: 0; }
+          100% { opacity: 1; }
+        }
+        .animate-hub-fade-in { animation: hubFadeIn 0.5s ease-out both; }
+      `}</style>
+
+      <div key="hub" className="space-y-6 animate-hub-fade-in">
+      <h1 className="text-3xl font-bold text-gray-900">Strategic Hub</h1>
+
+      {/* When there are names in the pipeline, surface Research above the book;
+          otherwise keep Position Overview first and the (empty) pipeline below. */}
+      {hasCandidates ? (
+        <>{researchPipelineCard}{positionOverviewCard}</>
+      ) : (
+        <>{positionOverviewCard}{researchPipelineCard}</>
+      )}
+
+      {/* ── Watchlist Review ── */}
+      <WatchlistReview
+        watchlists={watchlistData?.watchlists || []}
+        activeWlId={activeWlId}
+        onSwitchWl={setActiveWlId}
+        stocks={wlStocks}
+        quotes={wlQuotes}
+        onSaveField={saveWlField}
+      />
 
       {/* ── Portfolio Notes ── */}
       <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
@@ -867,7 +1047,7 @@ export default function StrategicHubPage() {
         />
       </div>
 
-      </div>)}
+      </div>
 
       {/* ── Edit Modal ── */}
       {editHolding && (

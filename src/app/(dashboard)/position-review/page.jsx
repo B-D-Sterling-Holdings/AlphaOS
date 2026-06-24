@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useLayoutEffect, memo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { RefreshCw, Download, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, Star, ChevronDown, ExternalLink, Link as LinkIcon, Send, MessageSquare, FileText, BookOpen, Mic, MoreHorizontal, Pencil, Search } from 'lucide-react';
+import { RefreshCw, Download, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, Star, ChevronDown, ExternalLink, Link as LinkIcon, Send, MessageSquare, FileText, BookOpen, Mic, MoreHorizontal, Pencil, Search, ArrowLeft } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
 import LineChart from '@/components/charts/LineChart';
@@ -15,6 +15,7 @@ import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
+import { persistStageMove, writeWatchlistCache, persistHoldingsBackfill, STAGE_LABELS } from '@/lib/stageMove';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -219,6 +220,47 @@ export default function ResearchPage() {
   const [portfolio, setPortfolio] = useState(() => cache.get('research_portfolio') || null);
   const [selectedTicker, setSelectedTicker] = useState(() => urlTicker || cache.get('research_selectedTicker') || '');
   const [tickerData, setTickerData] = useState(() => cache.get('research_tickerData') || null);
+  const [watchlistData, setWatchlistData] = useState(() => cache.get('watchlist_data') || null);
+
+  // Position Review membership: every `stage === 'position'` watchlist stock, tagged
+  // with its watchlist so it can be demoted back to Research. This is the SOLE source
+  // of what's in Position Review — the portfolio holdings book is not consulted (it was
+  // backfilled into `position` stocks once, on load).
+  const positionStocks = useMemo(() => (
+    (watchlistData?.watchlists || []).flatMap(w =>
+      (w.stocks || [])
+        .filter(s => s.stage === 'position')
+        .map(s => ({ ...s, watchlistId: w.id, watchlistName: w.name }))
+    )
+  ), [watchlistData]);
+
+  const selectedPositionStock = useMemo(
+    () => positionStocks.find(s => s.ticker === selectedTicker) || null,
+    [positionStocks, selectedTicker]
+  );
+
+  // Demote the selected name out of Position Review. Every name here is a real
+  // `position`-stage watchlist stock, so this just flips `stock.stage` back to
+  // `research` — the name then leaves Position Review entirely (no holdings union to
+  // keep it pinned here). Data-safe: only the stage flips; the thesis
+  // (researchWorkspace/draftReview/valuation) and the portfolio book are untouched.
+  const moveStage = useCallback(async (newStage) => {
+    if (!selectedPositionStock || !watchlistData) return;
+    const ticker = selectedPositionStock.ticker;
+    try {
+      const { next } = await persistStageMove({
+        watchlistData,
+        watchlistId: selectedPositionStock.watchlistId,
+        ticker,
+        newStage,
+      });
+      setWatchlistData(next);
+      writeWatchlistCache(cache, next);
+      setToast({ message: `${ticker} moved to ${STAGE_LABELS[newStage]}`, type: 'success' });
+    } catch {
+      setToast({ message: `Failed to move ${ticker}`, type: 'error' });
+    }
+  }, [selectedPositionStock, watchlistData, cache]);
   const [loading, setLoading] = useState(() => !cache.get('research_portfolio'));
   const [tickerLoading, setTickerLoading] = useState(false);
   const [toast, setToast] = useState(null);
@@ -236,32 +278,60 @@ export default function ResearchPage() {
   const modelRef = useRef(null);
   const [exporting, setExporting] = useState(false);
 
+  // Position Review membership is driven PURELY by the `position` pipeline stage —
+  // there is no link to the portfolio holdings book. The portfolio is still loaded for
+  // the position-snapshot stats and for the one-time backfill that turns any
+  // pre-existing holding into a `position` stock, so nothing vanishes when that link
+  // is cut. The backfill only ADDS missing names and never touches the holdings table.
   useEffect(() => {
-    fetch('/api/portfolio')
-      .then(r => r.json())
-      .then(data => {
-        setPortfolio(data);
-        cache.set('research_portfolio', data);
-        setLoading(false);
-        if (data.holdings?.length && !selectedTicker) {
-          const first = data.holdings[0].ticker;
-          setSelectedTicker(first);
-          cache.set('research_selectedTicker', first);
-        }
-      })
-      .catch(() => setLoading(false));
-  }, []);
+    let alive = true;
+    Promise.all([
+      fetch('/api/portfolio').then(r => r.json()).catch(() => null),
+      fetch('/api/watchlist').then(r => r.json()).catch(() => null),
+    ]).then(async ([pf, wl]) => {
+      if (!alive) return;
+      if (pf) { setPortfolio(pf); cache.set('research_portfolio', pf); }
+      let nextWl = wl;
+      if (wl) {
+        try {
+          const migrated = await persistHoldingsBackfill({ watchlistData: wl, holdings: pf?.holdings });
+          if (migrated) nextWl = migrated;
+        } catch {}
+        if (!alive) return;
+        setWatchlistData(nextWl);
+        writeWatchlistCache(cache, nextWl);
+      }
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [cache]);
 
-  // Honor /position-review?ticker=XYZ (e.g. from the command palette) even when
-  // the page is already mounted — select it if it's an existing holding.
+  // Keep a valid Position Review name selected. When the current pick leaves the stage
+  // (e.g. just demoted) fall back to the first remaining position; when the stage is
+  // empty, clear the selection so the empty state shows instead of a stale ticker.
+  useEffect(() => {
+    if (!positionStocks.length) {
+      if (selectedTicker) { setSelectedTicker(''); cache.set('research_selectedTicker', ''); }
+      return;
+    }
+    if (!selectedTicker || !positionStocks.some(s => s.ticker === selectedTicker)) {
+      const first = positionStocks[0].ticker;
+      setSelectedTicker(first);
+      cache.set('research_selectedTicker', first);
+    }
+  }, [positionStocks]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Honor /position-review?ticker=XYZ (e.g. from the command palette or the Workflow
+  // Position card) even when the page is already mounted — select it if it's a name in
+  // the Position Review stage.
   useEffect(() => {
     if (!urlTicker) return;
     const t = urlTicker.toUpperCase();
-    if (t !== selectedTicker && (portfolio?.holdings || []).some(h => h.ticker === t)) {
+    if (t !== selectedTicker && positionStocks.some(s => s.ticker === t)) {
       setSelectedTicker(t);
       cache.set('research_selectedTicker', t);
     }
-  }, [urlTicker, portfolio]);
+  }, [urlTicker, positionStocks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadTickerData = useCallback(async (ticker) => {
     if (!ticker) return;
@@ -615,6 +685,10 @@ export default function ResearchPage() {
 
   const holdings = portfolio?.holdings || [];
   const cashVal = portfolio?.cash || 0;
+  // The picker is driven PURELY by the `position` pipeline stage — no holdings link.
+  // (Pre-existing holdings were backfilled into `position` stocks on load.)
+  const pickerItems = [...new Map(positionStocks.map(s => [s.ticker, { ticker: s.ticker }])).values()];
+  // Every name shown here is a real position-stage stock, so every name is demotable.
   const holding = holdings.find(h => h.ticker === selectedTicker);
   const selectedLivePrice = liveQuote?.price || null;
   const holdingPrice = (h) => (h.ticker === selectedTicker && selectedLivePrice) ? selectedLivePrice : h.cost_basis;
@@ -773,15 +847,25 @@ export default function ResearchPage() {
       <Card className="mb-8 animate-fade-in-up stagger-2">
         <div className="flex items-center gap-4">
           <label className="text-xs text-gray-500 uppercase tracking-wider font-bold">Select Company</label>
-          <TickerPicker holdings={holdings} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
+          <TickerPicker holdings={pickerItems} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
+
+          {selectedPositionStock && (
+            <button
+              onClick={() => moveStage('research')}
+              title="Demote back to Research — it leaves Position Review; nothing is deleted, the thesis is kept"
+              className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors"
+            >
+              <ArrowLeft size={13} /> Back to Research
+            </button>
+          )}
         </div>
       </Card>
       </div>
 
       {!selectedTicker ? (
         <div className="text-center py-20">
-          <p className="text-lg text-gray-400 mb-2">Select a ticker to view research data</p>
-          <p className="text-sm text-gray-300">Choose from your portfolio holdings above</p>
+          <p className="text-lg text-gray-400 mb-2">No names in Position Review</p>
+          <p className="text-sm text-gray-300">Promote a researched name into Position to review it here</p>
         </div>
       ) : tickerLoading ? (
         <div className="space-y-6">

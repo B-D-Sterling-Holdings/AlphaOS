@@ -110,6 +110,17 @@ export function draftReviewStatus(thesis) {
   };
 }
 
+// Diligence checklist tally (due-diligence + dislocation questions) for the
+// Workflow pipeline. The checklist is seeded into the research workspace, so a
+// draft-stage name only has counts once it has touched Research; callers should
+// treat `total === 0` as "no checklist yet" rather than "0% done".
+export function checklistStatus(thesis) {
+  const ws = thesis?.underwriting?.researchWorkspace || {};
+  const items = [...(ws.dueDiligenceItems || []), ...(ws.dislocationItems || [])];
+  const done = items.filter(i => i?.done).length;
+  return { done, total: items.length };
+}
+
 // Valid Research-page tab keys a deep link (?tab=) may target. Draft & Review is
 // its own top-level page (/draft-review), so it is intentionally not in this list.
 export const RESEARCH_TABS = ['fundamentals', 'thesis', 'diligence', 'valuation', 'news', 'decision'];
