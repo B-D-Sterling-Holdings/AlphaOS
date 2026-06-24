@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useLayoutEffect, memo } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { RefreshCw, Download, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, Image as ImageIcon, X, ZoomIn, Star, ChevronDown, ExternalLink, Link as LinkIcon, Send, MessageSquare, FileText, BookOpen, Mic, MoreHorizontal, Pencil, Search } from 'lucide-react';
+import { RefreshCw, Download, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, Star, ChevronDown, ExternalLink, Link as LinkIcon, Send, MessageSquare, FileText, BookOpen, Mic, MoreHorizontal, Pencil, Search } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
 import LineChart from '@/components/charts/LineChart';
@@ -14,6 +14,7 @@ import { formatMoney, formatLargeNumber, formatShareCount, formatNumber } from '
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
 import RichTextArea from '@/components/RichTextArea';
+import { migrateNewsImages } from '@/lib/migrateNewsImages';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -319,7 +320,7 @@ export default function ResearchPage() {
     setThesisDirty(false);
     fetch(`/api/thesis/${selectedTicker}`)
       .then(r => r.json())
-      .then(data => setThesis(data))
+      .then(data => setThesis(migrateNewsImages(data)))
       .catch(() => {})
       .finally(() => setThesisLoading(false));
   }, [selectedTicker]);
@@ -425,55 +426,16 @@ export default function ResearchPage() {
     setThesisDirty(true);
   };
 
-  const [imageUploading, setImageUploading] = useState(false);
-  const [previewImage, setPreviewImage] = useState(null);
-
-  const uploadNewsImage = async (newsIdx, files) => {
-    if (!files || files.length === 0 || !selectedTicker) return;
-    setImageUploading(true);
-    try {
-      const newImages = [];
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('ticker', selectedTicker);
-        const res = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (data.url) {
-          newImages.push({ url: data.url, path: data.path, name: file.name });
-        }
-      }
-      if (newImages.length > 0) {
-        setThesis(prev => ({
-          ...prev,
-          newsUpdates: (prev.newsUpdates || []).map((entry, i) => {
-            if (i !== newsIdx) return entry;
-            return { ...entry, images: [...(entry.images || []), ...newImages] };
-          }),
-        }));
-        setThesisDirty(true);
-      }
-    } catch (e) {
-      setToast({ message: 'Failed to upload image', type: 'error' });
-    } finally {
-      setImageUploading(false);
-    }
-  };
-
-  const removeNewsImage = async (newsIdx, imgIdx) => {
-    const entry = thesis.newsUpdates?.[newsIdx];
-    const img = entry?.images?.[imgIdx];
-    if (img?.path) {
-      try { await fetch(`/api/upload?path=${encodeURIComponent(img.path)}`, { method: 'DELETE' }); } catch {}
-    }
-    setThesis(prev => ({
-      ...prev,
-      newsUpdates: (prev.newsUpdates || []).map((entry, i) => {
-        if (i !== newsIdx) return entry;
-        return { ...entry, images: (entry.images || []).filter((_, j) => j !== imgIdx) };
-      }),
-    }));
+  // Persisting commit for the News "What Happened" body (a RichTextArea, so images
+  // live inline in the body itself — no separate gallery).
+  const commitNewsUpdate = (idx, field, value) => {
+    const updated = {
+      ...thesis,
+      newsUpdates: (thesis.newsUpdates || []).map((entry, i) => i === idx ? { ...entry, [field]: value } : entry),
+    };
+    setThesis(updated);
     setThesisDirty(true);
+    saveThesis(updated);
   };
 
   const updateCoreReason = (idx, field, value) => {
@@ -1136,15 +1098,14 @@ export default function ResearchPage() {
 
                           <div className="mb-4">
                             <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">What Happened</label>
-                            <textarea
+                            <RichTextArea
                               value={entry.body || ''}
-                              onChange={e => updateNewsUpdate(activeIdx, 'body', e.target.value)}
-                              onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; e.target.dataset.sizedFor = e.target.value; }}
-                              ref={el => { if (el && el.dataset.sizedFor !== el.value) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; el.dataset.sizedFor = el.value; } }}
-                              placeholder="Summarize the key takeaways..."
+                              onChange={value => updateNewsUpdate(activeIdx, 'body', value)}
+                              onBlur={value => commitNewsUpdate(activeIdx, 'body', value)}
+                              onCommit={value => commitNewsUpdate(activeIdx, 'body', value)}
+                              ticker={selectedTicker}
+                              placeholder="Summarize the key takeaways — paste charts or screenshots inline..."
                               rows={3}
-                              spellCheck={true}
-                              className="w-full bg-gray-50/50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-200 placeholder:text-gray-300 resize-none overflow-hidden"
                             />
                           </div>
 
@@ -1162,59 +1123,6 @@ export default function ResearchPage() {
                             />
                           </div>
 
-                          {/* ── Attached Images ── */}
-                          <div className="mt-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider flex items-center gap-1">
-                                <ImageIcon size={11} />
-                                Attached Images
-                              </label>
-                              <label className={`flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 cursor-pointer transition-colors ${imageUploading ? 'opacity-50 pointer-events-none' : ''}`}>
-                                <Plus size={12} />
-                                {imageUploading ? 'Uploading...' : 'Add Image'}
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  multiple
-                                  className="hidden"
-                                  onChange={e => uploadNewsImage(activeIdx, Array.from(e.target.files))}
-                                />
-                              </label>
-                            </div>
-                            {(entry.images && entry.images.length > 0) ? (
-                              <div className="grid grid-cols-3 gap-2">
-                                {entry.images.map((img, imgIdx) => (
-                                  <div key={imgIdx} className="relative group rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
-                                    <img
-                                      src={img.url}
-                                      alt={img.name || 'Attached image'}
-                                      className="w-full h-24 object-cover cursor-pointer"
-                                      onClick={() => setPreviewImage(img.url)}
-                                    />
-                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
-                                      <button
-                                        onClick={() => setPreviewImage(img.url)}
-                                        className="p-1 bg-white/90 rounded-md text-gray-700 hover:bg-white"
-                                      >
-                                        <ZoomIn size={14} />
-                                      </button>
-                                      <button
-                                        onClick={() => removeNewsImage(activeIdx, imgIdx)}
-                                        className="p-1 bg-white/90 rounded-md text-red-500 hover:bg-white"
-                                      >
-                                        <Trash2 size={14} />
-                                      </button>
-                                    </div>
-                                    <p className="text-[9px] text-gray-400 truncate px-1.5 py-0.5">{img.name}</p>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="text-center py-4 border border-dashed border-gray-200 rounded-lg">
-                                <p className="text-xs text-gray-300">No images attached</p>
-                              </div>
-                            )}
-                          </div>
                         </div>
                       </div>
                     );
@@ -1555,26 +1463,6 @@ export default function ResearchPage() {
 
       {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
 
-      {/* Image Preview Modal */}
-      {previewImage && (
-        <div
-          className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-8"
-          onClick={() => setPreviewImage(null)}
-        >
-          <button
-            onClick={() => setPreviewImage(null)}
-            className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
-          >
-            <X size={20} />
-          </button>
-          <img
-            src={previewImage}
-            alt="Preview"
-            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
-      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import {
   Briefcase, Search, Eye, FolderOpen, ClipboardList, ListChecks,
-  PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles, LayoutDashboard,
+  PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles, LayoutDashboard, Workflow, MessagesSquare,
 } from 'lucide-react';
 
 // Single source of truth for app navigation.
@@ -32,7 +32,9 @@ export const NAV_GROUPS = [
     label: 'Equity Research',
     icon: Search,
     items: [
+      { href: '/workflow', label: 'Workflow', icon: Workflow, desc: 'Research pipeline overview' },
       { href: '/watchlist', label: 'Watchlist', icon: Eye, desc: 'Tracked tickers' },
+      { href: '/draft-review', label: 'Draft & Review', icon: MessagesSquare, desc: 'Paper & reviewer threads' },
       { href: '/research', label: 'Research', icon: Search, desc: 'Deep-dive analysis' },
       { href: '/position-review', label: 'Position Review', icon: ClipboardList, desc: 'Active position checks' },
     ],

@@ -272,8 +272,6 @@ function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed
                       onBlur={(value) => updateMessage(msg.id, value, true)}
                       onCommit={(value) => updateMessage(msg.id, value, true)}
                       ticker={ticker}
-                      inlineImages
-                      resizableImages
                       placeholder="…"
                       rows={1}
                       className="w-full bg-transparent rounded-md px-2 -ml-2 py-0.5 text-[13px] text-gray-700 leading-relaxed outline-none focus:bg-gray-50 transition-colors resize-none overflow-hidden"
@@ -308,8 +306,6 @@ function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed
                 value={draft}
                 onChange={setDraft}
                 ticker={ticker}
-                inlineImages
-                resizableImages
                 placeholder={messages.length === 0 ? 'Write your comment…' : (replyRole === 'author' ? 'Answer…' : 'Add a follow-up…')}
                 rows={2}
                 className="w-full bg-gray-50/60 border border-gray-100 rounded-lg px-3 py-1.5 text-[13px] text-gray-700 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-300 focus:border-transparent transition-all resize-none overflow-hidden"
@@ -523,30 +519,6 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
 
   return (
     <div className="flex flex-col lg:flex-row gap-4 items-start">
-      <style jsx global>{`
-        .dr-scroll {
-          scrollbar-width: thin;
-          scrollbar-color: rgb(209 213 219) transparent;
-        }
-        .dr-scroll::-webkit-scrollbar {
-          width: 10px;
-        }
-        .dr-scroll::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .dr-scroll::-webkit-scrollbar-thumb {
-          background-color: rgb(229 231 235);
-          border-radius: 9999px;
-          border: 3px solid transparent;
-          background-clip: content-box;
-        }
-        .dr-scroll:hover::-webkit-scrollbar-thumb {
-          background-color: rgb(209 213 219);
-        }
-        .dr-scroll::-webkit-scrollbar-thumb:hover {
-          background-color: rgb(156 163 175);
-        }
-      `}</style>
       {/* Paper */}
       {paperCollapsed ? (
         <button
@@ -584,8 +556,6 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                 onCommit={(value) => onPaperChange(value, true)}
                 ticker={ticker}
                 enableTables
-                inlineImages
-                resizableImages
                 stickyToolbar
                 placeholder="Open with the thesis in a sentence, then build the full argument — business, drivers, valuation, risks…"
                 rows={22}
@@ -610,7 +580,7 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
           <span className="text-[11px] font-semibold [writing-mode:vertical-rl]">Review</span>
         </button>
       ) : (
-        <div className={`dr-scroll min-w-0 w-full lg:w-auto lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-3 space-y-4 ${paperCollapsed ? 'lg:flex-1' : 'lg:flex-[1_1_0%]'}`}>
+        <div className={`min-w-0 w-full lg:w-auto space-y-4 ${paperCollapsed ? 'lg:flex-1' : 'lg:flex-[1_1_0%]'}`}>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">

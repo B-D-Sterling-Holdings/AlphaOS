@@ -70,16 +70,19 @@ function SparkPath({ points, width = 400, height = 140, color = '#10b981', fille
 /* ─── Mini donut SVG ─── */
 function MiniDonut({ segments }) {
   const total = segments.reduce((s, seg) => s + seg.value, 0);
-  let cumulative = 0;
   const radius = 40;
   const circumference = 2 * Math.PI * radius;
+  // Each segment's start offset = sum of prior segment fractions (no render-scope
+  // mutation, so it's safe under the React Compiler rules).
+  const offsets = segments.map((_, i) =>
+    segments.slice(0, i).reduce((s, seg) => s + seg.value / total, 0)
+  );
 
   return (
     <svg viewBox="0 0 100 100" className="w-full h-full">
       {segments.map((seg, i) => {
         const pct = seg.value / total;
-        const offset = cumulative;
-        cumulative += pct;
+        const offset = offsets[i];
         return (
           <circle
             key={i}

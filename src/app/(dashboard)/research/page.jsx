@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, Image as ImageIcon, X, ZoomIn, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ChevronDown, Star, Sparkles } from 'lucide-react';
+import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ChevronDown, ArrowLeft, Star, Sparkles, User } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
 import FundamentalChart from '@/components/charts/FundamentalChart';
@@ -12,9 +12,11 @@ import { formatLargeNumber, formatNumber, formatShareCount } from '@/lib/formatt
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
 import RichTextArea from '@/components/RichTextArea';
-import DraftReview from '@/components/DraftReview';
+import ReviewCommentsPanel from '@/components/ReviewCommentsPanel';
 import { useAuth } from '@/lib/AuthContext';
-import { normalizeAutoNotify } from '@/lib/autoNotify';
+import { RESEARCH_TABS } from '@/lib/researchProgress';
+import { persistStageMove, writeWatchlistCache, STAGE_LABELS } from '@/lib/stageMove';
+import { migrateNewsImages } from '@/lib/migrateNewsImages';
 
 const FUNDAMENTALS_BOXES = [
   { key: 'revenueGrowth', label: 'Revenue and Growth', color: 'blue', placeholder: 'Revenue CAGR, segment growth, unit economics, pricing, and demand drivers...' },
@@ -34,6 +36,35 @@ function autoExpand(el) {
   if (!el) return;
   el.style.height = 'auto';
   el.style.height = `${el.scrollHeight}px`;
+}
+
+// "Why This Name Is Here" note, isolated into its own component so typing only
+// re-renders this textarea — not the whole research page. Editing it in place used
+// to call setThesis on every keystroke, which re-rendered (and re-animated) every
+// chart below it, causing a jarring flicker. Here the text lives in local state
+// while editing and is committed to the thesis only on blur. Keyed by ticker
+// upstream so it resets cleanly when the selected company changes.
+// Resync with the upstream value is handled by the parent remounting this via a
+// `key` that includes the note value, so this component just owns its local text
+// while editing and commits on blur. That keeps typing from re-rendering (and
+// re-animating) the charts below.
+function WorkspaceNote({ value, onCommit }) {
+  const [text, setText] = useState(value || '');
+  const ref = useRef(null);
+  // Keep the box sized to its content (mount + on every edit).
+  useEffect(() => { autoExpand(ref.current); }, [text]);
+  return (
+    <textarea
+      spellCheck
+      ref={ref}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={(e) => onCommit(e.target.value)}
+      rows={3}
+      placeholder="Summarize why this company graduated from the watchlist into deep research..."
+      className="w-full bg-gray-50/50 border border-gray-200 rounded-2xl px-4 py-3 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all resize-none overflow-hidden"
+    />
+  );
 }
 
 function makeEditorItemId() {
@@ -92,17 +123,13 @@ function hasTextValue(value) {
 }
 
 function pickWorkspaceValue(primary, fallback) {
-  if (Array.isArray(primary)) {
-    return primary;
-  }
-  if (typeof primary === 'string') {
-    return primary.trim() ? primary : fallback;
-  }
-  if (primary && typeof primary === 'object') {
-    return Object.keys(primary).length > 0 ? primary : fallback;
-  }
-  return primary ?? fallback;
+  // Only seed from the watchlist stock when the workspace value was NEVER set.
+  // An explicit empty string / array / object means the analyst cleared it on
+  // purpose, so respect it — otherwise deleting the note (or a fundamentals box)
+  // re-populates from the stock value and it can never be emptied.
+  return primary === undefined || primary === null ? fallback : primary;
 }
+
 
 function buildResearchWorkspace(thesis, stock) {
   const workspace = thesis?.underwriting?.researchWorkspace || {};
@@ -122,39 +149,6 @@ function buildResearchWorkspace(thesis, stock) {
     dislocationItems: normalizeQuestionItems(
       pickWorkspaceValue(workspace.dislocationItems, stock?.dislocationItems ?? [])
     ),
-  };
-}
-
-function normalizeThread(thread) {
-  return {
-    id: thread?.id || makeEditorItemId(),
-    title: thread?.title || '',
-    resolved: !!thread?.resolved,
-    createdAt: thread?.createdAt || new Date().toISOString(),
-    messages: (thread?.messages || []).map(msg => ({
-      id: msg?.id || makeEditorItemId(),
-      role: msg?.role === 'reviewer' ? 'reviewer' : 'author',
-      body: msg?.body ?? '',
-      createdAt: msg?.createdAt || new Date().toISOString(),
-    })),
-  };
-}
-
-function normalizePerson(person) {
-  return { name: person?.name || '', email: person?.email || '' };
-}
-
-function buildDraftReview(thesis) {
-  const draftReview = thesis?.underwriting?.draftReview || {};
-  const paper = draftReview.paper;
-  return {
-    paper: Array.isArray(paper)
-      ? paper
-      : (typeof paper === 'string' && paper.trim() ? [{ type: 'text', value: paper }] : []),
-    threads: (draftReview.threads || []).map(normalizeThread),
-    author: normalizePerson(draftReview.author),
-    reviewer: normalizePerson(draftReview.reviewer),
-    autoNotify: normalizeAutoNotify(draftReview.autoNotify),
   };
 }
 
@@ -589,8 +583,6 @@ export default function ResearchPage() {
   const [thesisDirty, setThesisDirty] = useState(false);
   const modelRef = useRef(null);
   const [exporting, setExporting] = useState(false);
-  const [imageUploading, setImageUploading] = useState(false);
-  const [previewImage, setPreviewImage] = useState(null);
 
   const researchStocks = useMemo(() => (
     (allData?.watchlists || []).flatMap(watchlist =>
@@ -617,7 +609,22 @@ export default function ResearchPage() {
   const dueDiligenceItems = researchWorkspace.dueDiligenceItems;
   const dislocationItems = researchWorkspace.dislocationItems;
 
-  const draftReview = useMemo(() => buildDraftReview(thesis), [thesis]);
+  // Draft & Review discussion threads, carried over untouched from the Draft &
+  // Review stage (a stage move never destroys data). Surfaced read-only beside the
+  // Diligence question editors so the reviewer back-and-forth is on hand while the
+  // analyst turns those comments into DD / dislocation questions.
+  const draftReviewThreads = useMemo(
+    () => thesis?.underwriting?.draftReview?.threads || [],
+    [thesis]
+  );
+
+  // The author set in Draft & Review (via its people icon), carried over with the
+  // rest of the draftReview block. Shown as a tag on the comments panel so it's
+  // clear here who is on the hook to answer.
+  const draftReviewAuthor = useMemo(
+    () => thesis?.underwriting?.draftReview?.author || null,
+    [thesis]
+  );
 
   const loadResearchStocks = useCallback(async () => {
     try {
@@ -630,7 +637,7 @@ export default function ResearchPage() {
       const res = await fetch('/api/watchlist');
       const data = await res.json();
       setAllData(data);
-      cache.set('deep_research_watchlist', data);
+      writeWatchlistCache(cache, data);
       setLoading(false);
       return data;
     } catch {
@@ -685,11 +692,16 @@ export default function ResearchPage() {
   // strip the query param so it doesn't override later manual selections.
   useEffect(() => {
     const requested = searchParams.get('ticker')?.toUpperCase();
+    const requestedTab = searchParams.get('tab');
     if (!requested || appliedTickerParam.current === requested) return;
     if (researchStocks.some(stock => stock.ticker === requested)) {
       appliedTickerParam.current = requested;
       setSelectedTicker(requested);
       cache.set('deep_research_selectedTicker', requested);
+      if (requestedTab && RESEARCH_TABS.includes(requestedTab)) {
+        setActiveResearchTab(requestedTab);
+        cache.set('deep_research_activeTab', requestedTab);
+      }
       router.replace('/research');
     }
   }, [searchParams, researchStocks, cache, router]);
@@ -722,13 +734,19 @@ export default function ResearchPage() {
 
   useEffect(() => {
     if (!selectedTicker) return;
+    let cancelled = false;
+    // Clear the prior ticker's thesis and ignore an out-of-order response, so a slow
+    // fetch for a ticker we've navigated away from can't overwrite (and then get
+    // saved under) the currently selected name.
+    setThesis(null);
     setThesisLoading(true);
     setThesisDirty(false);
     fetch(`/api/thesis/${selectedTicker}`)
       .then(r => r.json())
-      .then(data => setThesis(data))
+      .then(data => { if (!cancelled) setThesis(migrateNewsImages(data)); })
       .catch(() => {})
-      .finally(() => setThesisLoading(false));
+      .finally(() => { if (!cancelled) setThesisLoading(false); });
+    return () => { cancelled = true; };
   }, [selectedTicker]);
 
   useEffect(() => {
@@ -758,6 +776,38 @@ export default function ResearchPage() {
       setThesisSaving(false);
     }
   }, [selectedTicker, thesis, thesisDirty]);
+
+  // Demote the selected name out of Research. Data-safe: only the stage flips —
+  // the research workspace and the rest of the thesis are preserved and reappear
+  // here untouched if the name is ever promoted back into Research.
+  const moveStage = useCallback(async (newStage) => {
+    if (!selectedStock || !allData) return;
+    const ticker = selectedStock.ticker;
+    try {
+      const { next } = await persistStageMove({
+        watchlistData: allData,
+        watchlistId: selectedStock.watchlistId,
+        ticker,
+        newStage,
+      });
+      setAllData(next);
+      writeWatchlistCache(cache, next);
+      setToast({ message: `${ticker} moved to ${STAGE_LABELS[newStage]}`, type: 'success' });
+    } catch {
+      setToast({ message: `Failed to move ${ticker}`, type: 'error' });
+    }
+  }, [selectedStock, allData, cache]);
+
+  // AI generation (company overview / thesis fundamentals) is not production-ready
+  // yet, so the buttons are wired to this no-op warning instead of the real
+  // generators. Re-point them at generateCompanyOverview / generateThesisFundamentals
+  // to re-enable once it's ready.
+  const aiNotReady = useCallback(() => {
+    setToast({
+      message: 'AI generation is still in development and not available in production yet.',
+      type: 'info',
+    });
+  }, []);
 
   const updateThesisField = (field, value) => {
     setThesis(prev => ({ ...prev, [field]: value }));
@@ -802,58 +852,6 @@ export default function ResearchPage() {
     setThesisDirty(true);
     if (persist) saveThesis(updated);
   }, [saveThesis, selectedStock, thesis]);
-
-  const updateDraftReview = useCallback((updater, persist = false) => {
-    const nextDraftReview = updater(buildDraftReview(thesis));
-    const updated = {
-      ...(thesis || {}),
-      underwriting: {
-        ...((thesis || {}).underwriting || {}),
-        draftReview: nextDraftReview,
-      },
-    };
-    setThesis(updated);
-    setThesisDirty(true);
-    if (persist) saveThesis(updated);
-  }, [saveThesis, thesis]);
-
-  const notifyReview = useCallback(async (threadIds) => {
-    const dr = buildDraftReview(thesis);
-    const res = await fetch('/api/notify-review', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ticker: selectedTicker,
-        author: dr.author,
-        reviewer: dr.reviewer,
-        threads: dr.threads,
-        threadIds: Array.isArray(threadIds) ? threadIds : undefined,
-      }),
-    });
-    const result = await res.json();
-    if (!res.ok) {
-      setToast({ message: result.error || 'Failed to send notifications', type: 'error' });
-      return;
-    }
-    if (result.message) {
-      setToast({ message: result.message, type: 'info' });
-      return;
-    }
-    const sentMsg = (result.sent || [])
-      .map(s => `${s.role === 'author' ? 'Author' : 'Reviewer'} (${s.count})`)
-      .join(', ');
-    if (result.skipped?.length) {
-      const skipMsg = result.skipped
-        .map(s => `${s.role === 'author' ? 'Author' : 'Reviewer'}: ${s.reason}`)
-        .join('; ');
-      setToast({
-        message: sentMsg ? `Notified ${sentMsg}. Skipped — ${skipMsg}` : `Skipped — ${skipMsg}`,
-        type: sentMsg ? 'success' : 'error',
-      });
-    } else {
-      setToast({ message: `Notified ${sentMsg}`, type: 'success' });
-    }
-  }, [thesis, selectedTicker]);
 
   const addNewsUpdate = () => {
     setThesis(prev => ({
@@ -900,54 +898,16 @@ export default function ResearchPage() {
     if (field === 'done') saveThesis(updated);
   };
 
-  const uploadNewsImage = async (newsIdx, files) => {
-    if (!files || files.length === 0 || !selectedTicker) return;
-    setImageUploading(true);
-    try {
-      const newImages = [];
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('ticker', selectedTicker);
-        const res = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (data.url) {
-          newImages.push({ url: data.url, path: data.path, name: file.name });
-        }
-      }
-      if (newImages.length > 0) {
-        setThesis(prev => ({
-          ...prev,
-          newsUpdates: (prev.newsUpdates || []).map((entry, i) => (
-            i === newsIdx ? { ...entry, images: [...(entry.images || []), ...newImages] } : entry
-          )),
-        }));
-        setThesisDirty(true);
-      }
-    } catch {
-      setToast({ message: 'Failed to upload image', type: 'error' });
-    } finally {
-      setImageUploading(false);
-    }
-  };
-
-  const removeNewsImage = async (newsIdx, imgIdx) => {
-    const entry = thesis.newsUpdates?.[newsIdx];
-    const img = entry?.images?.[imgIdx];
-    if (img?.path) {
-      try {
-        await fetch(`/api/upload?path=${encodeURIComponent(img.path)}`, { method: 'DELETE' });
-      } catch {}
-    }
-    setThesis(prev => ({
-      ...prev,
-      newsUpdates: (prev.newsUpdates || []).map((newsEntry, i) => (
-        i === newsIdx
-          ? { ...newsEntry, images: (newsEntry.images || []).filter((_, j) => j !== imgIdx) }
-          : newsEntry
-      )),
-    }));
+  // Persisting commit for the News "What Happened" body (a RichTextArea, so images
+  // live inline in the body itself — no separate gallery).
+  const commitNewsUpdate = (idx, field, value) => {
+    const updated = {
+      ...thesis,
+      newsUpdates: (thesis.newsUpdates || []).map((entry, i) => i === idx ? { ...entry, [field]: value } : entry),
+    };
+    setThesis(updated);
     setThesisDirty(true);
+    saveThesis(updated);
   };
 
   const generateData = async () => {
@@ -1336,6 +1296,26 @@ export default function ResearchPage() {
             </select>
             <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
           </div>
+
+          {selectedStock && draftReviewAuthor?.name?.trim() && (
+            <span
+              title={draftReviewAuthor.email ? `Author · ${draftReviewAuthor.email}` : 'Author'}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold"
+            >
+              <User size={13} className="shrink-0" />
+              <span className="truncate max-w-[160px]">Author: {draftReviewAuthor.name.trim()}</span>
+            </span>
+          )}
+
+          {selectedStock && (
+            <button
+              onClick={() => moveStage('draft')}
+              title="Demote back to Draft & Review"
+              className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg transition-colors"
+            >
+              <ArrowLeft size={13} /> Back to Draft &amp; Review
+            </button>
+          )}
         </div>
       </Card>
 
@@ -1369,16 +1349,19 @@ export default function ResearchPage() {
       ) : (
         <>
           <div className="flex items-center justify-between mb-8 animate-fade-in-up stagger-3">
-            <div className="flex gap-1 bg-gray-100/80 rounded-2xl p-1 w-fit">
+            <div className="flex flex-wrap gap-1 bg-gray-100/80 rounded-2xl p-1">
               {[
                 { key: 'fundamentals', label: 'Fundamentals' },
-                { key: 'review', label: 'Draft & Review' },
-                { key: 'thesis', label: 'Research Workspace' },
+                { key: 'thesis', label: 'Thesis' },
+                { key: 'diligence', label: 'Diligence' },
+                { key: 'valuation', label: 'Valuation' },
+                { key: 'news', label: 'News' },
+                { key: 'decision', label: 'Decision' },
               ].map(tab => (
                 <button
                   key={tab.key}
                   onClick={() => setActiveResearchTab(tab.key)}
-                  className={`px-6 py-2.5 text-sm font-semibold rounded-xl transition-all duration-200 ${
+                  className={`px-4 py-2.5 text-sm font-semibold rounded-xl transition-all duration-200 ${
                     activeResearchTab === tab.key
                       ? 'bg-white text-gray-900 shadow-sm'
                       : 'text-gray-500 hover:text-gray-700'
@@ -1388,7 +1371,7 @@ export default function ResearchPage() {
                 </button>
               ))}
             </div>
-            {(activeResearchTab === 'thesis' || activeResearchTab === 'review') && thesis && (
+            {['thesis', 'diligence', 'news', 'decision'].includes(activeResearchTab) && thesis && (
               <button
                 onClick={() => saveThesis()}
                 disabled={thesisSaving || !thesisDirty}
@@ -1414,14 +1397,10 @@ export default function ResearchPage() {
             <>
               <Card className="mb-8">
                 <label className="text-xs text-gray-500 uppercase tracking-wider font-bold block mb-3">Why This Name Is Here</label>
-                <textarea spellCheck={true}
+                <WorkspaceNote
+                  key={`${selectedTicker}::${researchWorkspace.note}`}
                   value={researchWorkspace.note}
-                  onChange={(e) => updateResearchWorkspace(workspace => ({ ...workspace, note: e.target.value }))}
-                  onBlur={(e) => updateResearchWorkspace(workspace => ({ ...workspace, note: e.target.value }), true)}
-                  onInput={(e) => autoExpand(e.target)}
-                  rows={3}
-                  placeholder="Summarize why this company graduated from the watchlist into deep research..."
-                  className="w-full bg-gray-50/50 border border-gray-200 rounded-2xl px-4 py-3 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all resize-none overflow-hidden"
+                  onCommit={(v) => updateResearchWorkspace(workspace => ({ ...workspace, note: v }), true)}
                 />
               </Card>
 
@@ -1469,47 +1448,12 @@ export default function ResearchPage() {
               <div className="skeleton h-48 rounded-2xl" />
               <div className="skeleton h-64 rounded-2xl" />
             </div>
-          ) : !thesis ? null : activeResearchTab === 'review' ? (
-            <DraftReview
-              ticker={selectedTicker}
-              paper={draftReview.paper}
-              threads={draftReview.threads}
-              author={draftReview.author}
-              reviewer={draftReview.reviewer}
-              autoNotify={draftReview.autoNotify}
-              onPaperChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, paper: value }), persist)}
-              onThreadsChange={(threads, persist = false) => updateDraftReview(dr => ({ ...dr, threads }), persist)}
-              onAuthorChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, author: value }), persist)}
-              onReviewerChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, reviewer: value }), persist)}
-              onAutoNotifyChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, autoNotify: value }), persist)}
-              onNotify={notifyReview}
-            />
-          ) : (
+          ) : !thesis ? null : activeResearchTab === 'thesis' ? (
             <div className="space-y-8" onBlur={() => saveThesis()}>
               <Card>
-                <div className="flex items-start justify-between gap-4 mb-1">
-                  <div>
-                    <h2 className="text-lg font-bold text-gray-900">Company Overview</h2>
-                    <p className="text-sm text-gray-500">In-depth notes on the business; model, segments, customers, moat, competitive landscape. Paste images directly into the text area.</p>
-                  </div>
-                  {!isDemo && (
-                    <button
-                      onClick={generateCompanyOverview}
-                      disabled={overviewGenerating}
-                      title="Generate a business overview from the latest 10-K (Item 1: Business) and 10-Q using AI"
-                      className="flex-shrink-0 flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white hover:from-violet-700 hover:to-fuchsia-700 shadow-sm shadow-violet-200/50 transition-all duration-200 disabled:opacity-40"
-                    >
-                      {overviewGenerating
-                        ? <RefreshCw size={14} className="animate-spin" />
-                        : <Sparkles size={14} />}
-                      {overviewGenerating ? 'Generating…' : 'Generate from SEC filings'}
-                    </button>
-                  )}
+                <div className="mb-1">
+                  <h2 className="text-lg font-bold text-gray-900">Company Overview</h2>
                 </div>
-                <p className="text-[11px] text-gray-400 mb-5 flex items-center gap-1.5">
-                  <Sparkles size={11} className="text-violet-400" />
-                  AI grounds the overview in the latest 10-K (Item 1: Business) and 10-Q. Generated text is fully editable and appends below your notes.
-                </p>
 
                 <RichTextArea
                   value={thesis?.underwriting?.companyOverview || ''}
@@ -1517,35 +1461,17 @@ export default function ResearchPage() {
                   onBlur={value => commitUnderwriting('companyOverview', value)}
                   onCommit={value => commitUnderwriting('companyOverview', value)}
                   ticker={selectedTicker}
+                  enableTables
+                  stickyToolbar
                   placeholder="Cover the business model, key segments, customers, competitive position, moat, regulatory backdrop, and anything else worth knowing about this name. Paste charts or screenshots inline..."
                   rows={6}
                 />
               </Card>
 
               <Card>
-                <div className="flex items-start justify-between gap-4 mb-1">
-                  <div>
-                    <h2 className="text-lg font-bold text-gray-900">Thesis Structure</h2>
-                    <p className="text-sm text-gray-500">Capture the core fundamentals first, then answer the diligence and dislocation questions in full underneath.</p>
-                  </div>
-                  {!isDemo && (
-                    <button
-                      onClick={generateThesisFundamentals}
-                      disabled={fundamentalsGenerating}
-                      title="Fill all four boxes from the latest TTM figures in the Fundamentals tab using AI"
-                      className="flex-shrink-0 flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white hover:from-violet-700 hover:to-fuchsia-700 shadow-sm shadow-violet-200/50 transition-all duration-200 disabled:opacity-40"
-                    >
-                      {fundamentalsGenerating
-                        ? <RefreshCw size={14} className="animate-spin" />
-                        : <Sparkles size={14} />}
-                      {fundamentalsGenerating ? 'Generating…' : 'Generate from fundamentals'}
-                    </button>
-                  )}
+                <div className="mb-1">
+                  <h2 className="text-lg font-bold text-gray-900">Thesis Structure</h2>
                 </div>
-                <p className="text-[11px] text-gray-400 mb-5 flex items-center gap-1.5">
-                  <Sparkles size={11} className="text-violet-400" />
-                  AI fills all four boxes from trailing-twelve-month figures in the Fundamentals tab. Generated text is editable and appends below your notes.
-                </p>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {FUNDAMENTALS_BOXES.map(({ key, label, color, placeholder }) => {
@@ -1571,6 +1497,29 @@ export default function ResearchPage() {
                 </div>
               </Card>
 
+              <Card>
+                <h2 className="text-lg font-bold text-gray-900 mb-1">Story</h2>
+                <p className="text-sm text-gray-500 mb-6">Keep the broader narrative and valuation framing here while the structured question workflow stays above.</p>
+
+                <div className="mb-6">
+                  <label className="text-xs text-gray-500 uppercase tracking-wider font-bold block mb-2">Company Narrative</label>
+                  <RichTextArea
+                    value={thesis.assumptions || ''}
+                    onChange={value => updateThesisField('assumptions', value)}
+                    onBlur={value => commitThesisField('assumptions', value)}
+                    onCommit={value => commitThesisField('assumptions', value)}
+                    ticker={selectedTicker}
+                    enableTables
+                    stickyToolbar
+                    placeholder="Write the main narrative, what matters most, and how the fundamental pieces connect..."
+                    rows={5}
+                  />
+                </div>
+              </Card>
+            </div>
+          ) : activeResearchTab === 'diligence' ? (
+            <div className="flex flex-col lg:flex-row gap-6 items-start">
+              <div className="min-w-0 w-full lg:flex-1 space-y-8" onBlur={() => saveThesis()}>
               <QuestionSection
                 title="Due Diligence Questions"
                 subtitle="Use this section for the key questions that need direct, evidence-backed answers before the company can be underwritten."
@@ -1618,29 +1567,11 @@ export default function ResearchPage() {
                 onRemove={(idx) => removeQuestion('dislocationItems', idx)}
                 onUpdateSubQuestions={(idx, subs, persist) => updateSubQuestions('dislocationItems', idx, subs, persist)}
               />
-
-              <Card>
-                <h2 className="text-lg font-bold text-gray-900 mb-1">Story</h2>
-                <p className="text-sm text-gray-500 mb-6">Keep the broader narrative and valuation framing here while the structured question workflow stays above.</p>
-
-                <div className="mb-6">
-                  <label className="text-xs text-gray-500 uppercase tracking-wider font-bold block mb-2">Company Narrative</label>
-                  <RichTextArea
-                    value={thesis.assumptions || ''}
-                    onChange={value => updateThesisField('assumptions', value)}
-                    onBlur={value => commitThesisField('assumptions', value)}
-                    onCommit={value => commitThesisField('assumptions', value)}
-                    ticker={selectedTicker}
-                    placeholder="Write the main narrative, what matters most, and how the fundamental pieces connect..."
-                    rows={5}
-                  />
-                </div>
-
-
-              </Card>
-
-
-
+              </div>
+              <ReviewCommentsPanel threads={draftReviewThreads} />
+            </div>
+          ) : activeResearchTab === 'news' ? (
+            <div className="space-y-8" onBlur={() => saveThesis()}>
               <Card>
                 <div className="flex items-center justify-between mb-1">
                   <h2 className="text-lg font-bold text-gray-900">News & Updates</h2>
@@ -1717,13 +1648,14 @@ export default function ResearchPage() {
 
                         <div className="mb-4">
                           <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">What Happened</label>
-                          <textarea spellCheck={true}
+                          <RichTextArea
                             value={entry.body || ''}
-                            onChange={e => updateNewsUpdate(activeIdx, 'body', e.target.value)}
-                            onInput={e => autoExpand(e.target)}
+                            onChange={value => updateNewsUpdate(activeIdx, 'body', value)}
+                            onBlur={value => commitNewsUpdate(activeIdx, 'body', value)}
+                            onCommit={value => commitNewsUpdate(activeIdx, 'body', value)}
+                            ticker={selectedTicker}
+                            placeholder="Summarize the key takeaways — paste charts or screenshots inline..."
                             rows={3}
-                            placeholder="Summarize the key takeaways..."
-                            className="w-full bg-gray-50/50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-200 placeholder:text-gray-300 resize-none overflow-hidden"
                           />
                         </div>
 
@@ -1739,66 +1671,16 @@ export default function ResearchPage() {
                           />
                         </div>
 
-                        <div className="mt-4">
-                          <div className="flex items-center justify-between mb-2">
-                            <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider flex items-center gap-1">
-                              <ImageIcon size={11} />
-                              Attached Images
-                            </label>
-                            <label className={`flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 cursor-pointer transition-colors ${imageUploading ? 'opacity-50 pointer-events-none' : ''}`}>
-                              <Plus size={12} />
-                              {imageUploading ? 'Uploading...' : 'Add Image'}
-                              <input
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                className="hidden"
-                                onChange={e => uploadNewsImage(activeIdx, Array.from(e.target.files))}
-                              />
-                            </label>
-                          </div>
-                          {(entry.images && entry.images.length > 0) ? (
-                            <div className="grid grid-cols-3 gap-2">
-                              {entry.images.map((img, imgIdx) => (
-                                <div key={imgIdx} className="relative group rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
-                                  <img
-                                    src={img.url}
-                                    alt={img.name || 'Attached image'}
-                                    className="w-full h-24 object-cover cursor-pointer"
-                                    onClick={() => setPreviewImage(img.url)}
-                                  />
-                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
-                                    <button
-                                      onClick={() => setPreviewImage(img.url)}
-                                      className="p-1 bg-white/90 rounded-md text-gray-700 hover:bg-white"
-                                    >
-                                      <ZoomIn size={14} />
-                                    </button>
-                                    <button
-                                      onClick={() => removeNewsImage(activeIdx, imgIdx)}
-                                      className="p-1 bg-white/90 rounded-md text-red-500 hover:bg-white"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </div>
-                                  <p className="text-[9px] text-gray-400 truncate px-1.5 py-0.5">{img.name}</p>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="text-center py-4 border border-dashed border-gray-200 rounded-lg">
-                              <p className="text-xs text-gray-300">No images attached</p>
-                            </div>
-                          )}
-                        </div>
                       </div>
                     </div>
                   );
                 })()}
               </Card>
-
-              <ValuationModel ref={modelRef} ticker={selectedTicker} livePrice={livePrice} />
-
+            </div>
+          ) : activeResearchTab === 'valuation' ? (
+            <ValuationModel ref={modelRef} ticker={selectedTicker} livePrice={livePrice} />
+          ) : activeResearchTab === 'decision' ? (
+            <div className="space-y-8">
               <Card>
                 <div className="flex items-center justify-between">
                   <div>
@@ -1848,7 +1730,7 @@ export default function ResearchPage() {
                 </div>
               </Card>
             </div>
-          )}
+          ) : null}
         </>
       )}
 
@@ -1899,26 +1781,6 @@ export default function ResearchPage() {
       )}
 
       {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
-
-      {previewImage && (
-        <div
-          className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-8"
-          onClick={() => setPreviewImage(null)}
-        >
-          <button
-            onClick={() => setPreviewImage(null)}
-            className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
-          >
-            <X size={20} />
-          </button>
-          <img
-            src={previewImage}
-            alt="Preview"
-            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
-      )}
     </div>
   );
 }

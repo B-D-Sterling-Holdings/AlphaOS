@@ -144,7 +144,7 @@ export default function LineChart({ labels, data, label = '', color = '#10b981',
       const x = clientX - rect.left;
       const y = clientY - rect.top;
 
-      setDragInfo({ pctChange, startLabel, endLabel, startPrice, endPrice, x, y });
+      setDragInfo({ pctChange, startLabel, endLabel, startPrice, endPrice, x, y, width: rect.width });
     }
   }
 
@@ -203,7 +203,7 @@ export default function LineChart({ labels, data, label = '', color = '#10b981',
         <div
           className="absolute pointer-events-none z-10"
           style={{
-            left: Math.min(dragInfo.x + 12, canvasRef.current?.offsetWidth - 180 || 0),
+            left: Math.min(dragInfo.x + 12, (dragInfo.width || 0) - 180),
             top: Math.max(dragInfo.y - 60, 4),
           }}
         >
