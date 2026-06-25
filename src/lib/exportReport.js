@@ -1093,13 +1093,12 @@ export async function exportReport({ ticker, thesis, model, tickerData, liveQuot
     sections.push(spacer(80));
 
     // Input parameters table 2
-    const inputRow2Header = ['Revenue Growth', 'Target Op. Margin', 'Net Share Dilution', 'Dividend Growth %', 'Tax Rate'];
+    const inputRow2Header = ['Net Share Dilution', 'Dividend Growth %', 'Tax Rate', 'Base Year'];
     const inputRow2Values = [
-      has(inp.revenueGrowth) ? fmtPct(Number(inp.revenueGrowth), 2) : '—',
-      has(inp.targetOpMargin) ? fmtPct(Number(inp.targetOpMargin), 2) : '—',
       has(inp.netShareDilution) ? fmtPct(Number(inp.netShareDilution), 2) : '—',
       has(inp.dividendGrowth) ? fmtPct(Number(inp.dividendGrowth), 2) : '0.00%',
       has(inp.taxRate) ? fmtPct(Number(inp.taxRate), 2) : '21.00%',
+      has(inp.baseYear) ? String(Number(inp.baseYear)) : '—',
     ];
 
     sections.push(new Table({
@@ -1126,17 +1125,16 @@ export async function exportReport({ ticker, thesis, model, tickerData, liveQuot
       const labelWidth = 28;
       const yearWidth = (100 - labelWidth) / yearLabels.length;
 
+      // Income-statement rows are user-configurable — render whatever the model produced.
+      const moneyFmt = v => `${Number(v) < 0 ? '-' : ''}$${fmt(Math.abs(v), 2)}`;
       const projRows = [
-        { label: 'Revenue (bil)', data: model.computed.revenue, fmt: v => `$${fmt(v, 2)}`, bold: true },
-        { label: 'Operating Expense', data: model.computed.opex, fmt: v => `$${fmt(v, 2)}` },
-        { label: 'Other Income, net', data: model.computed.nonOpIncome, fmt: v => `${Number(v) < 0 ? '-' : ''}$${fmt(Math.abs(v), 2)}` },
+        ...(model.computed.rows || []).map(r => ({
+          label: r.name,
+          data: r.values,
+          bold: r.bold,
+          fmt: r.format === 'pct' ? (v => fmtPct(v, 2)) : moneyFmt,
+        })),
         { sep: true },
-        { label: 'Operating Income (bil)', data: model.computed.opIncome, fmt: v => `$${fmt(v, 2)}`, bold: true },
-        { label: 'Operating Margin (%)', data: model.computed.opMargin, fmt: v => fmtPct(v, 2) },
-        { sep: true },
-        { label: 'Tax Expense', data: model.computed.taxExpense, fmt: v => `$${fmt(v, 2)}` },
-        { sep: true },
-        { label: 'Net Income (bil)', data: model.computed.netIncome, fmt: v => `$${fmt(v, 2)}`, bold: true },
         { label: 'Outstanding Shares (bil)', data: model.computed.shares, fmt: v => fmt(v, 4) },
         { sep: true },
         { label: 'Earnings Per Share', data: model.computed.eps, fmt: v => `$${fmt(v, 2)}`, bold: true },

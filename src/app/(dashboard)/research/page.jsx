@@ -12,6 +12,7 @@ import Toast from '@/components/Toast';
 import { formatLargeNumber, formatNumber, formatShareCount } from '@/lib/formatters';
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
+import { computeValuationModel } from '@/lib/valuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import ReviewCommentsPanel from '@/components/ReviewCommentsPanel';
 import { useAuth } from '@/lib/AuthContext';
@@ -1156,66 +1157,10 @@ export default function ResearchPage() {
           const modelRes = await fetch(`/api/model/${selectedTicker}`);
           const modelJson = await modelRes.json();
           if (modelJson.exists && modelJson.inputs) {
-            const inp = modelJson.inputs;
             const p = (v) => (v === '' || v === undefined || v === null || isNaN(Number(v))) ? 0 : Number(v);
-            const sharePrice = p(inp.sharePrice) || (livePrice || 0);
-            const targetPE = p(inp.targetPE);
-            const revG = p(inp.revenueGrowth);
-            const targetMargin = p(inp.targetOpMargin);
-            const dilution = p(inp.netShareDilution);
-            const divG = p(inp.dividendGrowth);
-            const curDiv = p(inp.currentDividend);
-            const taxRate = p(inp.taxRate);
-            const baseYear = p(inp.baseYear);
-            const revenue = [p(inp.baseRevenue)];
-            for (let i = 1; i <= 5; i++) revenue.push(revenue[i - 1] * (1 + revG));
-            const baseOpex = p(inp.baseOpex);
-            const baseMargin = revenue[0] ? (revenue[0] - baseOpex) / revenue[0] : 0;
-            const opMargin = [0, 1, 2, 3, 4, 5].map(i => i === 0 ? baseMargin : baseMargin + (i / 5) * (targetMargin - baseMargin));
-            const opIncome = [0, 1, 2, 3, 4, 5].map(i => i === 0 ? (revenue[0] - baseOpex) : revenue[i] * opMargin[i]);
-            const opex = [0, 1, 2, 3, 4, 5].map(i => i === 0 ? baseOpex : revenue[i] - opIncome[i]);
-            const nonOpIncome = [p(inp.baseNonOpIncome), 0, 0, 0, 0, 0];
-            const taxExpense = [p(inp.baseTaxExpense)];
-            for (let i = 1; i <= 5; i++) taxExpense.push(opIncome[i] * taxRate);
-            const netIncome = [0, 1, 2, 3, 4, 5].map(i => opIncome[i] - taxExpense[i] + nonOpIncome[i]);
-            const shares = [p(inp.baseShares)];
-            for (let i = 1; i <= 5; i++) shares.push(shares[i - 1] * (1 + dilution));
-            const eps = [0, 1, 2, 3, 4, 5].map(i => shares[i] ? netIncome[i] / shares[i] : 0);
-            const epsGrowth = (eps[0] && eps[5]) ? Math.pow(eps[5] / eps[0], 0.2) - 1 : 0;
-            const targetPrice5 = targetPE * eps[5];
-            const priceCAGR = (sharePrice > 0 && targetPrice5 > 0) ? Math.pow(targetPrice5 / sharePrice, 0.2) - 1 : 0;
-            const priceArr = [sharePrice];
-            for (let i = 1; i <= 5; i++) priceArr.push(priceArr[i - 1] * (1 + priceCAGR));
-            const divShares = [1];
-            for (let i = 1; i <= 5; i++) {
-              const df = sharePrice > 0 ? (curDiv / sharePrice) * Math.pow((1 + divG) / (1 + priceCAGR), i - 1) : 0;
-              divShares.push((1 + df) * divShares[i - 1]);
-            }
-            const totalCAGRNoDivs = priceCAGR;
-            const totalCAGR = (sharePrice > 0 && divShares[5] * priceArr[5] > 0) ? Math.pow((divShares[5] * priceArr[5]) / sharePrice, 0.2) - 1 : 0;
-            modelData = {
-              inputs: { ...inp, sharePrice },
-              computed: {
-                yearLabels: [0, 1, 2, 3, 4, 5].map(i => baseYear + i),
-                revenue,
-                opex,
-                opIncome,
-                opMargin,
-                nonOpIncome,
-                taxExpense,
-                netIncome,
-                shares,
-                eps,
-                epsGrowth,
-                priceArr,
-                divShares,
-                totalCAGRNoDivs,
-                totalCAGR,
-                priceTarget: priceArr[2],
-                targetPrice5,
-                priceCAGR,
-              },
-            };
+            const sharePrice = p(modelJson.inputs.sharePrice) || (livePrice || 0);
+            const inp = { ...modelJson.inputs, sharePrice };
+            modelData = { inputs: inp, computed: computeValuationModel(inp) };
           }
         } catch {}
       }
