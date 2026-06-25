@@ -1093,11 +1093,10 @@ export async function exportReport({ ticker, thesis, model, tickerData, liveQuot
     sections.push(spacer(80));
 
     // Input parameters table 2
-    const inputRow2Header = ['Revenue Growth', 'COGS Growth', 'OpEx Growth', 'Net Share Dilution', 'Dividend Growth %', 'Tax Rate'];
+    const inputRow2Header = ['Revenue Growth', 'Target Op. Margin', 'Net Share Dilution', 'Dividend Growth %', 'Tax Rate'];
     const inputRow2Values = [
       has(inp.revenueGrowth) ? fmtPct(Number(inp.revenueGrowth), 2) : '—',
-      has(inp.cogsGrowth) ? fmtPct(Number(inp.cogsGrowth), 2) : '0.00%',
-      has(inp.opexGrowth) ? fmtPct(Number(inp.opexGrowth), 2) : '—',
+      has(inp.targetOpMargin) ? fmtPct(Number(inp.targetOpMargin), 2) : '—',
       has(inp.netShareDilution) ? fmtPct(Number(inp.netShareDilution), 2) : '—',
       has(inp.dividendGrowth) ? fmtPct(Number(inp.dividendGrowth), 2) : '0.00%',
       has(inp.taxRate) ? fmtPct(Number(inp.taxRate), 2) : '21.00%',
@@ -1129,7 +1128,6 @@ export async function exportReport({ ticker, thesis, model, tickerData, liveQuot
 
       const projRows = [
         { label: 'Revenue (bil)', data: model.computed.revenue, fmt: v => `$${fmt(v, 2)}`, bold: true },
-        { label: 'Cost of Revenue', data: model.computed.cogs, fmt: v => `$${fmt(v, 2)}` },
         { label: 'Operating Expense', data: model.computed.opex, fmt: v => `$${fmt(v, 2)}` },
         { label: 'Other Income, net', data: model.computed.nonOpIncome, fmt: v => `${Number(v) < 0 ? '-' : ''}$${fmt(Math.abs(v), 2)}` },
         { sep: true },

@@ -1161,8 +1161,7 @@ export default function ResearchPage() {
             const sharePrice = p(inp.sharePrice) || (livePrice || 0);
             const targetPE = p(inp.targetPE);
             const revG = p(inp.revenueGrowth);
-            const opexG = p(inp.opexGrowth);
-            const cogsG = p(inp.cogsGrowth);
+            const targetMargin = p(inp.targetOpMargin);
             const dilution = p(inp.netShareDilution);
             const divG = p(inp.dividendGrowth);
             const curDiv = p(inp.currentDividend);
@@ -1170,12 +1169,11 @@ export default function ResearchPage() {
             const baseYear = p(inp.baseYear);
             const revenue = [p(inp.baseRevenue)];
             for (let i = 1; i <= 5; i++) revenue.push(revenue[i - 1] * (1 + revG));
-            const cogs = [p(inp.baseCOGS)];
-            for (let i = 1; i <= 5; i++) cogs.push(cogs[i - 1] * (1 + cogsG));
-            const opex = [p(inp.baseOpex)];
-            for (let i = 1; i <= 5; i++) opex.push(opex[i - 1] * (1 + opexG));
-            const opIncome = [0, 1, 2, 3, 4, 5].map(i => revenue[i] - cogs[i] - opex[i]);
-            const opMargin = [0, 1, 2, 3, 4, 5].map(i => revenue[i] ? opIncome[i] / revenue[i] : 0);
+            const baseOpex = p(inp.baseOpex);
+            const baseMargin = revenue[0] ? (revenue[0] - baseOpex) / revenue[0] : 0;
+            const opMargin = [0, 1, 2, 3, 4, 5].map(i => i === 0 ? baseMargin : baseMargin + (i / 5) * (targetMargin - baseMargin));
+            const opIncome = [0, 1, 2, 3, 4, 5].map(i => i === 0 ? (revenue[0] - baseOpex) : revenue[i] * opMargin[i]);
+            const opex = [0, 1, 2, 3, 4, 5].map(i => i === 0 ? baseOpex : revenue[i] - opIncome[i]);
             const nonOpIncome = [p(inp.baseNonOpIncome), 0, 0, 0, 0, 0];
             const taxExpense = [p(inp.baseTaxExpense)];
             for (let i = 1; i <= 5; i++) taxExpense.push(opIncome[i] * taxRate);
@@ -1200,7 +1198,6 @@ export default function ResearchPage() {
               computed: {
                 yearLabels: [0, 1, 2, 3, 4, 5].map(i => baseYear + i),
                 revenue,
-                cogs,
                 opex,
                 opIncome,
                 opMargin,

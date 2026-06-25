@@ -1,51 +1,49 @@
 import {
   Briefcase, Search, Eye, FolderOpen, ClipboardList, ListChecks,
-  PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles, LayoutDashboard, Workflow, MessagesSquare,
+  PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles, LayoutDashboard, MessagesSquare,
 } from 'lucide-react';
 
 // Single source of truth for app navigation.
 // Consumed by the Navbar (dropdowns + mobile drawer) and the Command Palette.
 // All top-level entries are dropdown groups so navigation is consistent —
-// no mixed standalone links. Tasks lives under "Strategy" (previously it was
-// only reachable as a tab buried inside Strategic Hub).
+// no mixed standalone links.
 export const NAV_GROUPS = [
   {
     label: 'CIO Suite',
     icon: Briefcase,
     items: [
-      { href: '/holdings', label: 'Holdings', icon: Briefcase, desc: 'Positions & P&L' },
-      { href: '/allocation', label: 'Allocation', icon: PieChart, desc: 'Asset & sector weights' },
-      { href: '/macro-regime', label: 'Market Confidence', icon: Activity, desc: 'Macro regime signals' },
-      { href: '/relationships', label: 'Relationships', icon: Users, desc: 'Contacts & interactions' },
+      { href: '/holdings', label: 'Holdings', icon: Briefcase },
+      { href: '/allocation', label: 'Allocation', icon: PieChart },
+      { href: '/macro-regime', label: 'Market Confidence', icon: Activity },
+      { href: '/relationships', label: 'Relationships', icon: Users },
     ],
   },
   {
     label: 'Strategy',
     icon: Target,
     items: [
-      { href: '/strategic-hub', label: 'Strategic Hub', icon: Target, desc: 'Positioning & convictions' },
-      { href: '/tasks', label: 'Tasks', icon: ListChecks, desc: 'Task board & to-dos' },
-      { href: '/workspace', label: 'Workspace', icon: Sparkles, desc: 'AI research workspace' },
+      { href: '/strategic-hub', label: 'Strategic Hub', icon: Target },
+      { href: '/tasks', label: 'Tasks', icon: ListChecks },
+      { href: '/workspace', label: 'Workspace', icon: Sparkles },
     ],
   },
   {
     label: 'Equity Research',
     icon: Search,
     items: [
-      { href: '/workflow', label: 'Workflow', icon: Workflow, desc: 'Research pipeline overview' },
-      { href: '/watchlist', label: 'Watchlist', icon: Eye, desc: 'Tracked tickers' },
-      { href: '/draft-review', label: 'Draft & Review', icon: MessagesSquare, desc: 'Paper & reviewer threads' },
-      { href: '/research', label: 'Research', icon: Search, desc: 'Deep-dive analysis' },
-      { href: '/position-review', label: 'Position Review', icon: ClipboardList, desc: 'Active position checks' },
+      { href: '/watchlist', label: 'Watchlist', icon: Eye },
+      { href: '/draft-review', label: 'Draft & Review', icon: MessagesSquare },
+      { href: '/research', label: 'Research', icon: Search },
+      { href: '/position-review', label: 'Position Review', icon: ClipboardList },
     ],
   },
   {
     label: 'Admin',
     icon: FolderOpen,
     items: [
-      { href: '/documents', label: 'Documents', icon: FolderOpen, desc: 'Files & uploads' },
-      { href: '/link-database', label: 'Link Database', icon: Link2, desc: 'Saved links' },
-      { href: '/financials', label: 'Financials', icon: DollarSign, desc: 'Accounting & NAV' },
+      { href: '/documents', label: 'Documents', icon: FolderOpen },
+      { href: '/link-database', label: 'Link Database', icon: Link2 },
+      { href: '/financials', label: 'Financials', icon: DollarSign },
     ],
   },
 ];
@@ -65,7 +63,7 @@ export function isItemActive(href, pathname) {
 // Flat list of every destination, including the dashboard home.
 // Used by the command palette and the breadcrumb page title.
 export const ALL_PAGES = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard, desc: 'Overview & fund NAV', group: 'Home' },
+  { href: '/', label: 'Dashboard', icon: LayoutDashboard, group: 'Home' },
   ...NAV_GROUPS.flatMap(group =>
     group.items.map(item => ({ ...item, group: group.label }))
   ),

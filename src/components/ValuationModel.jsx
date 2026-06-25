@@ -146,8 +146,6 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
   // Row definition for the projection table
   const rows = [
     { label: 'Revenue (bil)', key: 'revenue', inputKey: 'baseRevenue', dec: 3, bold: true, inputDollar: true },
-    { type: 'divider' },
-    { label: 'Cost of Revenue', key: 'cogs', inputKey: 'baseCOGS', dec: 3, inputDollar: true },
     { label: 'Operating Expense', key: 'opex', inputKey: 'baseOpex', dec: 3, inputDollar: true },
     { type: 'divider' },
     { label: 'Operating Income (bil)', key: 'opIncome', dec: 3, bold: true, highlight: 'emerald', calcPrefix: '$' },
@@ -241,12 +239,8 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
                 <InputCell value={inputs.revenueGrowth} onChange={v => update('revenueGrowth', v)} pct />
               </div>
               <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">OpEx Growth</label>
-                <InputCell value={inputs.opexGrowth} onChange={v => update('opexGrowth', v)} pct />
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">COGS Growth</label>
-                <InputCell value={inputs.cogsGrowth} onChange={v => update('cogsGrowth', v)} pct />
+                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Target Op. Margin</label>
+                <InputCell value={inputs.targetOpMargin} onChange={v => update('targetOpMargin', v)} pct />
               </div>
               <div className="col-span-2">
                 <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Net Share Dilution</label>

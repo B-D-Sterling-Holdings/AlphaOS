@@ -750,14 +750,15 @@ export default function ResearchPage() {
             const p = (v) => (v === '' || v === undefined || v === null || isNaN(Number(v))) ? 0 : Number(v);
             const sharePrice = p(inp.sharePrice) || (livePrice || 0);
             const targetPE = p(inp.targetPE);
-            const revG = p(inp.revenueGrowth), opexG = p(inp.opexGrowth), cogsG = p(inp.cogsGrowth);
+            const revG = p(inp.revenueGrowth), targetMargin = p(inp.targetOpMargin);
             const dilution = p(inp.netShareDilution), divG = p(inp.dividendGrowth), curDiv = p(inp.currentDividend);
             const taxRate = p(inp.taxRate), baseYear = p(inp.baseYear);
             const revenue = [p(inp.baseRevenue)]; for (let i=1;i<=5;i++) revenue.push(revenue[i-1]*(1+revG));
-            const cogs = [p(inp.baseCOGS)]; for (let i=1;i<=5;i++) cogs.push(cogs[i-1]*(1+cogsG));
-            const opex = [p(inp.baseOpex)]; for (let i=1;i<=5;i++) opex.push(opex[i-1]*(1+opexG));
-            const opIncome = [0,1,2,3,4,5].map(i => revenue[i]-cogs[i]-opex[i]);
-            const opMargin = [0,1,2,3,4,5].map(i => revenue[i]?opIncome[i]/revenue[i]:0);
+            const baseOpex = p(inp.baseOpex);
+            const baseMargin = revenue[0] ? (revenue[0]-baseOpex)/revenue[0] : 0;
+            const opMargin = [0,1,2,3,4,5].map(i => i===0?baseMargin:baseMargin+(i/5)*(targetMargin-baseMargin));
+            const opIncome = [0,1,2,3,4,5].map(i => i===0?(revenue[0]-baseOpex):revenue[i]*opMargin[i]);
+            const opex = [0,1,2,3,4,5].map(i => i===0?baseOpex:revenue[i]-opIncome[i]);
             const nonOpIncome = [p(inp.baseNonOpIncome),0,0,0,0,0];
             const taxExpense = [p(inp.baseTaxExpense)]; for (let i=1;i<=5;i++) taxExpense.push(opIncome[i]*taxRate);
             const netIncome = [0,1,2,3,4,5].map(i => opIncome[i]-taxExpense[i]+nonOpIncome[i]);
@@ -772,7 +773,7 @@ export default function ResearchPage() {
             const totalCAGR = (sharePrice>0&&divShares[5]*priceArr[5]>0)?Math.pow((divShares[5]*priceArr[5])/sharePrice,0.2)-1:0;
             modelData = {
               inputs: { ...inp, sharePrice },
-              computed: { yearLabels: [0,1,2,3,4,5].map(i=>baseYear+i), revenue, cogs, opex, opIncome, opMargin, nonOpIncome, taxExpense, netIncome, shares, eps, epsGrowth, priceArr, divShares, totalCAGRNoDivs, totalCAGR, priceTarget: priceArr[2], targetPrice5, priceCAGR },
+              computed: { yearLabels: [0,1,2,3,4,5].map(i=>baseYear+i), revenue, opex, opIncome, opMargin, nonOpIncome, taxExpense, netIncome, shares, eps, epsGrowth, priceArr, divShares, totalCAGRNoDivs, totalCAGR, priceTarget: priceArr[2], targetPrice5, priceCAGR },
             };
           }
         } catch {}

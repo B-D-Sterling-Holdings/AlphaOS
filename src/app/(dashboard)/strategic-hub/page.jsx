@@ -7,7 +7,7 @@ import {
   ThumbsUp, Meh, CloudRain,
   Scissors, Plus, LogOut as ExitIcon, ArrowLeft, ArrowRight,
   Shield, X, ChevronUp, ChevronDown,
-  FlaskConical, FileText, MessagesSquare, Search, CheckSquare, Star, User,
+  FlaskConical, FileText, MessagesSquare, Search, CheckSquare, Star, User, Trash2,
 } from 'lucide-react';
 import { getValuationExpectedReturn } from '@/lib/valuationModel';
 import {
@@ -268,12 +268,12 @@ function EditModal({ holding, onSave, onClose }) {
    stages (Draft ⇄ Research, and Research → Position to graduate it). */
 const DRAFT_GROUP = {
   key: 'draft', label: 'Draft & Review', icon: MessagesSquare,
-  text: 'text-amber-600', border: 'border-amber-100', bg: 'bg-amber-50/40',
+  text: 'text-slate-500', border: 'border-slate-200/70', bg: 'bg-slate-50/60',
   href: t => `/draft-review?ticker=${t}`,
 };
 const RESEARCH_GROUP = {
   key: 'research', label: 'Research', icon: Search,
-  text: 'text-blue-600', border: 'border-blue-100', bg: 'bg-blue-50/40',
+  text: 'text-slate-500', border: 'border-slate-200/70', bg: 'bg-slate-50/60',
   href: t => `/research?ticker=${t}`,
 };
 
@@ -297,7 +297,7 @@ function ProgressRing({ percent, size = 38 }) {
   const deg = Math.max(0, Math.min(100, percent)) * 3.6;
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <div className="absolute inset-0 rounded-full" style={{ background: `conic-gradient(#3b82f6 ${deg}deg, #eef2f6 0deg)` }} />
+      <div className="absolute inset-0 rounded-full" style={{ background: `conic-gradient(#10b981 ${deg}deg, #eef2f6 0deg)` }} />
       <div className="absolute inset-[3px] flex items-center justify-center rounded-full bg-white">
         <span className="text-[10px] font-bold leading-none tabular-nums text-gray-700">{percent}</span>
       </div>
@@ -309,8 +309,9 @@ function ProgressRing({ percent, size = 38 }) {
 // thesis (paper/review status, checklist, section progress, diligence, rating) — not
 // the CIO judgment used on the Position Overview. Click opens the deep page; the
 // footer button advances the name to the next stage.
-function NameCard({ stock, group, theses, onMove }) {
+function NameCard({ stock, group, theses, onMove, onDelete }) {
   const router = useRouter();
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const t = stock.ticker;
   const wlId = stock.watchlistId;
   const th = theses[t];
@@ -325,7 +326,7 @@ function NameCard({ stock, group, theses, onMove }) {
     const review = !ds.hasPaper
       ? { label: 'No draft yet', tone: 'gray' }
       : ds.total === 0
-        ? { label: 'Awaiting review', tone: 'blue' }
+        ? { label: 'Awaiting review', tone: 'gray' }
         : ds.open === 0
           ? { label: 'Review complete', tone: 'green' }
           : { label: 'In review', tone: 'amber' };
@@ -391,7 +392,7 @@ function NameCard({ stock, group, theses, onMove }) {
           <div className="min-w-0 leading-tight">
             <div className="text-[12px] font-semibold text-gray-700">{pr.doneCount} of {pr.total} sections done</div>
             {next ? (
-              <div className="mt-0.5 text-[10px] text-gray-400">Up next · <span className="font-semibold text-blue-600">{next.label}</span></div>
+              <div className="mt-0.5 text-[10px] text-gray-400">Up next · <span className="font-semibold text-emerald-600">{next.label}</span></div>
             ) : (
               <div className="mt-0.5 text-[10px] font-semibold text-emerald-600">Ready for decision</div>
             )}
@@ -400,10 +401,10 @@ function NameCard({ stock, group, theses, onMove }) {
         <div className="mt-2.5"><SectionBar steps={pr.steps} /></div>
         {hasChips && (
           <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            {rating > 0 && <MetaChip icon={Star} label={`Rated ${rating}/5`} tone="violet" />}
+            {rating > 0 && <MetaChip icon={Star} label={`Rated ${rating}/5`} tone="green" />}
             {valStep?.state === 'done' && <MetaChip label="Valued" tone="green" />}
             {dilig?.detail && <MetaChip icon={CheckSquare} label={`Diligence ${dilig.detail}`} tone="gray" />}
-            {newsStep?.detail && <MetaChip label={`${newsStep.detail} news`} tone="blue" />}
+            {newsStep?.detail && <MetaChip label={`${newsStep.detail} news`} tone="gray" />}
           </div>
         )}
       </>
@@ -412,7 +413,25 @@ function NameCard({ stock, group, theses, onMove }) {
 
   return (
     <div onClick={() => router.push(group.href(t))}
-      className="group cursor-pointer rounded-2xl border border-gray-100 bg-white p-3.5 shadow-sm transition-all hover:border-gray-200 hover:shadow-md">
+      className="group relative cursor-pointer rounded-2xl border border-gray-100 bg-white p-3.5 shadow-sm transition-all hover:border-gray-200 hover:shadow-md">
+      {confirmDelete && (
+        <div onClick={e => e.stopPropagation()}
+          className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-white/95 p-4 backdrop-blur-sm">
+          <p className="text-center text-[12px] font-semibold text-gray-800">
+            Delete <span className="text-red-500">{t}</span> and all its data?
+          </p>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setConfirmDelete(false)}
+              className="rounded-lg bg-gray-100 px-3 py-1.5 text-[11px] font-semibold text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-700">
+              Cancel
+            </button>
+            <button onClick={() => { setConfirmDelete(false); onDelete?.(t, wlId); }}
+              className="rounded-lg bg-red-500 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-red-600">
+              Delete
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-sm font-bold text-gray-900">{t}</span>
@@ -422,10 +441,18 @@ function NameCard({ stock, group, theses, onMove }) {
             </span>
           )}
         </div>
-        <Link href={group.href(t)} onClick={e => e.stopPropagation()}
-          className="shrink-0 whitespace-nowrap text-[10px] font-semibold text-gray-300 opacity-0 transition-opacity hover:text-gray-600 group-hover:opacity-100">
-          Open →
-        </Link>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {group.key === 'draft' && onDelete && (
+            <button onClick={e => { e.stopPropagation(); setConfirmDelete(true); }} title="Delete and permanently wipe its data"
+              className="text-gray-300 opacity-0 transition-all hover:text-red-500 group-hover:opacity-100">
+              <Trash2 size={13} />
+            </button>
+          )}
+          <Link href={group.href(t)} onClick={e => e.stopPropagation()}
+            className="whitespace-nowrap text-[10px] font-semibold text-gray-300 opacity-0 transition-opacity hover:text-gray-600 group-hover:opacity-100">
+            Open →
+          </Link>
+        </div>
       </div>
 
       {body}
@@ -439,7 +466,7 @@ function NameCard({ stock, group, theses, onMove }) {
         )}
         {group.key === 'draft' ? (
           <button onClick={e => { e.stopPropagation(); onMove(t, wlId, 'research'); }}
-            className="ml-auto inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 transition-all hover:bg-blue-100">
+            className="ml-auto inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 transition-all hover:bg-emerald-100">
             Send to Research <ArrowRight size={12} />
           </button>
         ) : (
@@ -454,7 +481,7 @@ function NameCard({ stock, group, theses, onMove }) {
 }
 
 // One stage column — a soft-tinted lane holding its name cards.
-function PipelineColumn({ group, names, theses, onMove }) {
+function PipelineColumn({ group, names, theses, onMove, onDelete }) {
   const Icon = group.icon;
   return (
     <div className={`rounded-2xl border ${group.border} ${group.bg} p-3.5`}>
@@ -466,7 +493,7 @@ function PipelineColumn({ group, names, theses, onMove }) {
       {names.length ? (
         <div className="space-y-2.5">
           {names.map(s => (
-            <NameCard key={s.ticker} stock={s} group={group} theses={theses} onMove={onMove} />
+            <NameCard key={s.ticker} stock={s} group={group} theses={theses} onMove={onMove} onDelete={onDelete} />
           ))}
         </div>
       ) : (
@@ -563,6 +590,7 @@ export default function StrategicHubPage() {
   // Names in the two pipeline stages this card manages.
   const draftNames = useMemo(() => activeStocks.filter(s => normalizeStage(s.stage) === 'draft').map(s => ({ ...s, watchlistId: activeWlId })), [activeStocks, activeWlId]);
   const researchNames = useMemo(() => activeStocks.filter(s => normalizeStage(s.stage) === 'research').map(s => ({ ...s, watchlistId: activeWlId })), [activeStocks, activeWlId]);
+  const positionNames = useMemo(() => activeStocks.filter(s => normalizeStage(s.stage) === 'position').map(s => ({ ...s, watchlistId: activeWlId })), [activeStocks, activeWlId]);
 
   // Lazy-load a thesis for every Draft / Research name (for progress).
   useEffect(() => {
@@ -602,6 +630,28 @@ export default function StrategicHubPage() {
       }
     } catch {}
   }, [watchlistData, cache]);
+
+  // Full delete of a draft name — removes it from the watchlist AND permanently wipes
+  // its thesis (paper, review threads, research, valuation, news) and strategic notes.
+  // This is the ONE destructive action; everywhere else only flips `stage`.
+  const deleteName = useCallback(async (ticker, watchlistId) => {
+    if (!watchlistData) return;
+    const next = {
+      ...watchlistData,
+      watchlists: watchlistData.watchlists.map(w =>
+        w.id === watchlistId ? { ...w, stocks: (w.stocks || []).filter(s => s.ticker !== ticker) } : w
+      ),
+    };
+    setWatchlistData(next);
+    writeWatchlistCache(cache, next);
+    setTheses(prev => { const n = { ...prev }; delete n[ticker]; cache.set('workflow_theses', n); return n; });
+    await Promise.all([
+      fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) }).catch(() => {}),
+      fetch(`/api/thesis/${ticker}`, { method: 'DELETE' }).catch(() => {}),
+      fetch('/api/strategic-notes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticker }) }).catch(() => {}),
+    ]);
+    loadNotes();
+  }, [watchlistData, cache, loadNotes]);
 
   const handleSaveNote = useCallback(async (ticker, form) => {
     await fetch('/api/strategic-notes', {
@@ -737,9 +787,39 @@ export default function StrategicHubPage() {
     }));
   }, [enriched, totalValue]);
 
+  // Position Overview IS the position review — driven PURELY by the pipeline `position`
+  // stage, with NO holdings-table bounds. A name shows here only because it was promoted
+  // through the pipeline; if it also happens to be an owned holding we enrich the row
+  // with its live weight / P&L, otherwise those columns stay blank. Every row is
+  // demotable: sending one back to Research flips its `stage` only, so it drops out of
+  // this list with no data deleted (deletion only happens when the name is manually
+  // removed from the Watchlist).
+  const positionRows = useMemo(() => {
+    const holdingByTicker = new Map(withWeights.map(h => [h.ticker, h]));
+    const noteFor = tk => notesRows.find(r => r.ticker === tk) || {};
+    return positionNames.map(s => {
+      const h = holdingByTicker.get(s.ticker);
+      if (h) return { ...h, demoteWlId: s.watchlistId, held: true };
+      const j = noteFor(s.ticker);
+      return {
+        ticker: s.ticker,
+        demoteWlId: s.watchlistId,
+        held: false,
+        mktVal: 0,
+        currentWeight: 0,
+        expectedReturn: null,
+        glPct: 0,
+        attentionPriority: j.priority || 'normal',
+        sentiment: j.sentiment || 'neutral',
+        conviction: j.conviction ?? 0,
+        strategicNotes: j.notes || '',
+      };
+    });
+  }, [withWeights, positionNames, notesRows]);
+
   // Filter & sort
   const displayed = useMemo(() => {
-    let arr = [...withWeights];
+    let arr = [...positionRows];
     if (filterSentiment !== 'all') arr = arr.filter(h => h.sentiment === filterSentiment);
 
     const sorters = {
@@ -758,7 +838,7 @@ export default function StrategicHubPage() {
     };
     arr.sort(sorters[sortBy] || sorters.priority);
     return arr;
-  }, [withWeights, sortBy, filterSentiment]);
+  }, [positionRows, sortBy, filterSentiment]);
 
   moveRef.current.displayed = displayed;
 
@@ -852,14 +932,27 @@ export default function StrategicHubPage() {
                         </div>
                       )}
                       <span className="text-xs font-bold text-gray-900">{h.ticker}</span>
-                      <span className="text-[10px] text-gray-400">{fmt$(h.mktVal)}</span>
+                      {h.held ? (
+                        <span className="text-[10px] text-gray-400">{fmt$(h.mktVal)}</span>
+                      ) : (
+                        <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold text-violet-600">Not held</span>
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); handleMove(h.ticker, h.demoteWlId, 'research'); }}
+                        title="Send back to Research — leaves Position Review; nothing is deleted"
+                        className="ml-1 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-gray-400 opacity-0 transition-all hover:bg-blue-50 hover:text-blue-600 group-hover:opacity-100">
+                        <ArrowLeft size={11} /> Research
+                      </button>
                     </div>
                   </td>
                   <td className="py-3"><PriorityBadge priority={h.attentionPriority} /></td>
                   <td className="py-3"><SentimentBadge sentiment={h.sentiment} /></td>
                   <td className="py-3"><ConvictionDots level={h.conviction} /></td>
                   <td className="py-3 text-right">
-                    <span className="text-xs font-semibold text-gray-800 tabular-nums">{h.currentWeight.toFixed(1)}%</span>
+                    {h.held ? (
+                      <span className="text-xs font-semibold text-gray-800 tabular-nums">{h.currentWeight.toFixed(1)}%</span>
+                    ) : (
+                      <span className="text-[10px] text-gray-300">—</span>
+                    )}
                   </td>
                   <td className="py-3 text-right">
                     {h.expectedReturn != null ? (
@@ -876,9 +969,13 @@ export default function StrategicHubPage() {
                     )}
                   </td>
                   <td className="py-3 text-right">
-                    <span className={`text-xs font-semibold tabular-nums ${h.glPct >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {pct(h.glPct)}
-                    </span>
+                    {h.held ? (
+                      <span className={`text-xs font-semibold tabular-nums ${h.glPct >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {pct(h.glPct)}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-gray-300">—</span>
+                    )}
                   </td>
                   <td className="py-3 pl-8 pr-2" style={{ width: '260px', maxWidth: '260px' }}>
                     {h.strategicNotes ? (
@@ -893,7 +990,7 @@ export default function StrategicHubPage() {
               {displayed.length === 0 && (
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-sm text-gray-400">
-                    No holdings yet. Add positions on the Holdings page to see them here.
+                    No names in Position Review yet. Promote a researched name to Position to monitor it here.
                   </td>
                 </tr>
               )}
@@ -908,13 +1005,11 @@ export default function StrategicHubPage() {
     <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
       <div className="mb-1">
         <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
-          <FlaskConical size={13} className="text-blue-500" /> Research Pipeline
+          Research Pipeline
         </h2>
       </div>
-      <p className="text-[11px] text-gray-400 mb-4">Drafting &amp; deep research in flight — move a name across when it&apos;s ready.</p>
-
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <PipelineColumn group={DRAFT_GROUP} names={draftNames} theses={theses} onMove={handleMove} />
+        <PipelineColumn group={DRAFT_GROUP} names={draftNames} theses={theses} onMove={handleMove} onDelete={deleteName} />
         <PipelineColumn group={RESEARCH_GROUP} names={researchNames} theses={theses} onMove={handleMove} />
       </div>
     </div>

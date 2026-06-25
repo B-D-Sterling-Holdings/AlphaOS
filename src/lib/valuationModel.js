@@ -3,14 +3,12 @@ export const DEFAULT_VALUATION_INPUTS = {
   sharePrice: '',
   targetPE: '',
   revenueGrowth: '',
-  opexGrowth: '',
-  cogsGrowth: '',
+  targetOpMargin: '',
   netShareDilution: '',
   dividendGrowth: '',
   currentDividend: '',
   taxRate: 0.21,
   baseRevenue: '',
-  baseCOGS: '',
   baseOpex: '',
   baseNonOpIncome: '',
   baseTaxExpense: '',
@@ -26,15 +24,13 @@ export function computeValuationModel(inputs) {
   const sharePrice = p(inputs?.sharePrice);
   const targetPE = p(inputs?.targetPE);
   const revG = p(inputs?.revenueGrowth);
-  const opexG = p(inputs?.opexGrowth);
-  const cogsG = p(inputs?.cogsGrowth);
+  const targetMargin = p(inputs?.targetOpMargin);
   const dilution = p(inputs?.netShareDilution);
   const divG = p(inputs?.dividendGrowth);
   const curDiv = p(inputs?.currentDividend);
   const taxRate = p(inputs?.taxRate);
   const baseYear = p(inputs?.baseYear);
   const baseRev = p(inputs?.baseRevenue);
-  const baseCOGS = p(inputs?.baseCOGS);
   const baseOpex = p(inputs?.baseOpex);
   const baseNonOp = p(inputs?.baseNonOpIncome);
   const baseTax = p(inputs?.baseTaxExpense);
@@ -45,12 +41,12 @@ export function computeValuationModel(inputs) {
 
   const revenue = [baseRev];
   for (let i = 1; i <= 5; i++) revenue.push(revenue[i - 1] * (1 + revG));
-  const cogs = [baseCOGS];
-  for (let i = 1; i <= 5; i++) cogs.push(cogs[i - 1] * (1 + cogsG));
-  const opex = [baseOpex];
-  for (let i = 1; i <= 5; i++) opex.push(opex[i - 1] * (1 + opexG));
-  const opIncome = years.map(i => revenue[i] - cogs[i] - opex[i]);
-  const opMargin = years.map(i => revenue[i] !== 0 ? opIncome[i] / revenue[i] : 0);
+  // TTM (year 0) operating margin is implied by base revenue and base opex;
+  // each forecast year ramps linearly from that toward the target margin.
+  const baseMargin = baseRev !== 0 ? (baseRev - baseOpex) / baseRev : 0;
+  const opMargin = years.map(i => i === 0 ? baseMargin : baseMargin + (i / 5) * (targetMargin - baseMargin));
+  const opIncome = years.map(i => i === 0 ? (baseRev - baseOpex) : revenue[i] * opMargin[i]);
+  const opex = years.map(i => i === 0 ? baseOpex : revenue[i] - opIncome[i]);
   const nonOpIncome = [baseNonOp, 0, 0, 0, 0, 0];
   const taxExpense = [baseTax];
   for (let i = 1; i <= 5; i++) taxExpense.push(opIncome[i] * taxRate);
@@ -74,7 +70,7 @@ export function computeValuationModel(inputs) {
   const priceTarget = priceArr[2];
 
   return {
-    yearLabels, revenue, cogs, opex, opIncome, opMargin, nonOpIncome,
+    yearLabels, revenue, opex, opIncome, opMargin, nonOpIncome,
     taxExpense, netIncome, shares, eps, epsGrowth, priceArr, divShares,
     totalCAGRNoDivs, totalCAGR, priceTarget, targetPrice5, priceCAGR,
   };

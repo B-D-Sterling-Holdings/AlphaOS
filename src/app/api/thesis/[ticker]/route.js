@@ -114,3 +114,15 @@ export async function POST(request, { params }) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
+
+// Permanently delete a thesis (paper, review threads, research workspace, valuation,
+// news, todos — everything). Used by the "full delete" action in the Strategic Hub.
+export async function DELETE(request, { params }) {
+  const supabase = await getDb();
+  const { ticker } = await params;
+  const upper = ticker.toUpperCase();
+
+  const { error } = await supabase.from('theses').delete().eq('ticker', upper);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ success: true });
+}
