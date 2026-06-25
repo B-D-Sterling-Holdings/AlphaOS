@@ -20,14 +20,7 @@ function getEffectiveMarketPrice(quote) {
   return { price: null, session: 'unknown' };
 }
 
-async function fetchSingleQuote(t) {
-  const [quote, summary] = await Promise.all([
-    yahooFinance.quote(t),
-    yahooFinance.quoteSummary(t, {
-      modules: ['financialData', 'defaultKeyStatistics', 'assetProfile'],
-    }).catch(() => null),
-  ]);
-
+function buildQuote(quote, summary) {
   const fin = summary?.financialData || {};
   const stats = summary?.defaultKeyStatistics || {};
   const profile = summary?.assetProfile || {};
@@ -69,19 +62,47 @@ async function fetchSingleQuote(t) {
 
 export async function fetchQuotes(tickers) {
   const result = {};
+  if (!tickers?.length) return result;
 
+  // 1. Fetch all prices in a SINGLE batched request. This is the data the UI
+  //    treats as required, and one request is far less likely to be rate-limited
+  //    by Yahoo than N parallel quote+quoteSummary pairs (which trips the limit
+  //    in dev, where StrictMode/Fast Refresh can double the burst).
+  const quoteMap = {};
+  try {
+    const quotes = await yahooFinance.quote(tickers);
+    for (const q of (Array.isArray(quotes) ? quotes : [quotes])) {
+      if (q?.symbol) quoteMap[q.symbol] = q;
+    }
+  } catch {
+    // Batch failed entirely — the per-ticker fallback below will retry.
+  }
+
+  // 2. Layer in the richer quoteSummary fundamentals per ticker. These are
+  //    best-effort: a failure here (e.g. rate limit) leaves the price intact
+  //    rather than nulling it out and surfacing a "failed to load" error.
   for (const t of tickers) {
-    try {
-      result[t] = await fetchSingleQuote(t);
-    } catch (firstErr) {
-      // Retry once after a short delay — Yahoo Finance can be flaky
+    let quote = quoteMap[t];
+    if (!quote) {
+      // Symbol missing from the batch — try once, then retry after a short delay.
       try {
-        await new Promise(r => setTimeout(r, 500));
-        result[t] = await fetchSingleQuote(t);
-      } catch (retryErr) {
-        result[t] = { price: null, error: retryErr.message };
+        quote = await yahooFinance.quote(t);
+      } catch {
+        try {
+          await new Promise(r => setTimeout(r, 500));
+          quote = await yahooFinance.quote(t);
+        } catch (retryErr) {
+          result[t] = { price: null, error: retryErr.message };
+          continue;
+        }
       }
     }
+
+    const summary = await yahooFinance.quoteSummary(t, {
+      modules: ['financialData', 'defaultKeyStatistics', 'assetProfile'],
+    }).catch(() => null);
+
+    result[t] = buildQuote(quote, summary);
   }
 
   return result;

@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useLayoutEffect, memo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { RefreshCw, Download, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, Image as ImageIcon, X, ZoomIn, Star, ChevronDown, ExternalLink, Link as LinkIcon, Send, MessageSquare, FileText, BookOpen, Mic, MoreHorizontal, Pencil, Search } from 'lucide-react';
+import { RefreshCw, Download, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, Star, ChevronDown, ExternalLink, Link as LinkIcon, Send, MessageSquare, FileText, BookOpen, Mic, MoreHorizontal, Pencil, Search, ArrowLeft } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
 import LineChart from '@/components/charts/LineChart';
@@ -13,7 +13,10 @@ import Toast from '@/components/Toast';
 import { formatMoney, formatLargeNumber, formatShareCount, formatNumber } from '@/lib/formatters';
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
+import { computeValuationModel } from '@/lib/valuationModel';
 import RichTextArea from '@/components/RichTextArea';
+import { migrateNewsImages } from '@/lib/migrateNewsImages';
+import { persistStageMove, writeWatchlistCache, persistHoldingsBackfill, STAGE_LABELS } from '@/lib/stageMove';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -218,6 +221,47 @@ export default function ResearchPage() {
   const [portfolio, setPortfolio] = useState(() => cache.get('research_portfolio') || null);
   const [selectedTicker, setSelectedTicker] = useState(() => urlTicker || cache.get('research_selectedTicker') || '');
   const [tickerData, setTickerData] = useState(() => cache.get('research_tickerData') || null);
+  const [watchlistData, setWatchlistData] = useState(() => cache.get('watchlist_data') || null);
+
+  // Position Review membership: every `stage === 'position'` watchlist stock, tagged
+  // with its watchlist so it can be demoted back to Research. This is the SOLE source
+  // of what's in Position Review — the portfolio holdings book is not consulted (it was
+  // backfilled into `position` stocks once, on load).
+  const positionStocks = useMemo(() => (
+    (watchlistData?.watchlists || []).flatMap(w =>
+      (w.stocks || [])
+        .filter(s => s.stage === 'position')
+        .map(s => ({ ...s, watchlistId: w.id, watchlistName: w.name }))
+    )
+  ), [watchlistData]);
+
+  const selectedPositionStock = useMemo(
+    () => positionStocks.find(s => s.ticker === selectedTicker) || null,
+    [positionStocks, selectedTicker]
+  );
+
+  // Demote the selected name out of Position Review. Every name here is a real
+  // `position`-stage watchlist stock, so this just flips `stock.stage` back to
+  // `research` — the name then leaves Position Review entirely (no holdings union to
+  // keep it pinned here). Data-safe: only the stage flips; the thesis
+  // (researchWorkspace/draftReview/valuation) and the portfolio book are untouched.
+  const moveStage = useCallback(async (newStage) => {
+    if (!selectedPositionStock || !watchlistData) return;
+    const ticker = selectedPositionStock.ticker;
+    try {
+      const { next } = await persistStageMove({
+        watchlistData,
+        watchlistId: selectedPositionStock.watchlistId,
+        ticker,
+        newStage,
+      });
+      setWatchlistData(next);
+      writeWatchlistCache(cache, next);
+      setToast({ message: `${ticker} moved to ${STAGE_LABELS[newStage]}`, type: 'success' });
+    } catch {
+      setToast({ message: `Failed to move ${ticker}`, type: 'error' });
+    }
+  }, [selectedPositionStock, watchlistData, cache]);
   const [loading, setLoading] = useState(() => !cache.get('research_portfolio'));
   const [tickerLoading, setTickerLoading] = useState(false);
   const [toast, setToast] = useState(null);
@@ -235,32 +279,60 @@ export default function ResearchPage() {
   const modelRef = useRef(null);
   const [exporting, setExporting] = useState(false);
 
+  // Position Review membership is driven PURELY by the `position` pipeline stage —
+  // there is no link to the portfolio holdings book. The portfolio is still loaded for
+  // the position-snapshot stats and for the one-time backfill that turns any
+  // pre-existing holding into a `position` stock, so nothing vanishes when that link
+  // is cut. The backfill only ADDS missing names and never touches the holdings table.
   useEffect(() => {
-    fetch('/api/portfolio')
-      .then(r => r.json())
-      .then(data => {
-        setPortfolio(data);
-        cache.set('research_portfolio', data);
-        setLoading(false);
-        if (data.holdings?.length && !selectedTicker) {
-          const first = data.holdings[0].ticker;
-          setSelectedTicker(first);
-          cache.set('research_selectedTicker', first);
-        }
-      })
-      .catch(() => setLoading(false));
-  }, []);
+    let alive = true;
+    Promise.all([
+      fetch('/api/portfolio').then(r => r.json()).catch(() => null),
+      fetch('/api/watchlist').then(r => r.json()).catch(() => null),
+    ]).then(async ([pf, wl]) => {
+      if (!alive) return;
+      if (pf) { setPortfolio(pf); cache.set('research_portfolio', pf); }
+      let nextWl = wl;
+      if (wl) {
+        try {
+          const migrated = await persistHoldingsBackfill({ watchlistData: wl, holdings: pf?.holdings });
+          if (migrated) nextWl = migrated;
+        } catch {}
+        if (!alive) return;
+        setWatchlistData(nextWl);
+        writeWatchlistCache(cache, nextWl);
+      }
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [cache]);
 
-  // Honor /position-review?ticker=XYZ (e.g. from the command palette) even when
-  // the page is already mounted — select it if it's an existing holding.
+  // Keep a valid Position Review name selected. When the current pick leaves the stage
+  // (e.g. just demoted) fall back to the first remaining position; when the stage is
+  // empty, clear the selection so the empty state shows instead of a stale ticker.
+  useEffect(() => {
+    if (!positionStocks.length) {
+      if (selectedTicker) { setSelectedTicker(''); cache.set('research_selectedTicker', ''); }
+      return;
+    }
+    if (!selectedTicker || !positionStocks.some(s => s.ticker === selectedTicker)) {
+      const first = positionStocks[0].ticker;
+      setSelectedTicker(first);
+      cache.set('research_selectedTicker', first);
+    }
+  }, [positionStocks]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Honor /position-review?ticker=XYZ (e.g. from the command palette or the Workflow
+  // Position card) even when the page is already mounted — select it if it's a name in
+  // the Position Review stage.
   useEffect(() => {
     if (!urlTicker) return;
     const t = urlTicker.toUpperCase();
-    if (t !== selectedTicker && (portfolio?.holdings || []).some(h => h.ticker === t)) {
+    if (t !== selectedTicker && positionStocks.some(s => s.ticker === t)) {
       setSelectedTicker(t);
       cache.set('research_selectedTicker', t);
     }
-  }, [urlTicker, portfolio]);
+  }, [urlTicker, positionStocks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadTickerData = useCallback(async (ticker) => {
     if (!ticker) return;
@@ -319,7 +391,7 @@ export default function ResearchPage() {
     setThesisDirty(false);
     fetch(`/api/thesis/${selectedTicker}`)
       .then(r => r.json())
-      .then(data => setThesis(data))
+      .then(data => setThesis(migrateNewsImages(data)))
       .catch(() => {})
       .finally(() => setThesisLoading(false));
   }, [selectedTicker]);
@@ -425,55 +497,16 @@ export default function ResearchPage() {
     setThesisDirty(true);
   };
 
-  const [imageUploading, setImageUploading] = useState(false);
-  const [previewImage, setPreviewImage] = useState(null);
-
-  const uploadNewsImage = async (newsIdx, files) => {
-    if (!files || files.length === 0 || !selectedTicker) return;
-    setImageUploading(true);
-    try {
-      const newImages = [];
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('ticker', selectedTicker);
-        const res = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (data.url) {
-          newImages.push({ url: data.url, path: data.path, name: file.name });
-        }
-      }
-      if (newImages.length > 0) {
-        setThesis(prev => ({
-          ...prev,
-          newsUpdates: (prev.newsUpdates || []).map((entry, i) => {
-            if (i !== newsIdx) return entry;
-            return { ...entry, images: [...(entry.images || []), ...newImages] };
-          }),
-        }));
-        setThesisDirty(true);
-      }
-    } catch (e) {
-      setToast({ message: 'Failed to upload image', type: 'error' });
-    } finally {
-      setImageUploading(false);
-    }
-  };
-
-  const removeNewsImage = async (newsIdx, imgIdx) => {
-    const entry = thesis.newsUpdates?.[newsIdx];
-    const img = entry?.images?.[imgIdx];
-    if (img?.path) {
-      try { await fetch(`/api/upload?path=${encodeURIComponent(img.path)}`, { method: 'DELETE' }); } catch {}
-    }
-    setThesis(prev => ({
-      ...prev,
-      newsUpdates: (prev.newsUpdates || []).map((entry, i) => {
-        if (i !== newsIdx) return entry;
-        return { ...entry, images: (entry.images || []).filter((_, j) => j !== imgIdx) };
-      }),
-    }));
+  // Persisting commit for the News "What Happened" body (a RichTextArea, so images
+  // live inline in the body itself — no separate gallery).
+  const commitNewsUpdate = (idx, field, value) => {
+    const updated = {
+      ...thesis,
+      newsUpdates: (thesis.newsUpdates || []).map((entry, i) => i === idx ? { ...entry, [field]: value } : entry),
+    };
+    setThesis(updated);
     setThesisDirty(true);
+    saveThesis(updated);
   };
 
   const updateCoreReason = (idx, field, value) => {
@@ -653,6 +686,10 @@ export default function ResearchPage() {
 
   const holdings = portfolio?.holdings || [];
   const cashVal = portfolio?.cash || 0;
+  // The picker is driven PURELY by the `position` pipeline stage — no holdings link.
+  // (Pre-existing holdings were backfilled into `position` stocks on load.)
+  const pickerItems = [...new Map(positionStocks.map(s => [s.ticker, { ticker: s.ticker }])).values()];
+  // Every name shown here is a real position-stage stock, so every name is demotable.
   const holding = holdings.find(h => h.ticker === selectedTicker);
   const selectedLivePrice = liveQuote?.price || null;
   const holdingPrice = (h) => (h.ticker === selectedTicker && selectedLivePrice) ? selectedLivePrice : h.cost_basis;
@@ -709,35 +746,10 @@ export default function ResearchPage() {
           const modelRes = await fetch(`/api/model/${selectedTicker}`);
           const modelJson = await modelRes.json();
           if (modelJson.exists && modelJson.inputs) {
-            // Import the compute logic inline
-            const inp = modelJson.inputs;
             const p = (v) => (v === '' || v === undefined || v === null || isNaN(Number(v))) ? 0 : Number(v);
-            const sharePrice = p(inp.sharePrice) || (livePrice || 0);
-            const targetPE = p(inp.targetPE);
-            const revG = p(inp.revenueGrowth), opexG = p(inp.opexGrowth), cogsG = p(inp.cogsGrowth);
-            const dilution = p(inp.netShareDilution), divG = p(inp.dividendGrowth), curDiv = p(inp.currentDividend);
-            const taxRate = p(inp.taxRate), baseYear = p(inp.baseYear);
-            const revenue = [p(inp.baseRevenue)]; for (let i=1;i<=5;i++) revenue.push(revenue[i-1]*(1+revG));
-            const cogs = [p(inp.baseCOGS)]; for (let i=1;i<=5;i++) cogs.push(cogs[i-1]*(1+cogsG));
-            const opex = [p(inp.baseOpex)]; for (let i=1;i<=5;i++) opex.push(opex[i-1]*(1+opexG));
-            const opIncome = [0,1,2,3,4,5].map(i => revenue[i]-cogs[i]-opex[i]);
-            const opMargin = [0,1,2,3,4,5].map(i => revenue[i]?opIncome[i]/revenue[i]:0);
-            const nonOpIncome = [p(inp.baseNonOpIncome),0,0,0,0,0];
-            const taxExpense = [p(inp.baseTaxExpense)]; for (let i=1;i<=5;i++) taxExpense.push(opIncome[i]*taxRate);
-            const netIncome = [0,1,2,3,4,5].map(i => opIncome[i]-taxExpense[i]+nonOpIncome[i]);
-            const shares = [p(inp.baseShares)]; for (let i=1;i<=5;i++) shares.push(shares[i-1]*(1+dilution));
-            const eps = [0,1,2,3,4,5].map(i => shares[i]?netIncome[i]/shares[i]:0);
-            const epsGrowth = (eps[0]&&eps[5])?Math.pow(eps[5]/eps[0],0.2)-1:0;
-            const targetPrice5 = targetPE*eps[5];
-            const priceCAGR = (sharePrice>0&&targetPrice5>0)?Math.pow(targetPrice5/sharePrice,0.2)-1:0;
-            const priceArr = [sharePrice]; for (let i=1;i<=5;i++) priceArr.push(priceArr[i-1]*(1+priceCAGR));
-            const divShares = [1]; for (let i=1;i<=5;i++){const df=sharePrice>0?(curDiv/sharePrice)*Math.pow((1+divG)/(1+priceCAGR),i-1):0;divShares.push((1+df)*divShares[i-1]);}
-            const totalCAGRNoDivs = priceCAGR;
-            const totalCAGR = (sharePrice>0&&divShares[5]*priceArr[5]>0)?Math.pow((divShares[5]*priceArr[5])/sharePrice,0.2)-1:0;
-            modelData = {
-              inputs: { ...inp, sharePrice },
-              computed: { yearLabels: [0,1,2,3,4,5].map(i=>baseYear+i), revenue, cogs, opex, opIncome, opMargin, nonOpIncome, taxExpense, netIncome, shares, eps, epsGrowth, priceArr, divShares, totalCAGRNoDivs, totalCAGR, priceTarget: priceArr[2], targetPrice5, priceCAGR },
-            };
+            const sharePrice = p(modelJson.inputs.sharePrice) || (livePrice || 0);
+            const inp = { ...modelJson.inputs, sharePrice };
+            modelData = { inputs: inp, computed: computeValuationModel(inp) };
           }
         } catch {}
       }
@@ -811,15 +823,25 @@ export default function ResearchPage() {
       <Card className="mb-8 animate-fade-in-up stagger-2">
         <div className="flex items-center gap-4">
           <label className="text-xs text-gray-500 uppercase tracking-wider font-bold">Select Company</label>
-          <TickerPicker holdings={holdings} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
+          <TickerPicker holdings={pickerItems} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
+
+          {selectedPositionStock && (
+            <button
+              onClick={() => moveStage('research')}
+              title="Demote back to Research — it leaves Position Review; nothing is deleted, the thesis is kept"
+              className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors"
+            >
+              <ArrowLeft size={13} /> Back to Research
+            </button>
+          )}
         </div>
       </Card>
       </div>
 
       {!selectedTicker ? (
         <div className="text-center py-20">
-          <p className="text-lg text-gray-400 mb-2">Select a ticker to view research data</p>
-          <p className="text-sm text-gray-300">Choose from your portfolio holdings above</p>
+          <p className="text-lg text-gray-400 mb-2">No names in Position Review</p>
+          <p className="text-sm text-gray-300">Promote a researched name into Position to review it here</p>
         </div>
       ) : tickerLoading ? (
         <div className="space-y-6">
@@ -1136,15 +1158,14 @@ export default function ResearchPage() {
 
                           <div className="mb-4">
                             <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">What Happened</label>
-                            <textarea
+                            <RichTextArea
                               value={entry.body || ''}
-                              onChange={e => updateNewsUpdate(activeIdx, 'body', e.target.value)}
-                              onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; e.target.dataset.sizedFor = e.target.value; }}
-                              ref={el => { if (el && el.dataset.sizedFor !== el.value) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; el.dataset.sizedFor = el.value; } }}
-                              placeholder="Summarize the key takeaways..."
+                              onChange={value => updateNewsUpdate(activeIdx, 'body', value)}
+                              onBlur={value => commitNewsUpdate(activeIdx, 'body', value)}
+                              onCommit={value => commitNewsUpdate(activeIdx, 'body', value)}
+                              ticker={selectedTicker}
+                              placeholder="Summarize the key takeaways — paste charts or screenshots inline..."
                               rows={3}
-                              spellCheck={true}
-                              className="w-full bg-gray-50/50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-200 placeholder:text-gray-300 resize-none overflow-hidden"
                             />
                           </div>
 
@@ -1162,59 +1183,6 @@ export default function ResearchPage() {
                             />
                           </div>
 
-                          {/* ── Attached Images ── */}
-                          <div className="mt-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider flex items-center gap-1">
-                                <ImageIcon size={11} />
-                                Attached Images
-                              </label>
-                              <label className={`flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 cursor-pointer transition-colors ${imageUploading ? 'opacity-50 pointer-events-none' : ''}`}>
-                                <Plus size={12} />
-                                {imageUploading ? 'Uploading...' : 'Add Image'}
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  multiple
-                                  className="hidden"
-                                  onChange={e => uploadNewsImage(activeIdx, Array.from(e.target.files))}
-                                />
-                              </label>
-                            </div>
-                            {(entry.images && entry.images.length > 0) ? (
-                              <div className="grid grid-cols-3 gap-2">
-                                {entry.images.map((img, imgIdx) => (
-                                  <div key={imgIdx} className="relative group rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
-                                    <img
-                                      src={img.url}
-                                      alt={img.name || 'Attached image'}
-                                      className="w-full h-24 object-cover cursor-pointer"
-                                      onClick={() => setPreviewImage(img.url)}
-                                    />
-                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
-                                      <button
-                                        onClick={() => setPreviewImage(img.url)}
-                                        className="p-1 bg-white/90 rounded-md text-gray-700 hover:bg-white"
-                                      >
-                                        <ZoomIn size={14} />
-                                      </button>
-                                      <button
-                                        onClick={() => removeNewsImage(activeIdx, imgIdx)}
-                                        className="p-1 bg-white/90 rounded-md text-red-500 hover:bg-white"
-                                      >
-                                        <Trash2 size={14} />
-                                      </button>
-                                    </div>
-                                    <p className="text-[9px] text-gray-400 truncate px-1.5 py-0.5">{img.name}</p>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="text-center py-4 border border-dashed border-gray-200 rounded-lg">
-                                <p className="text-xs text-gray-300">No images attached</p>
-                              </div>
-                            )}
-                          </div>
                         </div>
                       </div>
                     );
@@ -1555,26 +1523,6 @@ export default function ResearchPage() {
 
       {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
 
-      {/* Image Preview Modal */}
-      {previewImage && (
-        <div
-          className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-8"
-          onClick={() => setPreviewImage(null)}
-        >
-          <button
-            onClick={() => setPreviewImage(null)}
-            className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
-          >
-            <X size={20} />
-          </button>
-          <img
-            src={previewImage}
-            alt="Preview"
-            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
-      )}
     </div>
   );
 }

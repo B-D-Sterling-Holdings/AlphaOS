@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Trash2, ZoomIn, X, Image as ImageIcon, Bold, Italic, Underline as UnderlineIcon, Type, Table as TableIcon, List as ListIcon } from 'lucide-react';
+import { X, Image as ImageIcon, Bold, Italic, Underline as UnderlineIcon, Type, Table as TableIcon, List as ListIcon } from 'lucide-react';
 
 /**
  * RichTextArea — a contentEditable rich-text editor with inline images.
@@ -120,6 +120,17 @@ function inlineImgTag(url, name) {
   return `<img src="${safeUrl}" alt="${safeName}" class="rt-inline-img" />`;
 }
 
+// Migrate a legacy { type:'image' } block (the old separate-block format) into an
+// inline <img>, preserving its stored width. Inline images are the only image mode
+// now, so old block-format content is folded into the text on render and persists
+// inline on the next save.
+function legacyImageBlockToHTML(block) {
+  const widthStyle = typeof block?.width === 'number' ? ` style="width:${block.width}%"` : '';
+  const safeUrl = String(block?.url || '').replace(/"/g, '&quot;');
+  const safeName = String(block?.name || '').replace(/"/g, '&quot;');
+  return `<img src="${safeUrl}" alt="${safeName}" class="rt-inline-img"${widthStyle} />`;
+}
+
 function placeCaretInCell(cell) {
   if (!cell) return;
   const range = document.createRange();
@@ -147,7 +158,6 @@ function EditableBlock({
   rows,
   className,
   enableTables,
-  inlineImageResize,
 }) {
   const ref = useRef(null);
   const wrapRef = useRef(null);
@@ -212,7 +222,6 @@ function EditableBlock({
   // Click an inline image to select it (shows the resize handle); click anywhere
   // else clears the selection.
   const handleClick = (e) => {
-    if (!inlineImageResize) return;
     if (e.target?.tagName === 'IMG' && ref.current?.contains(e.target)) {
       selImgRef.current = e.target;
       syncImgSelection();
@@ -265,7 +274,7 @@ function EditableBlock({
   // Inside a table, Tab/Shift+Tab walks cells; Tab in the last cell appends a new
   // row. Outside a table, Tab keeps its default behavior (moving focus away).
   const handleKeyDown = (e) => {
-    if (inlineImageResize && selImgRef.current) clearImgSelection();
+    if (selImgRef.current) clearImgSelection();
 
     // Markdown-style bullets: "-" or "*" at the start of a line, then space,
     // turns the line into a bullet list. Enter then continues / exits the list
@@ -345,7 +354,7 @@ function EditableBlock({
         data-placeholder={placeholder || ''}
         style={{ minHeight: `${minHeight}px`, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
       />
-      {inlineImageResize && imgSel && (
+      {imgSel && (
         <div
           className="absolute pointer-events-none border-2 border-emerald-400/80 rounded-md z-10"
           style={{ left: imgSel.left, top: imgSel.top, width: imgSel.width, height: imgSel.height }}
@@ -470,137 +479,21 @@ function Toolbar({ onCommand, enableTables, sticky }) {
   );
 }
 
-const IMAGE_SIZE_PRESETS = [
-  { label: 'S', value: 25 },
-  { label: 'M', value: 50 },
-  { label: 'L', value: 75 },
-  { label: 'Full', value: 100 },
-];
-
-/**
- * ImageBlock — renders an inline image. When `resizable`, the width (stored as a
- * percentage of the editor column on block.width) can be set via preset buttons
- * or by dragging the bottom-right handle. Width changes are committed through
- * onResize so they persist.
- */
-function ImageBlock({ block, idx, resizable, onResize, onRemove, onPreview }) {
-  const wrapRef = useRef(null);
-  const pctRef = useRef(null);
-  const [livePct, setLivePct] = useState(null);
-  const [dragging, setDragging] = useState(false);
-
-  const savedPct = typeof block.width === 'number' ? block.width : null;
-  const displayPct = livePct ?? savedPct ?? 100;
-
-  const startDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const wrap = wrapRef.current;
-    const imgEl = wrap?.querySelector('img');
-    const columnEl = wrap?.parentElement;
-    if (!imgEl || !columnEl) return;
-    const columnWidth = columnEl.getBoundingClientRect().width;
-    const startX = e.clientX;
-    const startWidthPx = imgEl.getBoundingClientRect().width;
-    setDragging(true);
-
-    const onMove = (ev) => {
-      const nextPx = startWidthPx + (ev.clientX - startX);
-      const pct = Math.max(10, Math.min(100, Math.round((nextPx / columnWidth) * 100)));
-      pctRef.current = pct;
-      setLivePct(pct);
-    };
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      setDragging(false);
-      if (pctRef.current != null) onResize(idx, pctRef.current);
-      pctRef.current = null;
-      setLivePct(null);
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  };
-
-  return (
-    <div className="relative my-2">
-      <div
-        ref={wrapRef}
-        className="group relative rounded-xl overflow-hidden border border-gray-200 bg-gray-50 inline-block align-top max-w-full"
-        style={{ width: `${displayPct}%` }}
-      >
-        <img
-          src={block.url}
-          alt={block.name || 'Inline image'}
-          className={`w-full object-contain cursor-pointer block ${resizable ? '' : 'max-h-96'}`}
-          onClick={() => onPreview(block.url)}
-          draggable={false}
-        />
-        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={() => onPreview(block.url)}
-            className="p-1.5 bg-white/90 hover:bg-white rounded-lg shadow-sm text-gray-600"
-          >
-            <ZoomIn size={14} />
-          </button>
-          <button
-            onClick={() => onRemove(idx)}
-            className="p-1.5 bg-white/90 hover:bg-white rounded-lg shadow-sm text-red-500"
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
-
-        {resizable && (
-          <>
-            <div className="absolute bottom-2 left-2 flex items-center gap-0.5 p-0.5 bg-white/90 rounded-lg shadow-sm opacity-0 group-hover:opacity-100 transition-opacity">
-              {IMAGE_SIZE_PRESETS.map(preset => (
-                <button
-                  key={preset.value}
-                  onClick={() => onResize(idx, preset.value)}
-                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md transition-colors ${
-                    (savedPct ?? 100) === preset.value
-                      ? 'bg-emerald-500 text-white'
-                      : 'text-gray-500 hover:bg-emerald-50 hover:text-emerald-700'
-                  }`}
-                  title={`${preset.value}% width`}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-            <div
-              onMouseDown={startDrag}
-              className="absolute bottom-0 right-0 w-4 h-4 flex items-center justify-center cursor-nwse-resize opacity-0 group-hover:opacity-100 transition-opacity"
-              title="Drag to resize"
-            >
-              <div className="w-2.5 h-2.5 border-r-2 border-b-2 border-white drop-shadow" />
-            </div>
-            {dragging && (
-              <div className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-gray-900/80 text-white">
-                {displayPct}%
-              </div>
-            )}
-          </>
-        )}
-      </div>
-      {block.name && (
-        <p className="text-[10px] text-gray-400 mt-0.5 pl-1">{block.name}</p>
-      )}
-    </div>
-  );
-}
-
-export default function RichTextArea({ value, onChange, ticker, placeholder, rows = 4, className = '', onBlur, onCommit, enableTables = false, resizableImages = false, inlineImages = false, stickyToolbar = false }) {
+export default function RichTextArea({ value, onChange, ticker, placeholder, rows = 4, className = '', onBlur, onCommit, enableTables = false, stickyToolbar = false }) {
   const [uploading, setUploading] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState(null);
   const [focusedBlockIdx, setFocusedBlockIdx] = useState(null);
   const lastFocusedIdxRef = useRef(null);
 
-  const blocks = Array.isArray(value)
-    ? value
-    : [{ type: 'text', value: value || '' }];
-  const normalizedBlocks = blocks.length === 0 ? [{ type: 'text', value: '' }] : blocks;
+  // Images are always inline now (real <img> tags in the text flow). Everything
+  // collapses into a single rich-text block: text blocks are concatenated and any
+  // legacy { type:'image' } block is folded in as an inline <img> — so old
+  // block-format content still renders and is migrated to inline on the next save.
+  const rawBlocks = Array.isArray(value) ? value : [{ type: 'text', value: value || '' }];
+  const mergedHTML = rawBlocks
+    .map(b => b?.type === 'image' ? legacyImageBlockToHTML(b) : (b?.value || ''))
+    .filter(frag => frag && frag.trim())
+    .join('<br>');
+  const normalizedBlocks = [{ type: 'text', value: mergedHTML }];
 
   const emitChange = useCallback((newBlocks) => {
     onChange(newBlocks);
@@ -646,49 +539,6 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
     return { type: 'image', url: src, name: '' };
   };
 
-  // Insert images at idx by running async `producers` (each resolves to a block).
-  // Shared by file paste/upload and pasted-HTML images.
-  const insertImageProducersAt = async (idx, producers, captureCursor = null) => {
-    if (!producers || producers.length === 0) return;
-    setUploading(true);
-    try {
-      const newBlocks = [...normalizedBlocks];
-      const current = newBlocks[idx];
-      let insertAt;
-
-      if (current?.type === 'text' && captureCursor) {
-        const { beforeHTML, afterHTML } = captureCursor();
-        newBlocks[idx] = { ...current, value: beforeHTML };
-        newBlocks.splice(idx + 1, 0, { type: 'text', value: afterHTML });
-        insertAt = idx + 1;
-      } else {
-        insertAt = idx + 1;
-      }
-
-      for (const produce of producers) {
-        const imgBlock = await produce();
-        if (imgBlock) {
-          newBlocks.splice(insertAt, 0, imgBlock);
-          insertAt++;
-          if (insertAt >= newBlocks.length || newBlocks[insertAt]?.type !== 'text') {
-            newBlocks.splice(insertAt, 0, { type: 'text', value: '' });
-            insertAt++;
-          }
-        }
-      }
-      emitChange(newBlocks);
-      onCommit?.(newBlocks);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const insertImagesAt = (idx, files, captureCursor = null) =>
-    insertImageProducersAt(idx, (files || []).map(file => () => uploadImage(file)), captureCursor);
-
-  const insertImageSrcsAt = (idx, srcs, captureCursor = null) =>
-    insertImageProducersAt(idx, (srcs || []).map(src => () => srcToImageBlock(src)), captureCursor);
-
   // Insert images inline at the caret inside `editorEl` (the focused text block),
   // as real <img> tags in the HTML so they flow with the text and can be drag-
   // resized. `producers` resolve to { url, name }. The caret/selection is captured
@@ -720,66 +570,11 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
   };
 
   const insertImageAfter = (idx, files) => {
-    if (inlineImages) {
-      const editorEl = document.querySelector(`[data-rt-block="${idx}"] [contenteditable]`);
-      if (editorEl) {
-        editorEl.focus();
-        return insertInlineImages(idx, editorEl, files.map(file => () => uploadImage(file)));
-      }
+    const editorEl = document.querySelector(`[data-rt-block="${idx}"] [contenteditable]`);
+    if (editorEl) {
+      editorEl.focus();
+      return insertInlineImages(idx, editorEl, files.map(file => () => uploadImage(file)));
     }
-    return insertImagesAt(idx, files, null);
-  };
-
-  const setImageWidth = (idx, pct) => {
-    const newBlocks = normalizedBlocks.map((b, i) => i === idx ? { ...b, width: pct } : b);
-    emitChange(newBlocks);
-    onCommit?.(newBlocks);
-  };
-
-  const removeImage = async (idx) => {
-    const block = normalizedBlocks[idx];
-    if (block?.path) {
-      try { await fetch(`/api/upload?path=${encodeURIComponent(block.path)}`, { method: 'DELETE' }); } catch {}
-    }
-    const newBlocks = normalizedBlocks.filter((_, i) => i !== idx);
-    const merged = [];
-    for (const b of newBlocks) {
-      if (b.type === 'text' && merged.length > 0 && merged[merged.length - 1].type === 'text') {
-        const a = merged[merged.length - 1].value || '';
-        const c = b.value || '';
-        merged[merged.length - 1] = { ...merged[merged.length - 1], value: a + (a && c ? '<br>' : '') + c };
-      } else {
-        merged.push(b);
-      }
-    }
-    const finalBlocks = merged.length > 0 ? merged : [{ type: 'text', value: '' }];
-    emitChange(finalBlocks);
-    onCommit?.(finalBlocks);
-  };
-
-  /**
-   * Split the contentEditable at the current caret position. Returns
-   * { beforeHTML, afterHTML } HTML strings.
-   */
-  const splitAtCaret = (editorEl) => {
-    if (!editorEl) return { beforeHTML: editorEl?.innerHTML || '', afterHTML: '' };
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0 || !editorEl.contains(sel.anchorNode)) {
-      return { beforeHTML: editorEl.innerHTML, afterHTML: '' };
-    }
-    const range = sel.getRangeAt(0);
-    const beforeRange = document.createRange();
-    beforeRange.selectNodeContents(editorEl);
-    beforeRange.setEnd(range.startContainer, range.startOffset);
-    const afterRange = document.createRange();
-    afterRange.selectNodeContents(editorEl);
-    afterRange.setStart(range.endContainer, range.endOffset);
-
-    const beforeDiv = document.createElement('div');
-    beforeDiv.appendChild(beforeRange.cloneContents());
-    const afterDiv = document.createElement('div');
-    afterDiv.appendChild(afterRange.cloneContents());
-    return { beforeHTML: beforeDiv.innerHTML, afterHTML: afterDiv.innerHTML };
   };
 
   const handlePaste = async (e, blockIdx) => {
@@ -797,11 +592,7 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
     if (imageFiles.length > 0) {
       e.preventDefault();
       const editorEl = e.currentTarget;
-      if (inlineImages) {
-        await insertInlineImages(blockIdx, editorEl, imageFiles.map(file => () => uploadImage(file)));
-      } else {
-        await insertImagesAt(blockIdx, imageFiles, () => splitAtCaret(editorEl));
-      }
+      await insertInlineImages(blockIdx, editorEl, imageFiles.map(file => () => uploadImage(file)));
       return;
     }
 
@@ -830,11 +621,7 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
       if (srcs.length > 0 && textLen < 5) {
         e.preventDefault();
         const editorEl = e.currentTarget;
-        if (inlineImages) {
-          await insertInlineImages(blockIdx, editorEl, srcs.map(src => () => srcToImageBlock(src)));
-        } else {
-          await insertImageSrcsAt(blockIdx, srcs, () => splitAtCaret(editorEl));
-        }
+        await insertInlineImages(blockIdx, editorEl, srcs.map(src => () => srcToImageBlock(src)));
         return;
       }
     }
@@ -932,74 +719,37 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
 
       {focusedBlockIdx !== null && <Toolbar onCommand={runCommand} enableTables={enableTables} sticky={stickyToolbar} />}
 
-      {normalizedBlocks.map((block, idx) => {
-        if (block.type === 'image') {
-          return (
-            <ImageBlock
-              key={idx}
-              block={block}
-              idx={idx}
-              resizable={resizableImages}
-              onResize={setImageWidth}
-              onRemove={removeImage}
-              onPreview={setPreviewUrl}
+      {normalizedBlocks.map((block, idx) => (
+        <div key={idx} className="relative group" data-rt-block={idx}>
+          <EditableBlock
+            valueHTML={toDisplayHTML(block.value)}
+            onInput={(html) => updateTextBlock(idx, html)}
+            onFocus={() => { setFocusedBlockIdx(idx); lastFocusedIdxRef.current = idx; }}
+            onBlur={() => { setFocusedBlockIdx(prev => prev === idx ? null : prev); onBlur?.(normalizedBlocks); }}
+            onPaste={(e) => handlePaste(e, idx)}
+            placeholder={placeholder}
+            rows={rows}
+            className={className || defaultTextClass}
+            enableTables={enableTables}
+          />
+          <label
+            className="absolute bottom-2 right-2 p-1 text-gray-300 hover:text-emerald-500 cursor-pointer opacity-0 group-hover:opacity-100 transition-all"
+            title="Add image"
+          >
+            <ImageIcon size={14} />
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={e => insertImageAfter(idx, Array.from(e.target.files))}
             />
-          );
-        }
-
-        return (
-          <div key={idx} className="relative group" data-rt-block={idx}>
-            <EditableBlock
-              valueHTML={toDisplayHTML(block.value)}
-              onInput={(html) => updateTextBlock(idx, html)}
-              onFocus={() => { setFocusedBlockIdx(idx); lastFocusedIdxRef.current = idx; }}
-              onBlur={() => { setFocusedBlockIdx(prev => prev === idx ? null : prev); onBlur?.(normalizedBlocks); }}
-              onPaste={(e) => handlePaste(e, idx)}
-              placeholder={idx === 0 ? placeholder : 'Continue writing...'}
-              rows={idx === 0 ? rows : 2}
-              className={className || defaultTextClass}
-              enableTables={enableTables}
-              inlineImageResize={inlineImages}
-            />
-            <label
-              className="absolute bottom-2 right-2 p-1 text-gray-300 hover:text-emerald-500 cursor-pointer opacity-0 group-hover:opacity-100 transition-all"
-              title="Add image"
-            >
-              <ImageIcon size={14} />
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={e => insertImageAfter(idx, Array.from(e.target.files))}
-              />
-            </label>
-          </div>
-        );
-      })}
+          </label>
+        </div>
+      ))}
 
       {uploading && (
         <div className="text-xs text-emerald-600 animate-pulse mt-1 pl-1">Uploading image...</div>
-      )}
-
-      {previewUrl && (
-        <div
-          className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-8"
-          onClick={() => setPreviewUrl(null)}
-        >
-          <button
-            onClick={() => setPreviewUrl(null)}
-            className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
-          >
-            <X size={20} />
-          </button>
-          <img
-            src={previewUrl}
-            alt="Preview"
-            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
-        </div>
       )}
     </div>
   );

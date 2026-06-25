@@ -8,12 +8,13 @@ import { ALL_PAGES } from '@/lib/navigation';
 // How each ticker context maps to a destination. Ordered by deep-link quality:
 // research and holdings can open a specific ticker; the others land on the page.
 const CONTEXT_META = {
-  research:  { label: 'Research',     page: 'Research',        href: t => `/research?ticker=${encodeURIComponent(t)}` },
-  holding:   { label: 'Holding',      page: 'Position Review', href: t => `/position-review?ticker=${encodeURIComponent(t)}` },
-  watchlist: { label: 'Watchlist',    page: 'Watchlist',       href: () => '/watchlist' },
-  candidate: { label: 'Candidate',    page: 'Strategic Hub',   href: () => '/strategic-hub' },
+  research:    { label: 'Research',       page: 'Research',        href: t => `/research?ticker=${encodeURIComponent(t)}` },
+  draft:       { label: 'Draft & Review', page: 'Draft & Review',  href: t => `/draft-review?ticker=${encodeURIComponent(t)}` },
+  holding:     { label: 'Holding',        page: 'Position Review', href: t => `/position-review?ticker=${encodeURIComponent(t)}` },
+  watchlist:   { label: 'Watchlist',      page: 'Watchlist',       href: () => '/watchlist' },
+  candidate:   { label: 'Candidate',      page: 'Strategic Hub',   href: () => '/strategic-hub' },
 };
-const CONTEXT_PRIORITY = ['research', 'holding', 'watchlist', 'candidate'];
+const CONTEXT_PRIORITY = ['research', 'draft', 'holding', 'watchlist', 'candidate'];
 
 function tickerDestination(contexts) {
   const primary = CONTEXT_PRIORITY.find(c => contexts.includes(c)) || 'watchlist';
@@ -78,7 +79,8 @@ export default function CommandPalette() {
       }
       for (const wl of watchlistRes?.watchlists || []) {
         for (const s of wl.stocks || []) {
-          add(s.ticker, s.stage === 'research' ? 'research' : 'watchlist', s.name || s.company || s.companyName);
+          const ctx = s.stage === 'research' ? 'research' : s.stage === 'draft' ? 'draft' : 'watchlist';
+          add(s.ticker, ctx, s.name || s.company || s.companyName);
         }
       }
       for (const c of (Array.isArray(candidatesRes) ? candidatesRes : [])) {

@@ -160,10 +160,13 @@ function NextPeriodModal({ onClose, onNextPeriod, currentAUM }) {
   const [closeAUM, setCloseAUM] = useState(currentAUM ? currentAUM.toFixed(2) : '');
   const [newStartDate, setNewStartDate] = useState(nextDay(today));
 
-  // Auto-update new start date when close date changes
-  useEffect(() => {
-    if (closeDate) setNewStartDate(nextDay(closeDate));
-  }, [closeDate]);
+  // Picking a close date defaults the new start date to the next day (the user can
+  // still override it). Done in the handler rather than an effect to avoid a
+  // cascading render.
+  const handleCloseDateChange = (value) => {
+    setCloseDate(value);
+    if (value) setNewStartDate(nextDay(value));
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -181,7 +184,7 @@ function NextPeriodModal({ onClose, onNextPeriod, currentAUM }) {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-600 mb-1">Close Date</label>
-            <input type="date" value={closeDate} onChange={e => setCloseDate(e.target.value)} required className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40" />
+            <input type="date" value={closeDate} onChange={e => handleCloseDateChange(e.target.value)} required className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400/40" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-600 mb-1">Close AUM</label>
@@ -1122,12 +1125,13 @@ export default function AccountingTool() {
   const [activeTab, setActiveTab] = useState('accounting'); // 'accounting' | 'investor-performance' | 'nav-converter'
   const [activeQuarter, setActiveQuarter] = useState(0);
 
-  // Default to the most recent quarter (rightmost tab) when data loads
-  useEffect(() => {
-    if (state?.quarters?.length) {
-      setActiveQuarter(state.quarters.length - 1);
-    }
-  }, [state?.quarters?.length]);
+  // Default the selected tab to the most recent quarter. Called at each data-load
+  // point (below) instead of via an effect that watches quarters.length, which
+  // would trigger a cascading render. Quarter add/remove manage the tab themselves.
+  const loadState = (s) => {
+    setState(s);
+    setActiveQuarter(Math.max(0, (s?.quarters?.length || 1) - 1));
+  };
 
   // Fetch live AUM from holdings + quotes
   const [liveAUM, setLiveAUM] = useState(null);
@@ -1204,7 +1208,7 @@ export default function AccountingTool() {
             body: JSON.stringify({ value: JSON.stringify(parsed) }),
           });
           localStorage.removeItem(STORAGE_KEY);
-          if (!cancelled) setState(parsed);
+          if (!cancelled) loadState(parsed);
           return;
         }
       } catch {}
@@ -1215,7 +1219,7 @@ export default function AccountingTool() {
         const { value } = await res.json();
         if (res.ok && value) {
           const parsed = JSON.parse(value);
-          if (!cancelled) setState(backfillSP(parsed));
+          if (!cancelled) loadState(backfillSP(parsed));
           return;
         }
       } catch {}
@@ -1227,7 +1231,7 @@ export default function AccountingTool() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value: JSON.stringify(seed) }),
       });
-      if (!cancelled) setState(seed);
+      if (!cancelled) loadState(seed);
     }
 
     load();

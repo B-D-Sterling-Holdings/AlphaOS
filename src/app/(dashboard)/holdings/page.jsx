@@ -100,12 +100,23 @@ export default function HoldingsPage() {
           .map(h => h.ticker)
           .filter(t => !data.quotes[t]?.price);
         if (failedTickers.length > 0) {
-          setQuotesError(`Failed to load live prices for: ${failedTickers.join(', ')}. Please reload the page.`);
+          // Distinguish a provider rate-limit / outage (the upstream fetch itself
+          // failed) from a few genuinely bad tickers. When Yahoo throttles our IP,
+          // every quote comes back with a "fetch failed"-style error — telling the
+          // user to reload is misleading, since the next request is throttled too.
+          const providerThrottled =
+            failedTickers.length === holdings.length ||
+            failedTickers.some(t => /fetch failed|too many requests|429|rate.?limit|timed? ?out/i.test(data.quotes[t]?.error || ''));
+          if (providerThrottled) {
+            setQuotesError('Live prices are temporarily rate-limited by the market-data provider (Yahoo Finance). Wait a minute, then hit Reload — refreshing immediately will stay throttled.');
+          } else {
+            setQuotesError(`Failed to load live prices for: ${failedTickers.join(', ')}. Try Reload.`);
+          }
         }
         setQuotes(data.quotes);
         cache.set('holdings_quotes', data.quotes);
       } else {
-        setQuotesError('Failed to load quotes. Please reload the page.');
+        setQuotesError('Could not reach the market-data provider. Check your connection, then hit Reload.');
       }
     } catch (e) {
       setQuotesError('Failed to load quotes. Please reload the page.');

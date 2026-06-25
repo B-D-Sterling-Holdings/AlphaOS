@@ -1,5 +1,12 @@
 'use client';
 
+/* eslint-disable react-hooks/refs -- The zone-bubble layout deliberately reads and
+   writes prevPositionsRef during render to remember each contact's last position, so
+   bubbles that drop out of the active filter animate out from where they were. The
+   React Compiler rule is too conservative for this intentional cross-render layout
+   memory; a state/effect rewrite would either lag the first paint or re-pack bubbles
+   on every filter change. */
+
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Users, Plus, Phone, Mail,
@@ -372,10 +379,14 @@ export default function RelationshipsPage() {
       medium: toPercent(computeZoneLayout(grouped.medium, ZONE_W, ZONE_H, false)),
       high: toPercent(computeZoneLayout(grouped.high, ZONE_W, ZONE_H, true)),
     };
-    // Merge: keep old positions for contacts that are no longer in layout
+    // Merge: keep old positions for contacts that are no longer in the layout, so
+    // bubbles that drop out of the active filter animate out from where they were.
+    // This intentionally carries position memory across renders via a ref (see the
+    // file-level react-hooks/refs disable above).
+    const prev = prevPositionsRef.current;
     const merged = {};
     for (const key of ['low', 'medium', 'high']) {
-      merged[key] = { ...prevPositionsRef.current[key], ...fresh[key] };
+      merged[key] = { ...prev[key], ...fresh[key] };
     }
     prevPositionsRef.current = merged;
     return merged;

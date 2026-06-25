@@ -334,11 +334,17 @@ function BoardSelector({ boards, activeBoardId, onSwitch, onCreate, onRename, on
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const triggerRef = useRef(null);
   const dropdownRef = useRef(null);
+  const [pos, setPos] = useState({ top: -9999, left: -9999 });
 
-  const getPos = () => {
-    if (!triggerRef.current) return { top: -9999, left: -9999 };
-    const rect = triggerRef.current.getBoundingClientRect();
-    return { top: rect.bottom + 8, left: rect.left };
+  // Measure the trigger and toggle in the click handler (where ref access is fine)
+  // rather than reading the ref during render.
+  const toggleOpen = () => {
+    const next = !open;
+    if (next && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPos({ top: rect.bottom + 8, left: rect.left });
+    }
+    setOpen(next);
   };
 
   useEffect(() => {
@@ -368,7 +374,6 @@ function BoardSelector({ boards, activeBoardId, onSwitch, onCreate, onRename, on
     );
   }
 
-  const pos = getPos();
   const dropdown = open ? createPortal(
     <div
       ref={dropdownRef}
@@ -495,7 +500,7 @@ function BoardSelector({ boards, activeBoardId, onSwitch, onCreate, onRename, on
     <div>
       <div
         ref={triggerRef}
-        onClick={() => setOpen(!open)}
+        onClick={toggleOpen}
         className="flex items-center gap-2 cursor-pointer group"
       >
         <h1 className="text-3xl font-bold text-gray-900">{activeBoard?.name || 'Task Board'}</h1>
