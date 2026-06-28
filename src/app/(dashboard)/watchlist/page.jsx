@@ -494,9 +494,17 @@ function WatchlistSelector({ watchlists, activeId, onSwitch, onCreate, onRename,
                   <>
                     <span className="flex-1 text-left text-sm text-gray-800 font-medium truncate">
                       {wl.name}
-                      <span className="text-xs text-gray-400 ml-2">
-                        {wl.stocks.length} stock{wl.stocks.length !== 1 ? 's' : ''}
-                      </span>
+                      {(() => {
+                        // Count only names still in the watching stage — names promoted to
+                        // Draft & Review / Research / Position live on their own tabs and must
+                        // not inflate the Watchlist count (this matches the on-page tally).
+                        const count = wl.stocks.filter(s => s.stage === 'watching' || s.stage === 'researching').length;
+                        return (
+                          <span className="text-xs text-gray-400 ml-2">
+                            {count} stock{count !== 1 ? 's' : ''}
+                          </span>
+                        );
+                      })()}
                     </span>
                     <div className="flex items-center gap-0.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                       <button

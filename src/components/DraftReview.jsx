@@ -575,8 +575,7 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                 <FileText size={15} />
               </div>
               <div className="min-w-0">
-                <h2 className="text-sm font-bold text-gray-900">The Paper</h2>
-                <p className="text-[11px] text-gray-400">Write the full thesis here. Paste images and table screenshots directly into the text.</p>
+                <h2 className="text-sm font-bold text-gray-900">Investment Overview</h2>
               </div>
               <button
                 onClick={() => setCollapsed('paper')}

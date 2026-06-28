@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useEffect, useLayoutEffect, useState, useMemo, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -522,6 +522,7 @@ export default function StrategicHubPage() {
   const [notesRows, setNotesRows] = useState([]); // raw strategic_notes — judgment overlay
   const [notesSaved, setNotesSaved] = useState(false);
   const notesTimer = useRef(null);
+  const portfolioNotesRef = useRef(null);
 
   const loadNotes = useCallback(async () => {
     try {
@@ -549,6 +550,23 @@ export default function StrategicHubPage() {
       setTimeout(() => setNotesSaved(false), 1500);
     }, 600);
   };
+
+  // Auto-grow the portfolio notes textarea to fit its content WITHOUT yanking the
+  // page scroll. Resetting height to 'auto' to remeasure momentarily shrinks the
+  // document; if you were scrolled near the bottom the browser clamps scrollY to the
+  // now-shorter page, leaving the view snapped to the textarea bottom once height is
+  // restored. We capture scrollY first and restore it ONLY when the collapse clamped
+  // it downward — a strict `<` check, so the browser's native caret-follow (which
+  // raises scrollY when the caret truly reaches the bottom of the screen) is left
+  // intact and the page only follows down when it genuinely needs to.
+  useLayoutEffect(() => {
+    const el = portfolioNotesRef.current;
+    if (!el) return;
+    const y = window.scrollY;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+    if (window.scrollY < y) window.scrollTo(window.scrollX, y);
+  }, [portfolioNotes]);
 
   const load = useCallback(async () => {
     try {
@@ -1047,8 +1065,7 @@ export default function StrategicHubPage() {
         <textarea spellCheck={true}
           value={portfolioNotes}
           onChange={e => handleNotesChange(e.target.value)}
-          ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } }}
-          onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
+          ref={portfolioNotesRef}
           placeholder="Overall thoughts on the portfolio, market, themes, ideas to revisit..."
           rows={6}
           className="w-full border-0 bg-transparent text-sm text-gray-700 placeholder-gray-300 focus:outline-none resize-none leading-relaxed overflow-hidden"

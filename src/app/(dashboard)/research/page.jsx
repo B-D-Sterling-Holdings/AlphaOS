@@ -69,6 +69,31 @@ function WorkspaceNote({ value, onCommit }) {
   );
 }
 
+// Footer for each Research section: an explicit "is this section finished?" toggle.
+// Marking it complete is the single source of truth for the section reading as `done`
+// in the Strategic Hub — it never alters the section's content either way.
+function SectionCompleteBar({ done, onToggle }) {
+  return (
+    <div className="mt-8 flex items-center justify-end gap-3 border-t border-gray-100 pt-5">
+      <span className={`text-xs font-medium ${done ? 'text-emerald-600' : 'text-gray-400'}`}>
+        {done ? 'Marked complete' : 'Not marked complete'}
+      </span>
+      <button
+        onClick={onToggle}
+        className={`flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl transition-colors ${
+          done
+            ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+        }`}
+        title={done ? 'Mark this section as not complete' : 'Mark this section as complete'}
+      >
+        {done ? <CheckCircle size={15} /> : <Check size={15} />}
+        {done ? 'Completed' : 'Mark as completed'}
+      </button>
+    </div>
+  );
+}
+
 function makeEditorItemId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -610,6 +635,7 @@ export default function ResearchPage() {
 
   const dueDiligenceItems = researchWorkspace.dueDiligenceItems;
   const dislocationItems = researchWorkspace.dislocationItems;
+  const sectionsComplete = thesis?.underwriting?.sectionsComplete || {};
 
   // Draft & Review discussion threads, carried over untouched from the Draft &
   // Review stage (a stage move never destroys data). Surfaced read-only beside the
@@ -815,6 +841,25 @@ export default function ResearchPage() {
     setThesis(prev => ({ ...prev, [field]: value }));
     setThesisDirty(true);
   };
+
+  // Flip a research section's explicit completion mark. This is the ONLY thing that
+  // makes a section read as "done" in the Strategic Hub (see lib/researchProgress).
+  // Stored under underwriting.sectionsComplete — a free-form JSON blob — so it
+  // persists through the thesis save without a schema change, and never touches any
+  // of the section's actual content.
+  const toggleSectionComplete = useCallback((sectionKey) => {
+    const current = thesis?.underwriting?.sectionsComplete || {};
+    const updated = {
+      ...(thesis || {}),
+      underwriting: {
+        ...((thesis || {}).underwriting || {}),
+        sectionsComplete: { ...current, [sectionKey]: !current[sectionKey] },
+      },
+    };
+    setThesis(updated);
+    setThesisDirty(true);
+    saveThesis(updated);
+  }, [thesis, saveThesis]);
 
   const commitThesisField = useCallback((field, value) => {
     const updated = { ...(thesis || {}), [field]: value };
@@ -1239,13 +1284,22 @@ export default function ResearchPage() {
           )}
 
           {selectedStock && (
-            <button
-              onClick={() => moveStage('draft')}
-              title="Demote back to Draft & Review"
-              className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg transition-colors"
-            >
-              <ArrowLeft size={13} /> Back to Draft &amp; Review
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => moveStage('draft')}
+                title="Demote back to Draft & Review"
+                className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg transition-colors"
+              >
+                <ArrowLeft size={13} /> Back to Draft &amp; Review
+              </button>
+              <button
+                onClick={() => moveStage('position')}
+                title="Promote to Position Review"
+                className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-2 rounded-lg transition-colors"
+              >
+                Promote to Position Review <ChevronRight size={13} />
+              </button>
+            </div>
           )}
         </div>
       </Card>
@@ -1373,6 +1427,7 @@ export default function ResearchPage() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
                 <PriceChart title="FCF Yield" labels={fcfYieldLabels} data={fcfYieldData} label="FCF Yield" color="#10b981" formatY={(v) => `${v.toFixed(1)}%`} showCagr={false} className="" />
               </div>
+              {thesis && <SectionCompleteBar done={!!sectionsComplete.fundamentals} onToggle={() => toggleSectionComplete('fundamentals')} />}
             </>
           ) : thesisLoading ? (
             <div className="space-y-6">
@@ -1447,6 +1502,7 @@ export default function ResearchPage() {
                   />
                 </div>
               </Card>
+              <SectionCompleteBar done={!!sectionsComplete.thesis} onToggle={() => toggleSectionComplete('thesis')} />
             </div>
           ) : activeResearchTab === 'diligence' ? (
             <div className="flex flex-col lg:flex-row gap-6 items-start">
@@ -1498,6 +1554,7 @@ export default function ResearchPage() {
                 onRemove={(idx) => removeQuestion('dislocationItems', idx)}
                 onUpdateSubQuestions={(idx, subs, persist) => updateSubQuestions('dislocationItems', idx, subs, persist)}
               />
+              <SectionCompleteBar done={!!sectionsComplete.diligence} onToggle={() => toggleSectionComplete('diligence')} />
               </div>
               <ReviewCommentsPanel threads={draftReviewThreads} />
             </div>
@@ -1607,9 +1664,13 @@ export default function ResearchPage() {
                   );
                 })()}
               </Card>
+              <SectionCompleteBar done={!!sectionsComplete.news} onToggle={() => toggleSectionComplete('news')} />
             </div>
           ) : activeResearchTab === 'valuation' ? (
-            <ValuationModel ref={modelRef} ticker={selectedTicker} livePrice={livePrice} />
+            <div className="space-y-8">
+              <ValuationModel ref={modelRef} ticker={selectedTicker} livePrice={livePrice} />
+              {thesis && <SectionCompleteBar done={!!sectionsComplete.valuation} onToggle={() => toggleSectionComplete('valuation')} />}
+            </div>
           ) : activeResearchTab === 'decision' ? (
             <div className="space-y-8">
               <Card>
@@ -1660,6 +1721,7 @@ export default function ResearchPage() {
                   </button>
                 </div>
               </Card>
+              <SectionCompleteBar done={!!sectionsComplete.decision} onToggle={() => toggleSectionComplete('decision')} />
             </div>
           ) : null}
         </>
