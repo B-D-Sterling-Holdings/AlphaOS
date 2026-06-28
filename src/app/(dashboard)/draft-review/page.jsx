@@ -274,7 +274,6 @@ export default function DraftReviewPage() {
       <div className="flex items-center justify-between mb-8 animate-fade-in-up">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Draft &amp; Review</h1>
-          <p className="text-sm text-gray-500 mt-1">Write the full thesis, then run the reviewer back-and-forth to pressure-test it.</p>
         </div>
         {thesis && (
           <button

@@ -1239,13 +1239,22 @@ export default function ResearchPage() {
           )}
 
           {selectedStock && (
-            <button
-              onClick={() => moveStage('draft')}
-              title="Demote back to Draft & Review"
-              className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg transition-colors"
-            >
-              <ArrowLeft size={13} /> Back to Draft &amp; Review
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => moveStage('draft')}
+                title="Demote back to Draft & Review"
+                className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg transition-colors"
+              >
+                <ArrowLeft size={13} /> Back to Draft &amp; Review
+              </button>
+              <button
+                onClick={() => moveStage('position')}
+                title="Promote to Position Review"
+                className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-2 rounded-lg transition-colors"
+              >
+                Promote to Position Review <ChevronRight size={13} />
+              </button>
+            </div>
           )}
         </div>
       </Card>
