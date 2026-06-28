@@ -378,12 +378,18 @@ export default function DashboardPage() {
     });
   }
 
+  useEffect(() => {
+    if (fundValues.length) {
+      const i = fundValues.length - 1;
+      setHoverInfo({ date: labels[i], fund: fmt$(fundValues[i]), sp: fmt$(spValues[i]) });
+    }
+  }, [filtered]);
+
   function handleMouseDown(e) {
     const idx = getIndexFromClientX(e.clientX);
     if (idx === null) return;
     dragState.current = { dragging: true, startIdx: idx, endIdx: idx };
     hoverIdx.current = null;
-    setHoverInfo(null);
     setDragInfo(null);
   }
 
@@ -394,20 +400,19 @@ export default function DashboardPage() {
       dragState.current.endIdx = idx;
       updateDragInfo(idx, e.clientX, e.clientY);
       hoverIdx.current = null;
-      setHoverInfo(null);
       if (chartRef.current) chartRef.current.draw();
       return;
     }
     hoverIdx.current = idx;
-    setHoverInfo({ date: labels[idx], fund: fundValuesChart[idx]?.toFixed(2), sp: spValuesChart[idx]?.toFixed(2) });
+    setHoverInfo({ date: labels[idx], fund: fmt$(fundValues[idx]), sp: fmt$(spValues[idx]) });
   }
 
   function handleMouseLeave() {
     if (dragState.current.dragging) return;
     hoverIdx.current = null;
-    if (fundValuesChart.length) {
-      const i = fundValuesChart.length - 1;
-      setHoverInfo({ date: labels[i], fund: fundValuesChart[i]?.toFixed(2), sp: spValuesChart[i]?.toFixed(2) });
+    if (fundValues.length) {
+      const i = fundValues.length - 1;
+      setHoverInfo({ date: labels[i], fund: fmt$(fundValues[i]), sp: fmt$(spValues[i]) });
     }
   }
 
@@ -557,7 +562,22 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-        <div className="mt-4 relative select-none" style={{ height: 320, cursor: 'crosshair' }}
+        {hoverInfo && (
+          <div className="flex items-center justify-end gap-4 mt-2 mb-1 text-right">
+            <div className="text-[11px] font-medium text-gray-400">{hoverInfo.date}</div>
+            <div className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+              <span className="text-xs text-gray-500">Fund</span>
+              <span className="text-xs font-bold text-gray-900">{hoverInfo.fund}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
+              <span className="text-xs text-gray-500">S&P</span>
+              <span className="text-xs font-bold text-gray-900">{hoverInfo.sp}</span>
+            </div>
+          </div>
+        )}
+        <div className="mt-2 relative select-none" style={{ height: 320, cursor: 'crosshair' }}
           onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
           {loading ? (
             <div className="h-full flex items-center justify-center">
@@ -566,23 +586,6 @@ export default function DashboardPage() {
           ) : filtered.length ? (
             <>
               <canvas ref={canvasRef} />
-              {hoverInfo && !dragInfo && (
-                <div className="absolute top-2 right-3 z-10 text-right pointer-events-none">
-                  <div className="text-[11px] font-medium text-gray-500">{hoverInfo.date}</div>
-                  <div className="flex items-center justify-end gap-3 mt-0.5">
-                    <div className="flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                      <span className="text-xs text-gray-500">Fund</span>
-                      <span className="text-xs font-bold text-gray-900">{hoverInfo.fund}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
-                      <span className="text-xs text-gray-500">S&P</span>
-                      <span className="text-xs font-bold text-gray-900">{hoverInfo.sp}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
               {dragInfo && (
                 <div className="absolute pointer-events-none z-10"
                   style={{ left: Math.min(dragInfo.x + 12, canvasRef.current?.offsetWidth - 200 || 0), top: Math.max(dragInfo.y - 90, 4) }}>
