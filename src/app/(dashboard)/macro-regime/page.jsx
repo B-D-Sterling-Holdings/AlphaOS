@@ -655,7 +655,7 @@ export default function MacroRegimePage() {
         fetch('/api/portfolio').then(r => r.json()),
         !allocConfig ? fetch('/api/allocation').then(r => r.json()) : null,
       ]);
-      if (allocRes?.config && !allocConfig) setAllocConfig(allocRes.config);
+      const baseConfig = allocRes?.config || allocConfig;
       const holdings = portfolioRes.holdings || [];
       const cashVal = portfolioRes.cash || 0;
       if (holdings.length === 0) { setSyncingWeights(false); return; }
@@ -679,6 +679,28 @@ export default function MacroRegimePage() {
         w[ticker] = Number(((val / totalAum) * 100).toFixed(2));
       }
       w.CASH = Number(((cashVal / totalAum) * 100).toFixed(2));
+
+      // Sync mirrors the actual portfolio, so a name we no longer hold (e.g. a leftover
+      // gold/AAAU row) is dropped from the allocation table entirely — not just zeroed.
+      // We prune it out of the allocation config (keeping CASH and any blank/category
+      // rows), persist the trimmed config, and replace the weight overlay wholesale.
+      const heldSet = new Set(holdings.map(h => (h.ticker || '').trim().toUpperCase()));
+      if (baseConfig?.allocations) {
+        const keptAllocations = baseConfig.allocations.filter(a => {
+          const t = (a.ticker || '').trim().toUpperCase();
+          if (!t || t === 'CASH') return true;
+          return heldSet.has(t);
+        });
+        const prunedConfig = { ...baseConfig, allocations: keptAllocations };
+        setAllocConfig(prunedConfig);
+        fetch('/api/allocation', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: prunedConfig }),
+        }).catch(() => {});
+      } else if (baseConfig && !allocConfig) {
+        setAllocConfig(baseConfig);
+      }
 
       setAllocWeights(w);
       commitAllocWeights(w);

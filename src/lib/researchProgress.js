@@ -45,27 +45,38 @@ export function computeResearchProgress(thesis) {
   const dis = ws.dislocationItems || [];
   const news = thesis?.newsUpdates || [];
 
+  // A research section reads as `done` ONLY when the analyst has explicitly marked it
+  // complete at the bottom of that section on the Research page (persisted under
+  // underwriting.sectionsComplete). Content heuristics no longer promote a section to
+  // done on their own — they only decide whether an unmarked section shows as
+  // `partial` (some work present) or `todo` (untouched). This keeps the Strategic Hub
+  // progress honest: a section is "done" because someone said so, not because a box
+  // happens to have text in it.
+  const complete = uw.sectionsComplete || {};
+  const gate = (key, hasContent) => (complete[key] ? 'done' : (hasContent ? 'partial' : 'todo'));
+
   // 1 — Fundamentals: the analyst's "Why this name is here" note (lives on the
   // Fundamentals tab alongside the auto-generated charts).
   const noteFilled = strHasContent(ws.note) || richHasContent(ws.note);
-  const fundamentals_ = noteFilled ? 'done' : 'todo';
+  const fundamentals_ = gate('fundamentals', noteFilled);
 
   // 2 — Thesis: company overview + the four Thesis Structure boxes + the narrative.
   const anyBox = Object.values(fundamentals).some(strHasContent);
   const thesisParts = [richHasContent(uw.companyOverview), anyBox, richHasContent(thesis?.assumptions)];
   const thesisFilled = thesisParts.filter(Boolean).length;
-  const thesis_ = thesisFilled === 0 ? 'todo' : thesisFilled === thesisParts.length ? 'done' : 'partial';
+  const thesis_ = gate('thesis', thesisFilled > 0);
 
-  // 3 — Diligence: due-diligence + dislocation questions; partial while any are open.
+  // 3 — Diligence: due-diligence + dislocation questions.
   const items = [...dd, ...dis];
   const answered = items.filter(i => i?.done).length;
-  const diligence_ = items.length === 0 ? 'todo' : answered === items.length ? 'done' : 'partial';
+  const diligence_ = gate('diligence', items.length > 0);
 
   // 4 — Valuation: any underwriting valuation input or the legacy valuation note.
   const valuationFilled = richHasContent(thesis?.valuation) || VALUATION_FIELDS.some(f => strHasContent(uw[f]));
-  const valuation_ = valuationFilled ? 'done' : 'todo';
+  const valuation_ = gate('valuation', valuationFilled);
 
-  // 5 — Draft & Review: the paper plus the back-and-forth review threads.
+  // 5 — Draft & Review: lives on its own page (/draft-review), not a Research tab, so
+  // it keeps its content-derived status rather than an explicit completion mark.
   const paperFilled = richHasContent(dr.paper);
   const threads = dr.threads || [];
   const allResolved = threads.length > 0 && threads.every(t => t?.resolved);
@@ -75,10 +86,10 @@ export function computeResearchProgress(thesis) {
   }
 
   // 6 — News & updates.
-  const news_ = news.length > 0 ? 'done' : 'todo';
+  const news_ = gate('news', news.length > 0);
 
   // 7 — Decision: an equity rating has been set.
-  const decision_ = (uw.equityRating || 0) > 0 ? 'done' : 'todo';
+  const decision_ = gate('decision', (uw.equityRating || 0) > 0);
 
   const steps = [
     { key: 'fundamentals', label: 'Fundamentals', tab: 'fundamentals', state: fundamentals_ },
