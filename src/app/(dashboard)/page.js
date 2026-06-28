@@ -843,9 +843,6 @@ export default function DashboardPage() {
                       </div>
                       <div className="text-right">
                         <div className="text-xs font-bold text-emerald-600">+{h.dayChange.toFixed(2)}%</div>
-                        <div className={`text-[10px] ${h.glPct >= 0 ? 'text-emerald-500' : 'text-red-400'}`}>
-                          {h.glPct >= 0 ? '+' : ''}{h.glPct.toFixed(1)}% total
-                        </div>
                       </div>
                     </button>
                   ))}
@@ -878,9 +875,6 @@ export default function DashboardPage() {
                       </div>
                       <div className="text-right">
                         <div className="text-xs font-bold text-red-500">{h.dayChange.toFixed(2)}%</div>
-                        <div className={`text-[10px] ${h.glPct >= 0 ? 'text-emerald-500' : 'text-red-400'}`}>
-                          {h.glPct >= 0 ? '+' : ''}{h.glPct.toFixed(1)}% total
-                        </div>
                       </div>
                     </button>
                   ))}

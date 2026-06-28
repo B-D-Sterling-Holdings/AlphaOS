@@ -1,6 +1,7 @@
 import {
   Briefcase, Search, Eye, FolderOpen, ClipboardList, ListChecks,
   PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles, LayoutDashboard, MessagesSquare,
+  GraduationCap,
 } from 'lucide-react';
 
 // Single source of truth for app navigation.
@@ -25,6 +26,7 @@ export const NAV_GROUPS = [
       { href: '/strategic-hub', label: 'Strategic Hub', icon: Target },
       { href: '/tasks', label: 'Tasks', icon: ListChecks },
       { href: '/workspace', label: 'Workspace', icon: Sparkles },
+      { href: '/lessons', label: 'Lessons Learned', icon: GraduationCap },
     ],
   },
   {
