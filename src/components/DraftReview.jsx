@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2, Zap, Clock } from 'lucide-react';
+import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2, Clock, Star } from 'lucide-react';
 import Card from '@/components/Card';
 import RichTextArea from '@/components/RichTextArea';
+import PersonSearchSelect from '@/components/PersonSearchSelect';
 import { DEFAULT_AUTO_NOTIFY, selectDueReminders, computeNextSent } from '@/lib/autoNotify';
 
 /**
@@ -391,6 +392,43 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
   const safeAuthor = author || { name: '', email: '' };
   const safeReviewer = reviewer || { name: '', email: '' };
 
+  // A small per-tenant address book of people you regularly add to reviews, so you
+  // can pick the Author/Reviewer from a dropdown instead of retyping (and remembering)
+  // their email every time. Loaded once and kept in sync on save.
+  const [savedPeople, setSavedPeople] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/saved-emails')
+      .then(r => r.json())
+      .then(data => { if (!cancelled && Array.isArray(data.people)) setSavedPeople(data.people); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const persistSavedPeople = useCallback((people) => {
+    setSavedPeople(people);
+    fetch('/api/saved-emails', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ people }),
+    }).catch(() => {});
+  }, []);
+
+  // Add (or refresh) a person in the address book, de-duped by lowercased email.
+  const saveContact = useCallback((person) => {
+    const name = (person?.name || '').trim();
+    const email = (person?.email || '').trim();
+    if (!email) return;
+    const key = email.toLowerCase();
+    const next = [{ name, email }, ...savedPeople.filter(p => (p.email || '').toLowerCase() !== key)];
+    persistSavedPeople(next);
+  }, [savedPeople, persistSavedPeople]);
+
+  const removeContact = useCallback((email) => {
+    const key = (email || '').toLowerCase();
+    persistSavedPeople(savedPeople.filter(p => (p.email || '').toLowerCase() !== key));
+  }, [savedPeople, persistSavedPeople]);
+
   // Unresolved comments waiting on a response: a comment waits on whoever should
   // speak next (opposite of the last message's role). Empty comments (no replies
   // yet) aren't included — there's nothing to respond to.
@@ -774,35 +812,64 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
           {showConfig && (
             <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3.5 space-y-3">
               <p className="text-[11px] text-gray-400">
-                Who&apos;s on this review? &ldquo;Notify&rdquo; emails whoever needs to respond — the
-                Author when it&apos;s their turn, the Reviewer when it&apos;s theirs.
+                Pick from saved people or type someone new and <Star size={10} className="inline -mt-0.5" /> to save them.
               </p>
               {[
                 { role: 'reviewer', person: safeReviewer, onChange: onReviewerChange, dot: ROLE_META.reviewer },
                 { role: 'author', person: safeAuthor, onChange: onAuthorChange, dot: ROLE_META.author },
-              ].map(({ role, person, onChange, dot }) => (
-                <div key={role} className="flex flex-col sm:flex-row sm:items-center gap-2">
-                  <span className={`flex items-center gap-1.5 text-[11px] font-semibold w-20 shrink-0 ${dot.text}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${dot.dot}`} />
-                    {dot.label}
-                  </span>
-                  <input
-                    value={person.name}
-                    onChange={(e) => onChange?.({ ...person, name: e.target.value })}
-                    onBlur={(e) => onChange?.({ ...person, name: e.target.value }, true)}
-                    placeholder="Name"
-                    className="flex-1 min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
-                  />
-                  <input
-                    type="email"
-                    value={person.email}
-                    onChange={(e) => onChange?.({ ...person, email: e.target.value })}
-                    onBlur={(e) => onChange?.({ ...person, email: e.target.value }, true)}
-                    placeholder="email@example.com"
-                    className="flex-[1.4] min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
-                  />
+              ].map(({ role, person, onChange, dot }) => {
+                const trimmedEmail = (person.email || '').trim();
+                const isSaved = !!trimmedEmail && savedPeople.some(p => (p.email || '').toLowerCase() === trimmedEmail.toLowerCase());
+                return (
+                <div key={role} className="space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <span className={`flex items-center gap-1.5 text-[11px] font-semibold w-20 shrink-0 ${dot.text}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${dot.dot}`} />
+                      {dot.label}
+                    </span>
+                    {savedPeople.length > 0 && (
+                      <PersonSearchSelect
+                        people={savedPeople}
+                        value={isSaved ? trimmedEmail : ''}
+                        onSelect={(picked) => onChange?.({ name: picked.name || '', email: picked.email || '' }, true)}
+                      />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 sm:pl-[5.5rem]">
+                    <input
+                      value={person.name}
+                      onChange={(e) => onChange?.({ ...person, name: e.target.value })}
+                      onBlur={(e) => onChange?.({ ...person, name: e.target.value }, true)}
+                      placeholder="Name"
+                      className="flex-1 min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
+                    />
+                    <input
+                      type="email"
+                      value={person.email}
+                      onChange={(e) => onChange?.({ ...person, email: e.target.value })}
+                      onBlur={(e) => onChange?.({ ...person, email: e.target.value }, true)}
+                      placeholder="email@example.com"
+                      className="flex-[1.4] min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => isSaved ? removeContact(trimmedEmail) : saveContact(person)}
+                      disabled={!trimmedEmail}
+                      title={!trimmedEmail ? 'Enter an email to save this person' : isSaved ? 'Remove from saved people' : 'Save this person for reuse'}
+                      className={`shrink-0 p-1.5 rounded-lg transition-colors ${
+                        !trimmedEmail
+                          ? 'text-gray-200 cursor-not-allowed'
+                          : isSaved
+                            ? 'text-amber-500 hover:bg-amber-50'
+                            : 'text-gray-300 hover:text-amber-500 hover:bg-amber-50'
+                      }`}
+                    >
+                      <Star size={15} fill={isSaved ? 'currentColor' : 'none'} />
+                    </button>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
