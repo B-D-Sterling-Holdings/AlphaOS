@@ -1207,7 +1207,9 @@ export default function ResearchPage() {
     <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16">
       <div className="flex items-center justify-between mb-8 animate-fade-in-up">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Research</h1>
+          <h1 className="text-3xl font-bold text-gray-900">
+            Research{selectedTicker && <span className="text-gray-400 font-normal"> · {selectedTicker}</span>}
+          </h1>
         </div>
         {dataExists && (
           <button
