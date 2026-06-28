@@ -725,7 +725,7 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                           type="button"
                           role="switch"
                           aria-checked={autoEnabled}
-                          onClick={() => setAutoNotify({ enabled: !autoEnabled })}
+                          onClick={() => setAutoNotify(autoEnabled ? { enabled: false } : { enabled: true, tz: browserTz() })}
                           className={`relative w-8 h-[18px] rounded-full transition-colors shrink-0 ${autoEnabled ? 'bg-blue-600' : 'bg-gray-200'}`}
                         >
                           <span className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${autoEnabled ? 'translate-x-[14px]' : ''}`} />
@@ -770,7 +770,7 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                                     key={role}
                                     type="button"
                                     aria-pressed={on}
-                                    onClick={() => setAutoNotify({ roles: { ...cfg.roles, [role]: !on } })}
+                                    onClick={() => setAutoNotify({ roles: { ...cfg.roles, [role]: !on }, tz: browserTz() })}
                                     className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors ${on ? `${meta.badge} border-transparent` : 'text-gray-400 border-gray-200 hover:border-gray-300'}`}
                                   >
                                     {meta.label}
