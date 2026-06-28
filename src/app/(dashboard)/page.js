@@ -15,10 +15,10 @@ Chart.register(...registerables);
 
 const TIMEFRAMES = [
   { label: 'MTD', days: 'mtd' },
+  { label: 'YTD', days: 'ytd' },
   { label: '1M', days: 30 },
   { label: '3M', days: 90 },
   { label: '6M', days: 180 },
-  { label: 'YTD', days: 'ytd' },
   { label: '1Y', days: 365 },
   { label: 'All', days: null },
 ];
@@ -283,13 +283,16 @@ export default function DashboardPage() {
       return { fund: ((end.fund_nav - start.fund_nav) / start.fund_nav) * 100, sp: ((end.sp500_nav - start.sp500_nav) / start.sp500_nav) * 100 };
     }
 
+    const yearStart = `${new Date(last.date + 'T00:00:00').getFullYear()}-01-01`;
+    const ytdStart = navData.find(d => d.date >= yearStart) || navData[0];
+
     const dayReturn = calcReturn(prev, last);
     const m1 = calcReturn(findByDaysAgo(30), last);
-    const m3 = calcReturn(findByDaysAgo(90), last);
+    const ytd = calcReturn(ytdStart, last);
     const y1 = calcReturn(findByDaysAgo(365), last);
     const cum = calcReturn(first, last);
 
-    return { day: dayReturn, '1M': m1, '3M': m3, '1Y': y1, cumulative: cum };
+    return { day: dayReturn, '1M': m1, ytd, '1Y': y1, cumulative: cum };
   })();
 
   // ── Chart logic (same as before) ──
@@ -333,6 +336,13 @@ export default function DashboardPage() {
   const fundValues = filtered.map(d => Number(d.fund_nav));
   const spValues = filtered.map(d => Number(d.sp500_nav));
 
+  // Rebase both series to 100 at the first point of the selected window so all
+  // timeframes start at the same level and relative performance is directly comparable.
+  const fundBase = fundValues[0] || 1;
+  const spBase = spValues[0] || 1;
+  const fundValuesChart = fundValues.map(v => (v / fundBase) * 100);
+  const spValuesChart = spValues.map(v => (v / spBase) * 100);
+
   function getIndexFromClientX(clientX) {
     const chart = chartRef.current;
     if (!chart || !canvasRef.current) return null;
@@ -368,12 +378,18 @@ export default function DashboardPage() {
     });
   }
 
+  useEffect(() => {
+    if (fundValues.length) {
+      const i = fundValues.length - 1;
+      setHoverInfo({ date: labels[i], fund: fmt$(fundValues[i]), sp: fmt$(spValues[i]) });
+    }
+  }, [filtered]);
+
   function handleMouseDown(e) {
     const idx = getIndexFromClientX(e.clientX);
     if (idx === null) return;
     dragState.current = { dragging: true, startIdx: idx, endIdx: idx };
     hoverIdx.current = null;
-    setHoverInfo(null);
     setDragInfo(null);
   }
 
@@ -384,7 +400,6 @@ export default function DashboardPage() {
       dragState.current.endIdx = idx;
       updateDragInfo(idx, e.clientX, e.clientY);
       hoverIdx.current = null;
-      setHoverInfo(null);
       if (chartRef.current) chartRef.current.draw();
       return;
     }
@@ -456,12 +471,12 @@ export default function DashboardPage() {
         labels,
         datasets: [
           {
-            label: 'Fund NAV', data: fundValues, borderColor: '#10b981',
+            label: 'Fund NAV', data: fundValuesChart, borderColor: '#10b981',
             backgroundColor: fundGradient, borderWidth: 2.5, fill: true,
             tension: 0.3, pointRadius: 0, pointHoverRadius: 0,
           },
           {
-            label: 'S&P 500 NAV', data: spValues, borderColor: '#6b7280',
+            label: 'S&P 500 NAV', data: spValuesChart, borderColor: '#6b7280',
             backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 3],
             fill: false, tension: 0.3, pointRadius: 0, pointHoverRadius: 0,
           },
@@ -482,7 +497,7 @@ export default function DashboardPage() {
           },
           y: {
             grid: { color: '#f9fafb' },
-            ticks: { color: '#9ca3af', font: { size: 10, family: 'Plus Jakarta Sans' }, callback: v => '$' + v },
+            ticks: { color: '#9ca3af', font: { size: 10, family: 'Plus Jakarta Sans' }, callback: v => Number(v).toFixed(1) },
             border: { color: '#f3f4f6' },
           },
         },
@@ -547,7 +562,22 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-        <div className="mt-4 relative select-none" style={{ height: 320, cursor: 'crosshair' }}
+        {hoverInfo && (
+          <div className="flex items-center justify-end gap-4 mt-2 mb-1 text-right">
+            <div className="text-[11px] font-medium text-gray-400">{hoverInfo.date}</div>
+            <div className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+              <span className="text-xs text-gray-500">Fund</span>
+              <span className="text-xs font-bold text-gray-900">{hoverInfo.fund}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
+              <span className="text-xs text-gray-500">S&P</span>
+              <span className="text-xs font-bold text-gray-900">{hoverInfo.sp}</span>
+            </div>
+          </div>
+        )}
+        <div className="mt-2 relative select-none" style={{ height: 320, cursor: 'crosshair' }}
           onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
           {loading ? (
             <div className="h-full flex items-center justify-center">
@@ -556,23 +586,6 @@ export default function DashboardPage() {
           ) : filtered.length ? (
             <>
               <canvas ref={canvasRef} />
-              {hoverInfo && !dragInfo && (
-                <div className="absolute top-2 right-3 z-10 text-right pointer-events-none">
-                  <div className="text-[11px] font-medium text-gray-500">{hoverInfo.date}</div>
-                  <div className="flex items-center justify-end gap-3 mt-0.5">
-                    <div className="flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                      <span className="text-xs text-gray-500">Fund</span>
-                      <span className="text-xs font-bold text-gray-900">{hoverInfo.fund}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
-                      <span className="text-xs text-gray-500">S&P</span>
-                      <span className="text-xs font-bold text-gray-900">{hoverInfo.sp}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
               {dragInfo && (
                 <div className="absolute pointer-events-none z-10"
                   style={{ left: Math.min(dragInfo.x + 12, canvasRef.current?.offsetWidth - 200 || 0), top: Math.max(dragInfo.y - 90, 4) }}>
@@ -679,7 +692,7 @@ export default function DashboardPage() {
           {[
             { label: 'Today', data: periodReturns.day },
             { label: '1 Month', data: periodReturns['1M'] },
-            { label: '3 Month', data: periodReturns['3M'] },
+            { label: 'YTD', data: periodReturns.ytd },
             { label: '1 Year', data: periodReturns['1Y'] },
             { label: 'Cumulative', data: periodReturns.cumulative },
           ].map(({ label, data }) => {
