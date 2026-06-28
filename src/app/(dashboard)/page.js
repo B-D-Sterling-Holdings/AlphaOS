@@ -15,10 +15,10 @@ Chart.register(...registerables);
 
 const TIMEFRAMES = [
   { label: 'MTD', days: 'mtd' },
+  { label: 'YTD', days: 'ytd' },
   { label: '1M', days: 30 },
   { label: '3M', days: 90 },
   { label: '6M', days: 180 },
-  { label: 'YTD', days: 'ytd' },
   { label: '1Y', days: 365 },
   { label: 'All', days: null },
 ];
@@ -283,13 +283,16 @@ export default function DashboardPage() {
       return { fund: ((end.fund_nav - start.fund_nav) / start.fund_nav) * 100, sp: ((end.sp500_nav - start.sp500_nav) / start.sp500_nav) * 100 };
     }
 
+    const yearStart = `${new Date(last.date + 'T00:00:00').getFullYear()}-01-01`;
+    const ytdStart = navData.find(d => d.date >= yearStart) || navData[0];
+
     const dayReturn = calcReturn(prev, last);
     const m1 = calcReturn(findByDaysAgo(30), last);
-    const m3 = calcReturn(findByDaysAgo(90), last);
+    const ytd = calcReturn(ytdStart, last);
     const y1 = calcReturn(findByDaysAgo(365), last);
     const cum = calcReturn(first, last);
 
-    return { day: dayReturn, '1M': m1, '3M': m3, '1Y': y1, cumulative: cum };
+    return { day: dayReturn, '1M': m1, ytd, '1Y': y1, cumulative: cum };
   })();
 
   // ── Chart logic (same as before) ──
@@ -686,7 +689,7 @@ export default function DashboardPage() {
           {[
             { label: 'Today', data: periodReturns.day },
             { label: '1 Month', data: periodReturns['1M'] },
-            { label: '3 Month', data: periodReturns['3M'] },
+            { label: 'YTD', data: periodReturns.ytd },
             { label: '1 Year', data: periodReturns['1Y'] },
             { label: 'Cumulative', data: periodReturns.cumulative },
           ].map(({ label, data }) => {
