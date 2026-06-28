@@ -333,6 +333,13 @@ export default function DashboardPage() {
   const fundValues = filtered.map(d => Number(d.fund_nav));
   const spValues = filtered.map(d => Number(d.sp500_nav));
 
+  // Rebase both series to 100 at the first point of the selected window so all
+  // timeframes start at the same level and relative performance is directly comparable.
+  const fundBase = fundValues[0] || 1;
+  const spBase = spValues[0] || 1;
+  const fundValuesChart = fundValues.map(v => (v / fundBase) * 100);
+  const spValuesChart = spValues.map(v => (v / spBase) * 100);
+
   function getIndexFromClientX(clientX) {
     const chart = chartRef.current;
     if (!chart || !canvasRef.current) return null;
@@ -389,15 +396,15 @@ export default function DashboardPage() {
       return;
     }
     hoverIdx.current = idx;
-    setHoverInfo({ date: labels[idx], fund: fmt$(fundValues[idx]), sp: fmt$(spValues[idx]) });
+    setHoverInfo({ date: labels[idx], fund: fundValuesChart[idx]?.toFixed(2), sp: spValuesChart[idx]?.toFixed(2) });
   }
 
   function handleMouseLeave() {
     if (dragState.current.dragging) return;
     hoverIdx.current = null;
-    if (fundValues.length) {
-      const i = fundValues.length - 1;
-      setHoverInfo({ date: labels[i], fund: fmt$(fundValues[i]), sp: fmt$(spValues[i]) });
+    if (fundValuesChart.length) {
+      const i = fundValuesChart.length - 1;
+      setHoverInfo({ date: labels[i], fund: fundValuesChart[i]?.toFixed(2), sp: spValuesChart[i]?.toFixed(2) });
     }
   }
 
@@ -456,12 +463,12 @@ export default function DashboardPage() {
         labels,
         datasets: [
           {
-            label: 'Fund NAV', data: fundValues, borderColor: '#10b981',
+            label: 'Fund NAV', data: fundValuesChart, borderColor: '#10b981',
             backgroundColor: fundGradient, borderWidth: 2.5, fill: true,
             tension: 0.3, pointRadius: 0, pointHoverRadius: 0,
           },
           {
-            label: 'S&P 500 NAV', data: spValues, borderColor: '#6b7280',
+            label: 'S&P 500 NAV', data: spValuesChart, borderColor: '#6b7280',
             backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 3],
             fill: false, tension: 0.3, pointRadius: 0, pointHoverRadius: 0,
           },
@@ -482,7 +489,7 @@ export default function DashboardPage() {
           },
           y: {
             grid: { color: '#f9fafb' },
-            ticks: { color: '#9ca3af', font: { size: 10, family: 'Plus Jakarta Sans' }, callback: v => '$' + v },
+            ticks: { color: '#9ca3af', font: { size: 10, family: 'Plus Jakarta Sans' }, callback: v => Number(v).toFixed(1) },
             border: { color: '#f3f4f6' },
           },
         },
