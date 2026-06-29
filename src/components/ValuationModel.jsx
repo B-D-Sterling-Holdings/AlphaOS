@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useImperativeHandle, useRef, forwardRef } from 'react';
-import { RefreshCw, Save, CheckCircle, Plus, Trash2, Settings2, ArrowUp, ArrowDown, Copy, TrendingUp, Percent, PencilLine, Sigma, Divide } from 'lucide-react';
+import { RefreshCw, Save, CheckCircle, Plus, Trash2, Settings2, ArrowUp, ArrowDown, Copy, TrendingUp, Percent, PencilLine, Sigma, Divide, Link2, RotateCcw, Building2, Coins } from 'lucide-react';
 import {
   DEFAULT_VALUATION_INPUTS,
   computeValuationModel,
@@ -48,7 +48,7 @@ function makePresetRow(key) {
   }
 }
 
-function InputCell({ value, onChange, onBlur, pct = false, dollar = false, suffix = '', placeholder, className = '' }) {
+function InputCell({ value, onChange, onBlur, pct = false, dollar = false, suffix = '', placeholder, className = '', bare = false, textSize = 'vm-num' }) {
   const formattedValue = pct && value !== '' && value !== undefined
     ? formatEditableNumber(Number(value) * 100)
     : formatEditableNumber(value);
@@ -59,36 +59,69 @@ function InputCell({ value, onChange, onBlur, pct = false, dollar = false, suffi
   }, [formattedValue]);
 
   const hasSuffix = pct || suffix;
+  const handleChange = e => {
+    const raw = e.target.value;
+    if (!/^-?\d*\.?\d*$/.test(raw)) return;
+    setDraftValue(raw);
+    if (raw === '' || raw === '-' || raw === '.' || raw === '-.') {
+      onChange(raw === '-' ? '-' : '');
+      return;
+    }
+    if (raw.endsWith('.')) {
+      onChange(pct ? Number(raw.slice(0, -1)) / 100 : Number(raw.slice(0, -1)));
+      return;
+    }
+    onChange(pct ? Number(raw) / 100 : Number(raw));
+  };
+  const handleBlur = () => { setDraftValue(formattedValue); onBlur?.(); };
+  const inputBase = 'font-semibold text-gray-900 outline-none tabular-nums placeholder:text-gray-300 placeholder:font-normal';
+
+  // ── Tile (bare) variant ──────────────────────────────────────────────────────
+  // Left-aligned and sized to its own value, so the number reads as the headline
+  // sitting just under the label — no dead space, and the unit ($, %, x) hugs the
+  // digits at the matching size instead of being pinned to a far edge. The input
+  // auto-widens to the typed value (in `ch`, which tracks the tabular digit width).
+  // textSize lives on the wrapper so the input inherits it and the units can be a
+  // fixed fraction of it via `em`.
+  if (bare) {
+    const chars = Math.max((draftValue?.length || 0), (placeholder?.length || 0), 2);
+    const affix = 'text-[0.72em] font-semibold text-gray-400';
+    return (
+      <div className={`flex items-baseline ${textSize}`}>
+        {dollar && <span className={`${affix} mr-px`}>$</span>}
+        <input
+          type="text"
+          inputMode="decimal"
+          value={draftValue ?? ''}
+          onChange={handleChange}
+          placeholder={placeholder}
+          onBlur={handleBlur}
+          style={{ width: `${chars}ch` }}
+          className={`max-w-full bg-transparent border-0 p-0 text-left transition-all ${inputBase} ${className}`}
+        />
+        {pct && <span className={`${affix} ml-px`}>%</span>}
+        {!pct && suffix && <span className={`${affix} ml-0.5`}>{suffix}</span>}
+      </div>
+    );
+  }
+
+  // ── Standalone (table) variant — keeps its own blue field chrome ──────────────
+  const padL = dollar ? 'pl-6' : 'pl-2.5';
+  const padR = hasSuffix ? 'pr-6' : 'pr-2.5';
   return (
     <div className="relative flex items-center">
-      {dollar && <span className="absolute left-2.5 text-[11px] font-medium text-gray-400 pointer-events-none">$</span>}
+      {dollar && <span className="absolute text-[11px] font-medium text-gray-400 pointer-events-none left-2.5">$</span>}
       <input
         type="text"
         inputMode="decimal"
         value={draftValue ?? ''}
-        onChange={e => {
-          const raw = e.target.value;
-          if (!/^-?\d*\.?\d*$/.test(raw)) return;
-          setDraftValue(raw);
-          if (raw === '' || raw === '-' || raw === '.' || raw === '-.') {
-            onChange(raw === '-' ? '-' : '');
-            return;
-          }
-          if (raw.endsWith('.')) {
-            onChange(pct ? Number(raw.slice(0, -1)) / 100 : Number(raw.slice(0, -1)));
-            return;
-          }
-          onChange(pct ? Number(raw) / 100 : Number(raw));
-        }}
+        onChange={handleChange}
         placeholder={placeholder}
-        onBlur={() => {
-          setDraftValue(formattedValue);
-          onBlur?.();
-        }}
-        className={`w-full bg-sky-50/80 border border-sky-200/60 rounded-md py-1.5 text-[13px] font-medium text-gray-900 outline-none focus:ring-1.5 focus:ring-sky-400 focus:border-sky-400 focus:bg-white transition-all text-right tabular-nums placeholder:text-gray-300 ${dollar ? 'pl-6' : 'pl-2.5'} ${hasSuffix ? 'pr-6' : 'pr-2.5'} ${className}`}
+        onBlur={handleBlur}
+        className={`w-full bg-sky-50/80 border border-sky-200/60 rounded-md py-1.5 focus:ring-1.5 focus:ring-sky-400 focus:border-sky-400 focus:bg-white transition-all text-right ${textSize} ${inputBase} ${padL} ${padR} ${className}`}
       />
-      {pct && <span className="absolute right-2.5 text-[11px] font-medium text-gray-400 pointer-events-none">%</span>}
-      {!pct && suffix && <span className="absolute right-2.5 text-[11px] font-medium text-gray-400 pointer-events-none">{suffix}</span>}
+      {pct && <span className="absolute text-[11px] font-medium text-gray-400 pointer-events-none right-2.5">%</span>}
+      {!pct && suffix && <span className="absolute text-[11px] font-medium text-gray-400 pointer-events-none right-2.5">{suffix}</span>}
     </div>
   );
 }
@@ -99,9 +132,38 @@ function CalcCell({ value, format = 'number', decimals = 2, bold = false }) {
   else if (format === 'money') display = value != null && !isNaN(value) ? `$${fmt(value, decimals)}` : '—';
   else display = fmt(value, decimals);
   return (
-    <span className={`text-[13px] tabular-nums ${bold ? 'font-semibold text-gray-900' : 'font-medium text-gray-700'}`}>
+    <span className={`vm-num tabular-nums ${bold ? 'font-semibold text-gray-900' : 'font-medium text-gray-700'}`}>
       {display}
     </span>
+  );
+}
+
+// One labelled assumption in the top grid. Editable tiles get a soft blue field look
+// that lifts on focus; derived/read-only tiles are plain so it's obvious which is which.
+function AssumptionTile({ label, children, editable = false, accent, icon: Icon }) {
+  const tone = editable
+    ? 'bg-sky-50/50 border-sky-200/70 focus-within:border-sky-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-sky-100'
+    : accent === 'emerald'
+      ? 'bg-emerald-50/60 border-emerald-200/60'
+      : 'bg-white border-gray-200/80';
+  return (
+    <div className={`vm-tile-w rounded-xl border px-3 vm-tile-pad transition-all ${tone}`}>
+      <div className="flex items-center gap-1 mb-1 min-w-0">
+        {Icon && <Icon size={10} className="text-sky-400 shrink-0" />}
+        <span className="text-[9.5px] font-bold uppercase tracking-wider text-gray-400 truncate" title={typeof label === 'string' ? label : undefined}>{label}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// A small section heading for a group of assumptions.
+function GroupLabel({ icon: Icon, children, className = '' }) {
+  return (
+    <div className={`flex items-center gap-1.5 mb-2 ${className}`}>
+      {Icon && <Icon size={12} className="text-gray-400" />}
+      <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">{children}</span>
+    </div>
   );
 }
 
@@ -132,11 +194,12 @@ function Field({ label, children }) {
 
 const selectCls = 'w-full text-[12.5px] font-medium text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2 outline-none focus:border-sky-400 focus:bg-white transition-colors cursor-pointer';
 
-const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice }, ref) {
+const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, embedded = false }, ref) {
   const [inputs, setInputs] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   // menu = { rowId | '__end__', kind: 'config' | 'insert', x, y }
   const [menu, setMenu] = useState(null);
   const [insertPos, setInsertPos] = useState('below');
@@ -161,11 +224,25 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
       .finally(() => setLoading(false));
   }, [ticker]);
 
+  // Always keep the model's share price on the live market price for THIS ticker. The
+  // host page's livePrice (if any) seeds it instantly to avoid a flash, but we also
+  // fetch the authoritative quote for the ticker so the price is never stale or carried
+  // over from another name — no matter where the model is embedded.
   useEffect(() => {
-    if (livePrice && inputs) {
-      setInputs(prev => ({ ...prev, sharePrice: livePrice }));
-    }
-  }, [livePrice]);
+    if (!ticker) return;
+    let cancelled = false;
+    const apply = (price) => {
+      const n = Number(price);
+      if (cancelled || !Number.isFinite(n) || n <= 0) return;
+      setInputs(prev => prev ? { ...prev, sharePrice: n } : prev);
+    };
+    if (livePrice) apply(livePrice);
+    fetch(`/api/quotes?tickers=${ticker}`)
+      .then(r => r.json())
+      .then(d => apply(d.quotes?.[ticker]?.price))
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [ticker, livePrice]);
 
   const update = useCallback((field, value) => {
     setInputs(prev => ({ ...prev, [field]: value }));
@@ -253,6 +330,25 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
     } catch {} finally { setSaving(false); }
   }, [ticker, inputs, dirty]);
 
+  // Blow away this ticker's model and rebuild it from the default template, persisting
+  // immediately so the reset survives a reload.
+  const resetToDefault = useCallback(async () => {
+    if (!ticker) return;
+    const fresh = { ...makeDefaultInputs(ticker), sharePrice: livePrice || inputs?.sharePrice || '' };
+    setInputs(fresh);
+    setConfirmReset(false);
+    setMenu(null);
+    setSaving(true);
+    try {
+      await fetch(`/api/model/${ticker}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: fresh }),
+      });
+      setDirty(false);
+    } catch {} finally { setSaving(false); }
+  }, [ticker, livePrice, inputs]);
+
   const model = useMemo(() => {
     if (!inputs) return null;
     return computeValuationModel(inputs);
@@ -306,12 +402,34 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
   const years5 = [0, 1, 2, 3, 4, 5];
   const computedById = Object.fromEntries(model.rows.map(r => [r.id, r]));
   const protectedRow = (row) => row.role === 'revenue' || row.role === 'netIncome';
-  // Growth-rate (CAGR) lines surface their rate up in the assumptions area.
-  const growthRows = inputs.rows.filter(r => r.type === 'line' && r.method === 'growth' && r.role !== 'tax');
+
+  // Coupling: which lines are actively back-solved by a margin row. lineId → the
+  // margin row. A driver only counts once it has a real target (matches the engine) —
+  // a margin with a driver picked but no target yet leaves the line free to be edited
+  // and projected (e.g. as a CAGR line) like any other.
+  const hasVal = (v) => v !== '' && v !== undefined && v !== null && Number.isFinite(Number(v));
+  const drivenBy = {};
+  for (const r of inputs.rows) {
+    if (r.type === 'margin' && r.driverId && hasVal(r.target)) drivenBy[r.driverId] = r;
+  }
+
+  // Growth-rate (CAGR) lines surface their rate up in the assumptions area — but a line
+  // a margin is driving ignores its own rate, so don't offer one.
+  const growthRows = inputs.rows.filter(r => r.type === 'line' && r.method === 'growth' && r.role !== 'tax' && !drivenBy[r.id]);
+
+  // Margin rows that drive an expense surface their target up in the assumptions, next
+  // to the growth rates, so every key projection lever lives in one place.
+  const targetMarginRows = inputs.rows.filter(r => r.type === 'margin' && r.driverId);
 
   const cellFor = (row, i) => {
     const cr = computedById[row.id];
     const isMoney = row.format !== 'pct';
+    // A driven line: its year-0 value (base) anchors the ramp; later years are solved.
+    if (row.type === 'line' && drivenBy[row.id]) {
+      return i === 0
+        ? <InputCell value={row.base} onChange={v => updateRow(row.id, { base: v })} dollar={isMoney} />
+        : <CalcCell value={cr?.values[i]} format={row.format} decimals={row.dec} bold={row.bold} />;
+    }
     if (row.type === 'line' && row.method === 'manual') {
       return <InputCell value={(row.values || [])[i]} onChange={v => updateRowValue(row.id, i, v)} dollar={isMoney} />;
     }
@@ -349,11 +467,28 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
     const setMethod = (method) => {
       const patch = { method, role: method === 'tax' ? 'tax' : (row.role === 'tax' ? null : row.role) };
       if (method === 'pctOf') { patch.refId = row.refId || 'revenue'; if (row.ramp === undefined) patch.ramp = true; }
-      if (method === 'plug' && row.target === undefined) patch.target = '';
       if (method === 'tax') patch.refId = row.refId || 'revenue';
       u(patch);
     };
     const methodVal = row.role === 'tax' ? 'tax' : row.method;
+
+    // The margin row (if any) that is currently driving THIS line.
+    const driver = row.type === 'line' ? drivenBy[row.id] : null;
+
+    // Margin-row coupling helpers.
+    const driverLineOptions = inputs.rows.filter(r => r.type === 'line' && r.role !== 'revenue');
+    const defaultDriverId = () => {
+      const subIdx = inputs.rows.findIndex(r => r.id === row.refId);
+      for (let i = subIdx - 1; i >= 0; i--) {
+        const c = inputs.rows[i];
+        if (c.type === 'line' && c.role !== 'revenue') return c.id;
+      }
+      return driverLineOptions[0]?.id || '';
+    };
+    const setDriverLine = (lineId) => {
+      u({ driverId: lineId || null });
+      if (lineId) updateRow(lineId, { sign: -1 }); // a driven line is always an expense
+    };
 
     return (
       <div className="space-y-3.5">
@@ -361,13 +496,29 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
           <Segmented size="sm" value={row.type} onChange={(type) => {
             const patch = { type };
             if (type === 'margin') { patch.format = 'pct'; patch.dec = 2; if (!row.refId) patch.refId = 'revenue'; }
-            else { patch.format = 'money'; patch.dec = 3; }
+            else { patch.format = 'money'; patch.dec = 3; patch.driverId = undefined; patch.target = undefined; }
             if (type === 'line' && !row.method) patch.method = 'growth';
             u(patch);
           }} options={[{ value: 'line', label: 'Line' }, { value: 'subtotal', label: 'Subtotal' }, { value: 'margin', label: 'Margin' }]} />
         </Field>
 
-        {row.type === 'line' && (
+        {/* A line being driven by a margin row — coupling is owned over there. */}
+        {row.type === 'line' && driver && (
+          <>
+            <div className="flex items-start gap-2 rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-2">
+              <Link2 size={14} className="text-sky-500 mt-0.5 shrink-0" />
+              <p className="text-[11px] text-sky-700 leading-snug">
+                Back-solved each year to hit <span className="font-semibold">{driver.name || 'a target margin'}</span>. Set the target on that row. Type this line&apos;s <span className="font-semibold">year-0 value</span> in the table — later years are solved for you.
+              </p>
+            </div>
+            <button
+              onClick={() => updateRow(driver.id, { driverId: null })}
+              className="w-full text-[11px] font-semibold text-gray-500 hover:text-rose-600 border border-gray-200 hover:border-rose-200 rounded-lg py-1.5 transition-colors"
+            >Release coupling</button>
+          </>
+        )}
+
+        {row.type === 'line' && !driver && (
           <>
             <Field label="Projects by">
               <select className={selectCls} value={methodVal} onChange={e => setMethod(e.target.value)}>
@@ -375,18 +526,15 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
                 <option value="pctOf">% of another row</option>
                 <option value="manual">Manual (per year)</option>
                 <option value="tax">Tax (× tax rate)</option>
-                <option value="plug">Back-solve to a target margin</option>
               </select>
             </Field>
 
-            {row.method !== 'plug' && (
-              <Field label="Counts as">
-                <div className="flex gap-1.5">
-                  <button onClick={() => u({ sign: 1 })} className={`flex-1 flex items-center justify-center gap-1.5 text-[11px] font-semibold py-1.5 rounded-lg border transition-all ${row.sign !== -1 ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300'}`}><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Income</button>
-                  <button onClick={() => u({ sign: -1 })} className={`flex-1 flex items-center justify-center gap-1.5 text-[11px] font-semibold py-1.5 rounded-lg border transition-all ${row.sign === -1 ? 'bg-rose-50 border-rose-300 text-rose-700' : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300'}`}><span className="w-1.5 h-1.5 rounded-full bg-rose-400" /> Expense</button>
-                </div>
-              </Field>
-            )}
+            <Field label="Counts as">
+              <div className="flex gap-1.5">
+                <button onClick={() => u({ sign: 1 })} className={`flex-1 flex items-center justify-center gap-1.5 text-[11px] font-semibold py-1.5 rounded-lg border transition-all ${row.sign !== -1 ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300'}`}><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Income</button>
+                <button onClick={() => u({ sign: -1 })} className={`flex-1 flex items-center justify-center gap-1.5 text-[11px] font-semibold py-1.5 rounded-lg border transition-all ${row.sign === -1 ? 'bg-rose-50 border-rose-300 text-rose-700' : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300'}`}><span className="w-1.5 h-1.5 rounded-full bg-rose-400" /> Expense</button>
+              </div>
+            </Field>
 
             {row.method === 'growth' && (
               <div className="flex items-start gap-2 rounded-lg bg-gray-50 border border-gray-100 px-2.5 py-2">
@@ -416,13 +564,6 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
                 </select>
               </Field>
             )}
-
-            {row.method === 'plug' && (
-              <Field label="Target operating margin (yr 5)">
-                <InputCell value={row.target} onChange={v => u({ target: v })} pct />
-                <p className="text-[10.5px] text-gray-400 mt-1.5 leading-snug">This line is back-solved each year so income ÷ revenue ramps to the target.</p>
-              </Field>
-            )}
           </>
         )}
 
@@ -434,11 +575,36 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
         )}
 
         {row.type === 'margin' && (
-          <Field label="Shows this row ÷ revenue">
-            <select className={selectCls} value={row.refId || 'revenue'} onChange={e => u({ refId: e.target.value })}>
-              {refOptions.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-          </Field>
+          <>
+            <Field label="Shows this row ÷ revenue">
+              <select className={selectCls} value={row.refId || 'revenue'} onChange={e => u({ refId: e.target.value })}>
+                {refOptions.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </Field>
+
+            {/* Coupling lives here: this margin can back-solve an expense to hit a target. */}
+            <Field label="Hold an expense to a target?">
+              <Segmented size="sm" value={row.driverId ? 'yes' : 'no'} onChange={(v) => (v === 'yes' ? setDriverLine(defaultDriverId()) : u({ driverId: null }))} options={[{ value: 'no', label: 'Off' }, { value: 'yes', label: 'On' }]} />
+            </Field>
+
+            {row.driverId && (
+              <>
+                <Field label="Back-solve which expense">
+                  <select className={selectCls} value={row.driverId} onChange={e => setDriverLine(e.target.value)}>
+                    {driverLineOptions.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                </Field>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Field label="Target % (yr 5)"><InputCell value={row.target} onChange={v => u({ target: v })} pct /></Field>
+                  <Field label="From today"><Segmented size="sm" value={row.ramp === false ? 'flat' : 'ramp'} onChange={(v) => u({ ramp: v === 'ramp' })} options={[{ value: 'ramp', label: 'Ramp' }, { value: 'flat', label: 'Flat' }]} /></Field>
+                </div>
+                <div className="flex items-start gap-2 rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-2">
+                  <Link2 size={14} className="text-sky-500 mt-0.5 shrink-0" />
+                  <p className="text-[11px] text-sky-700 leading-snug">The chosen expense is solved each year so this margin ramps to the target. Set its year-0 value in the table.</p>
+                </div>
+              </>
+            )}
+          </>
         )}
 
         <div className="flex items-center gap-1 pt-2.5 border-t border-gray-100">
@@ -474,198 +640,264 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice },
     </div>
   );
 
+  // Embedded (inside the Draft & Review left panel) drops the outer card chrome and
+  // side padding so it sits flush in the parent Card; standalone (Research / Position
+  // Review) keeps its own card and full-bleed section bands.
+  const px = embedded ? 'px-0' : 'px-6';
+  const band = embedded ? '' : 'bg-gray-50/30';
+  // Tiles are left-aligned and content-sized (fixed width via vm-tile-w), wrapping
+  // to the next line as needed — so a row of 2-3 short stats reads as tidy chips
+  // instead of a few boxes stretched fat across the whole width.
+  const grid3 = 'flex flex-wrap gap-2.5';
+  const gridGrowth = 'flex flex-wrap gap-2.5';
+  // Numbers scale off the whole model's width (one query container on the root, see
+  // .vm-scale in globals.css): both the assumption tiles and the income-statement
+  // table jump between a compact and a roomy size together, so a half-width panel and
+  // a full-width one each read consistently instead of the two areas disagreeing.
+  const tileNum = 'vm-tile';
+  const tickerNum = 'vm-ticker';
+
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden" onBlur={save}>
+    <div className={embedded ? '' : 'bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden'} onBlur={save}>
+      {/* vm-scale is the query container the number sizes read off (see globals.css).
+          It wraps the content only — NOT the fixed-position popover below, since
+          container-type makes an element a containing block for fixed descendants,
+          which would otherwise re-anchor the popover off its viewport coordinates. */}
+      <div className="vm-scale">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-        <div>
-          <h2 className="text-lg font-bold text-gray-900">Valuation Model</h2>
-          <p className="text-xs text-gray-400 mt-0.5">
-            <span className="inline-block w-2.5 h-2.5 bg-sky-100 border border-sky-300 rounded-sm mr-1 align-middle" />
-            blue cells are editable — hover a row for its <span className="inline-flex items-center"><Settings2 size={11} className="mx-0.5" /></span> settings &amp; <span className="inline-flex items-center"><Plus size={11} className="mx-0.5" /></span> insert
+      <div className={`flex items-center justify-between gap-3 border-b border-gray-100 ${embedded ? 'pb-3 mb-4' : 'px-6 py-4'}`}>
+        <div className="min-w-0">
+          {!embedded && <h2 className="text-base font-bold text-gray-900">Valuation Model</h2>}
+          <p className={`text-[11px] text-gray-400 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 ${embedded ? '' : 'mt-0.5'}`}>
+            <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 bg-sky-100 border border-sky-300 rounded-sm" /> blue cells are editable</span>
+            <span className="text-gray-200">·</span>
+            <span className="inline-flex items-center gap-0.5">hover a row for <Settings2 size={11} /> &amp; <Plus size={11} /></span>
           </p>
         </div>
-        <button
-          onClick={save}
-          disabled={saving || !dirty}
-          className={`flex items-center gap-1.5 px-5 py-2 text-xs font-semibold rounded-xl shadow-sm transition-all duration-200 ${
-            dirty
-              ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white hover:from-emerald-700 hover:to-emerald-600 hover:shadow-md'
-              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-          }`}
-        >
-          {saving ? <RefreshCw size={12} className="animate-spin" /> : dirty ? <Save size={12} /> : <CheckCircle size={12} />}
-          {saving ? 'Saving...' : dirty ? 'Save Model' : 'Saved'}
-        </button>
+        <div className="shrink-0 flex items-center gap-2">
+          {confirmReset ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-gray-500 hidden sm:inline">Reset everything?</span>
+              <button
+                onClick={resetToDefault}
+                className="flex items-center gap-1 px-2.5 py-2 text-xs font-semibold rounded-lg bg-rose-500 text-white hover:bg-rose-600 transition-colors"
+              ><RotateCcw size={12} /> Reset</button>
+              <button
+                onClick={() => setConfirmReset(false)}
+                className="px-2.5 py-2 text-xs font-semibold rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+              >Cancel</button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmReset(true)}
+              title="Reset this model to the default template (clears everything)"
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl text-gray-500 border border-gray-200 hover:text-gray-800 hover:border-gray-300 hover:bg-gray-50 transition-colors"
+            ><RotateCcw size={12} /> Reset</button>
+          )}
+          <button
+            onClick={save}
+            disabled={saving || !dirty}
+            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl transition-all duration-200 ${
+              dirty
+                ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-sm hover:from-emerald-700 hover:to-emerald-600 hover:shadow-md'
+                : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+            }`}
+          >
+            {saving ? <RefreshCw size={12} className="animate-spin" /> : dirty ? <Save size={12} /> : <CheckCircle size={12} />}
+            {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </button>
+        </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <div className="min-w-[900px]">
-
-          {/* ── Global Assumptions ── */}
-          <div className="px-6 py-5 border-b border-gray-100 bg-gray-50/30">
-            <div className="grid grid-cols-12 gap-x-4 gap-y-3 items-end">
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Ticker</label>
-                <div className="px-2.5 py-1.5 text-[13px] font-bold text-gray-900 bg-white border border-gray-200 rounded-md text-center">{ticker}</div>
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Share Price</label>
-                <InputCell value={inputs.sharePrice} onChange={v => update('sharePrice', v)} placeholder="0.00" dollar />
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Target P/E</label>
-                <InputCell value={inputs.targetPE} onChange={v => update('targetPE', v)} suffix="x" />
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">EPS Growth</label>
-                <div className="px-2.5 py-1.5 text-[13px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/50 rounded-md text-right tabular-nums">
-                  {fmtPct(model.epsGrowth, 2)}
-                </div>
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Base Year</label>
-                <InputCell value={inputs.baseYear} onChange={v => update('baseYear', v)} className="text-center" />
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Tax Rate</label>
-                <InputCell value={inputs.taxRate} onChange={v => update('taxRate', v)} pct />
-              </div>
-            </div>
-
-            <div className="border-t border-dashed border-gray-200 my-4" />
-
-            <div className="grid grid-cols-12 gap-x-4 gap-y-3 items-end">
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Net Share Dilution</label>
-                <InputCell value={inputs.netShareDilution} onChange={v => update('netShareDilution', v)} pct />
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Dividend Growth</label>
-                <InputCell value={inputs.dividendGrowth} onChange={v => update('dividendGrowth', v)} pct />
-              </div>
-              <div className="col-span-2">
-                <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">Current Dividend</label>
-                <InputCell value={inputs.currentDividend} onChange={v => update('currentDividend', v)} dollar />
-              </div>
-            </div>
-
-            {growthRows.length > 0 && (
-              <>
-                <div className="border-t border-dashed border-gray-200 my-4" />
-                <div className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-3">Growth Rates (CAGR)</div>
-                <div className="grid grid-cols-12 gap-x-4 gap-y-3 items-end">
-                  {growthRows.map(r => (
-                    <div key={r.id} className="col-span-2">
-                      <label className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5 truncate" title={r.name}>{r.name || 'Line'}</label>
-                      <InputCell value={r.rate} onChange={v => updateRow(r.id, { rate: v })} pct />
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+      {/* ── Assumptions ── grouped by what they do: Setup, Growth (rates + target
+          margins) with the valuation knobs beside them, and Shareholder Returns. */}
+      <div className={`${px} ${embedded ? 'py-4' : 'py-5'} ${band} ${embedded ? 'rounded-xl bg-gray-50/60 !px-4' : 'border-b border-gray-100'} space-y-4`}>
+        {/* Setup */}
+        <div>
+          <GroupLabel icon={Building2}>Setup</GroupLabel>
+          <div className={grid3}>
+            <AssumptionTile label="Ticker">
+              <div className={`${tickerNum} font-extrabold text-gray-900 tracking-wide leading-6 truncate`}>{ticker || '—'}</div>
+            </AssumptionTile>
+            <AssumptionTile label="Share Price" editable>
+              <InputCell value={inputs.sharePrice} onChange={v => update('sharePrice', v)} placeholder="0.00" dollar bare textSize={tileNum} />
+            </AssumptionTile>
+            <AssumptionTile label="Base Year" editable>
+              <InputCell value={inputs.baseYear} onChange={v => update('baseYear', v)} className="text-left" bare textSize={tileNum} />
+            </AssumptionTile>
           </div>
+        </div>
 
-          {/* ── Projection Table ── */}
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="bg-gray-50/80">
-                <th className="text-left px-4 py-2.5 text-[10px] text-gray-400 font-bold uppercase tracking-widest border-b border-gray-200 w-80">Income Statement</th>
-                {model.yearLabels.map((y, i) => (
-                  <th key={y} className="text-right px-4 py-2.5 border-b border-gray-200">
-                    <span className={`text-[10px] font-bold uppercase tracking-widest ${i === 0 ? 'text-gray-400' : 'text-gray-500'}`}>{i === 0 ? 'TTM' : y}</span>
-                    {i > 0 && <span className="block text-[9px] text-gray-300 font-medium">Yr {i}</span>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {inputs.rows.map((row) => {
-                const active = menu?.rowId === row.id;
-                return (
-                  <tr key={row.id} className={`group/row transition-colors ${highlightBg(row.highlight)} ${active ? 'bg-sky-50/40' : !row.highlight ? 'hover:bg-gray-50/60' : ''}`}>
-                    <td className="px-4 py-1.5 border-b border-gray-50 w-80">
-                      <div className="flex items-center gap-2">
-                        {signDot(row)}
-                        <input
-                          type="text"
-                          value={row.name}
-                          onChange={e => updateRow(row.id, { name: e.target.value })}
-                          className={`min-w-0 flex-1 bg-transparent text-[13px] outline-none focus:bg-sky-50/70 rounded px-1 -ml-1 py-0.5 ${row.bold ? 'font-semibold text-gray-900' : 'text-gray-600'}`}
+        {/* Growth assumptions — everything flows in one auto-fitting grid: the user's
+            growth rates and target margins first, then the derived EPS growth, the tax
+            rate and the target P/E, so the row fills the full width with no dead space. */}
+        <div className="border-t border-dashed border-gray-200 pt-4">
+          <GroupLabel icon={TrendingUp}>Growth Assumptions</GroupLabel>
+          <div className={gridGrowth}>
+            {growthRows.map(r => (
+              <AssumptionTile key={r.id} label={r.name || 'Line'} editable>
+                <InputCell value={r.rate} onChange={v => updateRow(r.id, { rate: v })} pct bare textSize={tileNum} />
+              </AssumptionTile>
+            ))}
+            {targetMarginRows.map(r => (
+              <AssumptionTile key={r.id} label={r.name || 'Margin'} editable icon={Link2}>
+                <InputCell value={r.target} onChange={v => updateRow(r.id, { target: v })} pct bare textSize={tileNum} />
+              </AssumptionTile>
+            ))}
+            <AssumptionTile label="EPS Growth" accent="emerald">
+              <div className={`${tileNum} font-bold text-emerald-600 text-left tabular-nums leading-6`}>{fmtPct(model.epsGrowth, 2)}</div>
+            </AssumptionTile>
+            <AssumptionTile label="Tax Rate" editable>
+              <InputCell value={inputs.taxRate} onChange={v => update('taxRate', v)} pct bare textSize={tileNum} />
+            </AssumptionTile>
+            <AssumptionTile label="Target P/E" editable>
+              <InputCell value={inputs.targetPE} onChange={v => update('targetPE', v)} suffix="x" bare textSize={tileNum} />
+            </AssumptionTile>
+          </div>
+        </div>
+
+        {/* Shareholder returns */}
+        <div className="border-t border-dashed border-gray-200 pt-4">
+          <GroupLabel icon={Coins}>Shareholder Returns</GroupLabel>
+          <div className={grid3}>
+            <AssumptionTile label="Net Dilution" editable>
+              <InputCell value={inputs.netShareDilution} onChange={v => update('netShareDilution', v)} pct bare textSize={tileNum} />
+            </AssumptionTile>
+            <AssumptionTile label="Dividend Growth" editable>
+              <InputCell value={inputs.dividendGrowth} onChange={v => update('dividendGrowth', v)} pct bare textSize={tileNum} />
+            </AssumptionTile>
+            <AssumptionTile label="Current Dividend" editable>
+              <InputCell value={inputs.currentDividend} onChange={v => update('currentDividend', v)} dollar bare textSize={tileNum} />
+            </AssumptionTile>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Projection Table ── only this scrolls horizontally; the year columns can't
+          collapse below a usable width. */}
+      <div className={`overflow-x-auto ${embedded ? 'mt-4' : ''}`}>
+        <table className="w-full border-collapse min-w-[660px]">
+          <thead>
+            <tr className="bg-gray-50/80">
+              <th className="text-left px-4 py-2.5 text-[10px] text-gray-400 font-bold uppercase tracking-widest border-b border-gray-200 w-56">Income Statement</th>
+              {model.yearLabels.map((y, i) => (
+                <th key={y} className="text-right px-3 py-2.5 border-b border-gray-200">
+                  <span className={`text-[10px] font-bold uppercase tracking-widest ${i === 0 ? 'text-gray-400' : 'text-gray-500'}`}>{i === 0 ? 'TTM' : y}</span>
+                  {i > 0 && <span className="block text-[9px] text-gray-300 font-medium">Yr {i}</span>}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {inputs.rows.map((row) => {
+              const active = menu?.rowId === row.id;
+              return (
+                <tr key={row.id} className={`group/row transition-colors ${highlightBg(row.highlight)} ${active ? 'bg-sky-50/40' : !row.highlight ? 'hover:bg-gray-50/60' : ''}`}>
+                  <td className="px-4 vm-cell-pad border-b border-gray-50 w-56">
+                    <div className="flex items-center gap-2">
+                      {signDot(row)}
+                      <input
+                        type="text"
+                        value={row.name}
+                        onChange={e => updateRow(row.id, { name: e.target.value })}
+                        className={`min-w-0 flex-1 bg-transparent vm-num outline-none focus:bg-sky-50/70 rounded px-1 -ml-1 py-0.5 ${row.bold ? 'font-semibold text-gray-900' : 'text-gray-600'}`}
+                      />
+                      {(drivenBy[row.id] || (row.type === 'margin' && row.driverId && hasVal(row.target))) && (
+                        <Link2
+                          size={12}
+                          className="shrink-0 text-sky-400"
+                          title={drivenBy[row.id]
+                            ? `Back-solved to hit ${drivenBy[row.id].name || 'a target margin'}`
+                            : `Drives ${inputs.rows.find(r => r.id === row.driverId)?.name || 'an expense'} to this target`}
                         />
-                        <button
-                          onClick={(e) => openMenu('config', row.id, e)}
-                          className={`shrink-0 rounded-md p-1 transition-all ${active && menu?.kind === 'config' ? 'bg-sky-100 text-sky-600' : 'text-gray-300 hover:text-gray-600 hover:bg-gray-100 opacity-40 group-hover/row:opacity-100'}`}
-                          title="Row settings"
-                        ><Settings2 size={14} /></button>
-                        <button
-                          onClick={(e) => openMenu('insert', row.id, e)}
-                          className={`shrink-0 rounded-md p-1 transition-all ${active && menu?.kind === 'insert' ? 'bg-sky-100 text-sky-600' : 'text-gray-300 hover:text-sky-600 hover:bg-sky-50 opacity-0 group-hover/row:opacity-100'}`}
-                          title="Insert row above / below"
-                        ><Plus size={14} /></button>
-                      </div>
-                    </td>
-                    {years5.map(i => (
-                      <td key={i} className="px-3 py-1.5 text-right border-b border-gray-50">
-                        {cellFor(row, i)}
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })}
-
-              {/* Bottom add */}
-              <tr>
-                <td colSpan={7} className="px-4 py-2 border-b border-gray-100">
-                  <button
-                    onClick={(e) => openMenu('insert', '__end__', e)}
-                    className={`flex items-center gap-1.5 text-[11px] font-medium border border-dashed rounded-md px-2.5 py-1 transition-colors ${menu?.rowId === '__end__' ? 'text-sky-700 bg-sky-50 border-sky-300' : 'text-gray-500 border-gray-300 hover:text-sky-700 hover:bg-sky-50 hover:border-sky-300'}`}
-                  ><Plus size={12} /> Add row</button>
-                </td>
-              </tr>
-
-              {/* ── Fixed per-share & valuation tail ── */}
-              <tr>
-                <td colSpan={7} className="px-4 pt-4 pb-1.5">
-                  <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Per-share &amp; valuation</span>
-                </td>
-              </tr>
-              {tailRows.map((tr) => (
-                <tr key={tr.label} className={`transition-colors ${highlightBg(tr.highlight)} ${!tr.highlight ? 'hover:bg-gray-50/60' : ''}`}>
-                  <td className={`px-4 py-2 text-[13px] whitespace-nowrap border-b border-gray-50 ${tr.bold ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>
-                    {tr.label}
+                      )}
+                      <button
+                        onClick={(e) => openMenu('config', row.id, e)}
+                        className={`shrink-0 rounded-md p-1 transition-all ${active && menu?.kind === 'config' ? 'bg-sky-100 text-sky-600' : 'text-gray-300 hover:text-gray-600 hover:bg-gray-100 opacity-40 group-hover/row:opacity-100'}`}
+                        title="Row settings"
+                      ><Settings2 size={14} /></button>
+                      <button
+                        onClick={(e) => openMenu('insert', row.id, e)}
+                        className={`shrink-0 rounded-md p-1 transition-all ${active && menu?.kind === 'insert' ? 'bg-sky-100 text-sky-600' : 'text-gray-300 hover:text-sky-600 hover:bg-sky-50 opacity-0 group-hover/row:opacity-100'}`}
+                        title="Insert row above / below"
+                      ><Plus size={14} /></button>
+                    </div>
                   </td>
                   {years5.map(i => (
-                    <td key={i} className="px-3 py-1.5 text-right border-b border-gray-50">
-                      {tr.kind === 'sharesBase' && i === 0
-                        ? <InputCell value={inputs.baseShares} onChange={v => update('baseShares', v)} suffix={tr.suffix} />
-                        : <CalcCell value={(tr.kind === 'sharesBase' ? model.shares : tr.data)[i]} format={tr.format} decimals={tr.dec} bold={tr.bold} />}
+                    <td key={i} className="px-3 vm-cell-pad text-right border-b border-gray-50">
+                      {cellFor(row, i)}
                     </td>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              );
+            })}
 
-          {/* ── Output Summary ── */}
-          <div className="px-6 py-5 border-t border-gray-200 bg-gradient-to-b from-gray-50/60 to-white">
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              {[
-                { label: 'Expected CAGR', value: fmtPct(model.totalCAGRNoDivs, 2) },
-                { label: 'Total CAGR (w/ Divs)', value: fmtPct(model.totalCAGR, 2) },
-                { label: 'Price Target (2Y @ Expected CAGR)', value: `$${fmt(model.priceTarget, 2)}` },
-                { label: '5-Year Target Price', value: `$${fmt(model.targetPrice5, 2)}` },
-              ].map(item => (
-                <div key={item.label} className="bg-white border border-gray-100 rounded-xl px-4 py-3.5 shadow-sm">
-                  <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1">{item.label}</p>
-                  <p className="text-xl font-extrabold gradient-text">{item.value}</p>
-                </div>
-              ))}
+            {/* Bottom add */}
+            <tr>
+              <td colSpan={7} className="px-4 py-2 border-b border-gray-100">
+                <button
+                  onClick={(e) => openMenu('insert', '__end__', e)}
+                  className={`flex items-center gap-1.5 text-[11px] font-medium border border-dashed rounded-md px-2.5 py-1 transition-colors ${menu?.rowId === '__end__' ? 'text-sky-700 bg-sky-50 border-sky-300' : 'text-gray-500 border-gray-300 hover:text-sky-700 hover:bg-sky-50 hover:border-sky-300'}`}
+                ><Plus size={12} /> Add row</button>
+              </td>
+            </tr>
+
+            {/* ── Fixed per-share & valuation tail ── */}
+            <tr>
+              <td colSpan={7} className="px-4 pt-4 pb-1.5">
+                <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Per-share &amp; valuation</span>
+              </td>
+            </tr>
+            {tailRows.map((tr) => (
+              <tr key={tr.label} className={`transition-colors ${highlightBg(tr.highlight)} ${!tr.highlight ? 'hover:bg-gray-50/60' : ''}`}>
+                <td className={`px-4 py-2 vm-num whitespace-nowrap border-b border-gray-50 ${tr.bold ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>
+                  {tr.label}
+                </td>
+                {years5.map(i => (
+                  <td key={i} className="px-3 py-1.5 text-right border-b border-gray-50">
+                    {tr.kind === 'sharesBase' && i === 0
+                      ? <InputCell value={inputs.baseShares} onChange={v => update('baseShares', v)} suffix={tr.suffix} />
+                      : <CalcCell value={(tr.kind === 'sharesBase' ? model.shares : tr.data)[i]} format={tr.format} decimals={tr.dec} bold={tr.bold} />}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── Output Summary ── */}
+      <div className={`${px} ${embedded ? 'pt-5' : 'py-5 border-t border-gray-200 bg-gradient-to-b from-gray-50/60 to-white'}`}>
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          {[
+            { label: 'Expected CAGR', value: fmtPct(model.totalCAGRNoDivs, 2) },
+            { label: 'Total CAGR (w/ Divs)', value: fmtPct(model.totalCAGR, 2) },
+            { label: 'Price Target (2Y)', value: `$${fmt(model.priceTarget, 2)}` },
+            { label: '5-Year Target Price', value: `$${fmt(model.targetPrice5, 2)}` },
+          ].map(item => (
+            <div key={item.label} className="bg-white border border-gray-100 rounded-xl px-4 py-3 shadow-sm">
+              <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mb-1 truncate" title={item.label}>{item.label}</p>
+              <p className="text-lg font-extrabold gradient-text">{item.value}</p>
             </div>
-          </div>
-
+          ))}
         </div>
       </div>
+
+      {/* ── Explanation ── why the assumptions are what they are. Saved as part of the
+          model (inputs.explanation), so it persists per ticker and carries through the
+          pipeline alongside the numbers. The root onBlur handles saving. */}
+      <div className={`${px} ${embedded ? 'pt-5' : 'py-5 border-t border-gray-100 bg-gray-50/30'}`}>
+        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-2">Explanation &amp; Key Assumptions</label>
+        <textarea
+          value={inputs.explanation || ''}
+          onChange={(e) => update('explanation', e.target.value)}
+          rows={5}
+          placeholder="Explain the reasoning behind the model — why these growth rates, margins, the target multiple, share count, etc. Anything a reader needs to follow the assumptions and judge whether they're fair."
+          className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-sm leading-relaxed text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all resize-y min-h-[120px]"
+        />
+      </div>
+
+      </div>{/* /vm-scale */}
 
       {/* ── Floating popover ── */}
       {menu && (

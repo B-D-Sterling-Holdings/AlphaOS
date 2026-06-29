@@ -17,7 +17,7 @@ import RichTextArea from '@/components/RichTextArea';
 import ReviewCommentsPanel from '@/components/ReviewCommentsPanel';
 import { useAuth } from '@/lib/AuthContext';
 import { RESEARCH_TABS } from '@/lib/researchProgress';
-import { persistStageMove, writeWatchlistCache, STAGE_LABELS } from '@/lib/stageMove';
+import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
 
 const FUNDAMENTALS_BOXES = [
@@ -589,11 +589,23 @@ export default function ResearchPage() {
   const { isDemo } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const appliedTickerParam = useRef(null);
+  // The ticker this page was opened on via ?ticker= (carried along by a stage move).
+  // Captured on mount and honored stubbornly: the "keep a valid ticker" fallback below
+  // won't run until this name is selected or proven absent after a real fetch — so a
+  // momentarily-stale watchlist load can't bounce the selection to the first name.
+  const requestedTickerRef = useRef(searchParams.get('ticker')?.toUpperCase() || null);
+  const tickerDataReqRef = useRef(null);
   const [allData, setAllData] = useState(() => cache.get('deep_research_watchlist') || null);
-  const [selectedTicker, setSelectedTicker] = useState(() => cache.get('deep_research_selectedTicker') || '');
-  const [tickerData, setTickerData] = useState(() => cache.get('deep_research_tickerData') || null);
+  const [selectedTicker, setSelectedTicker] = useState(() => searchParams.get('ticker')?.toUpperCase() || cache.get('deep_research_selectedTicker') || '');
+  // Fundamentals are cached per ticker. Seed from the initially-selected name's own
+  // cache entry — never a generic shared slot, which is how one company's charts used
+  // to bleed onto another's page.
+  const [loadedTickerData, setLoadedTickerData] = useState(() => {
+    const t = searchParams.get('ticker')?.toUpperCase() || cache.get('deep_research_selectedTicker');
+    return t ? (cache.get(`deep_research_tickerData_${t}`) || null) : null;
+  });
   const [loading, setLoading] = useState(() => !cache.get('deep_research_watchlist'));
+  const [fetchedOnce, setFetchedOnce] = useState(false);
   const [tickerLoading, setTickerLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
@@ -610,6 +622,10 @@ export default function ResearchPage() {
   const [thesisDirty, setThesisDirty] = useState(false);
   const modelRef = useRef(null);
   const [exporting, setExporting] = useState(false);
+  // Which stage a promote/demote is currently persisting to (null = idle). Drives the
+  // per-button spinner so the click has immediate feedback while the move + navigation
+  // resolve.
+  const [movingTo, setMovingTo] = useState(null);
 
   const researchStocks = useMemo(() => (
     (allData?.watchlists || []).flatMap(watchlist =>
@@ -627,6 +643,11 @@ export default function ResearchPage() {
     () => researchStocks.find(stock => stock.ticker === selectedTicker) || null,
     [researchStocks, selectedTicker]
   );
+
+  // Only ever render fundamentals tagged with the currently selected name. A stale
+  // in-flight fetch or a leftover cache payload could otherwise briefly surface one
+  // company's charts under another company's header.
+  const tickerData = loadedTickerData?.ticker === selectedTicker ? loadedTickerData : null;
 
   const researchWorkspace = useMemo(
     () => buildResearchWorkspace(thesis, selectedStock),
@@ -667,32 +688,37 @@ export default function ResearchPage() {
       setAllData(data);
       writeWatchlistCache(cache, data);
       setLoading(false);
+      setFetchedOnce(true);
       return data;
     } catch {
       setLoading(false);
+      setFetchedOnce(true);
       return null;
     }
   }, [cache]);
 
   const loadTickerData = useCallback(async (ticker) => {
     if (!ticker) return;
+    // Track the latest requested ticker so a slow fetch for a name we've navigated
+    // away from can't overwrite the current selection's data.
+    tickerDataReqRef.current = ticker;
     const cached = cache.get(`deep_research_tickerData_${ticker}`);
     if (cached) {
-      setTickerData(cached);
-      cache.set('deep_research_tickerData', cached);
+      setLoadedTickerData(cached);
       return;
     }
+    // Clear stale data while loading so the prior name's charts don't linger.
+    setLoadedTickerData(null);
     setTickerLoading(true);
     try {
       const res = await fetch(`/api/ticker/${ticker}`);
       const data = await res.json();
-      setTickerData(data);
-      cache.set('deep_research_tickerData', data);
       cache.set(`deep_research_tickerData_${ticker}`, data);
+      if (tickerDataReqRef.current === ticker) setLoadedTickerData(data);
     } catch {
       setToast({ message: `Failed to load data for ${ticker}`, type: 'error' });
     } finally {
-      setTickerLoading(false);
+      if (tickerDataReqRef.current === ticker) setTickerLoading(false);
     }
   }, [cache]);
 
@@ -700,7 +726,10 @@ export default function ResearchPage() {
     loadResearchStocks();
   }, [loadResearchStocks]);
 
+  // Keep a valid research-stage ticker selected. Skipped while a deep-link target is
+  // still pending so it can't override the moved name with the first in the list.
   useEffect(() => {
+    if (requestedTickerRef.current) return;
     if (!researchStocks.length) {
       if (selectedTicker) {
         setSelectedTicker('');
@@ -715,24 +744,26 @@ export default function ResearchPage() {
     }
   }, [cache, researchStocks, selectedTicker]);
 
-  // Deep-link support: /research?ticker=XYZ (e.g. from the command palette).
-  // Select the requested ticker if it exists as a research-stage stock, then
-  // strip the query param so it doesn't override later manual selections.
+  // Deep-link support: /research?ticker=XYZ (from a stage move or the command palette).
+  // Honor it as soon as the name appears as a research-stage stock; give up only once a
+  // real fetch has confirmed it isn't here, so the fallback above can take over.
   useEffect(() => {
-    const requested = searchParams.get('ticker')?.toUpperCase();
-    const requestedTab = searchParams.get('tab');
-    if (!requested || appliedTickerParam.current === requested) return;
+    const requested = requestedTickerRef.current;
+    if (!requested) return;
     if (researchStocks.some(stock => stock.ticker === requested)) {
-      appliedTickerParam.current = requested;
+      requestedTickerRef.current = null;
       setSelectedTicker(requested);
       cache.set('deep_research_selectedTicker', requested);
+      const requestedTab = searchParams.get('tab');
       if (requestedTab && RESEARCH_TABS.includes(requestedTab)) {
         setActiveResearchTab(requestedTab);
         cache.set('deep_research_activeTab', requestedTab);
       }
-      router.replace('/research');
+      if (searchParams.get('ticker')) router.replace('/research');
+    } else if (fetchedOnce && researchStocks.length) {
+      requestedTickerRef.current = null;
     }
-  }, [searchParams, researchStocks, cache, router]);
+  }, [searchParams, researchStocks, fetchedOnce, cache, router]);
 
   useEffect(() => {
     if (!selectedTicker) return;
@@ -809,8 +840,9 @@ export default function ResearchPage() {
   // the research workspace and the rest of the thesis are preserved and reappear
   // here untouched if the name is ever promoted back into Research.
   const moveStage = useCallback(async (newStage) => {
-    if (!selectedStock || !allData) return;
+    if (!selectedStock || !allData || movingTo) return;
     const ticker = selectedStock.ticker;
+    setMovingTo(newStage);
     try {
       const { next } = await persistStageMove({
         watchlistData: allData,
@@ -821,10 +853,13 @@ export default function ResearchPage() {
       setAllData(next);
       writeWatchlistCache(cache, next);
       setToast({ message: `${ticker} moved to ${STAGE_LABELS[newStage]}`, type: 'success' });
+      // Follow the name to its new stage's tab so the pipeline reads as one flow.
+      router.push(routeForStage(newStage, ticker));
     } catch {
       setToast({ message: `Failed to move ${ticker}`, type: 'error' });
+      setMovingTo(null);
     }
-  }, [selectedStock, allData, cache]);
+  }, [selectedStock, allData, cache, router, movingTo]);
 
   // AI generation (company overview / thesis fundamentals) is not production-ready
   // yet, so the buttons are wired to this no-op warning instead of the real
@@ -1268,7 +1303,10 @@ export default function ResearchPage() {
         )}
       </div>
 
-      <Card className="mb-8 animate-fade-in-up stagger-2">
+      {/* relative z-50: the fade-in-up transform makes this Card its own stacking
+          context, which would otherwise trap the company dropdown's z-index and let
+          the content section below paint over the open option list. */}
+      <Card className="relative z-50 mb-8 animate-fade-in-up stagger-2">
         <div className="flex items-center gap-4">
           <label className="text-xs text-gray-500 uppercase tracking-wider font-bold">Select Company</label>
           <TickerSearchSelect items={researchStocks} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
@@ -1287,17 +1325,21 @@ export default function ResearchPage() {
             <div className="ml-auto flex items-center gap-2">
               <button
                 onClick={() => moveStage('draft')}
+                disabled={!!movingTo}
                 title="Demote back to Draft & Review"
-                className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg transition-colors"
+                className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <ArrowLeft size={13} /> Back to Draft &amp; Review
+                {movingTo === 'draft' ? <RefreshCw size={13} className="animate-spin" /> : <ArrowLeft size={13} />}
+                {movingTo === 'draft' ? 'Moving…' : 'Back to Draft & Review'}
               </button>
               <button
                 onClick={() => moveStage('position')}
+                disabled={!!movingTo}
                 title="Promote to Position Review"
-                className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-2 rounded-lg transition-colors"
+                className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Promote to Position Review <ChevronRight size={13} />
+                {movingTo === 'position' ? 'Moving…' : 'Promote to Position Review'}
+                {movingTo === 'position' ? <RefreshCw size={13} className="animate-spin" /> : <ChevronRight size={13} />}
               </button>
             </div>
           )}

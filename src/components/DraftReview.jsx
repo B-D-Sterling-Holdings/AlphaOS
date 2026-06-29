@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2, Clock, Star } from 'lucide-react';
+import { FileText, MessageCircle, Plus, Trash2, Check, X, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2, Clock, Star, Calculator } from 'lucide-react';
 import Card from '@/components/Card';
 import RichTextArea from '@/components/RichTextArea';
 import PersonSearchSelect from '@/components/PersonSearchSelect';
@@ -344,11 +344,14 @@ function Thread({ thread, index, ticker, autoFocus, collapsed, onToggleCollapsed
   );
 }
 
-export default function DraftReview({ ticker, paper, threads, author, reviewer, autoNotify, onPaperChange, onThreadsChange, onAuthorChange, onReviewerChange, onAutoNotifyChange, onNotify }) {
+export default function DraftReview({ ticker, paper, threads, author, reviewer, autoNotify, onPaperChange, onThreadsChange, onAuthorChange, onReviewerChange, onAutoNotifyChange, onNotify, valuationSlot }) {
   // null = both panels open; 'paper' = paper collapsed (review fills the row);
   // 'review' = review collapsed (paper fills the row). Collapse is an lg-only
   // affordance — on mobile both panels always stack full-width.
   const [collapsed, setCollapsed] = useState(null);
+  // Which view the left column shows: the written paper or the valuation model. The
+  // Review panel on the right is unaffected and keeps its own collapse/resize.
+  const [leftTab, setLeftTab] = useState('overview'); // 'overview' | 'valuation'
   const paperCollapsed = collapsed === 'paper';
   const reviewCollapsed = collapsed === 'review';
 
@@ -565,27 +568,43 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
           className="hidden lg:flex shrink-0 w-9 flex-col items-center gap-3 py-4 rounded-2xl border border-gray-200 bg-white text-gray-400 hover:text-emerald-600 hover:border-emerald-200 transition-colors"
         >
           <ChevronRight size={16} />
-          <span className="text-[11px] font-semibold [writing-mode:vertical-rl]">The Paper</span>
+          <span className="text-[11px] font-semibold [writing-mode:vertical-rl]">{leftTab === 'valuation' ? 'Valuation' : 'Overview'}</span>
         </button>
       ) : (
         <div className={`min-w-0 w-full lg:w-auto ${reviewCollapsed ? 'lg:flex-1' : 'lg:flex-[2_1_0%]'}`}>
           <Card>
-            <div className="flex items-center gap-2.5 mb-1">
-              <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-                <FileText size={15} />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-sm font-bold text-gray-900">Investment Overview</h2>
+            <div className="flex items-center gap-2 mb-1">
+              {/* Tabs — switch the left column between the written paper and the
+                  valuation model. Localized here; the Review panel is untouched. */}
+              <div className="flex items-center gap-1 bg-gray-100/80 rounded-xl p-1 min-w-0">
+                <button
+                  onClick={() => setLeftTab('overview')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                    leftTab === 'overview' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <FileText size={14} /> Investment Overview
+                </button>
+                <button
+                  onClick={() => setLeftTab('valuation')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                    leftTab === 'valuation' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <Calculator size={14} /> Valuation
+                </button>
               </div>
               <button
                 onClick={() => setCollapsed('paper')}
-                title="Collapse the paper"
+                title="Collapse this panel"
                 className="ml-auto hidden lg:flex shrink-0 p-1.5 rounded-lg text-gray-300 hover:text-gray-600 hover:bg-gray-50 transition-colors"
               >
                 <ChevronLeft size={16} />
               </button>
             </div>
-            <div className="mt-4">
+            {/* Both views stay mounted (hidden, not unmounted) so switching tabs never
+                drops in-progress edits or re-triggers their loads/auto-saves. */}
+            <div className={`mt-4 ${leftTab === 'overview' ? '' : 'hidden'}`}>
               <RichTextArea
                 value={paper}
                 onChange={(value) => onPaperChange(value)}
@@ -598,6 +617,9 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                 rows={22}
                 className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-[15px] leading-relaxed text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all resize-none overflow-hidden"
               />
+            </div>
+            <div className={`mt-4 ${leftTab === 'valuation' ? '' : 'hidden'}`}>
+              {valuationSlot}
             </div>
           </Card>
         </div>
