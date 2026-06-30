@@ -9,6 +9,18 @@ import { useAuth } from '@/lib/AuthContext';
 import {
   NAV_GROUPS, isGroupActive, isItemActive,
 } from '@/lib/navigation';
+import { isHrefAllowed } from '@/lib/features';
+
+// Drop nav items the user's account can't reach, then drop now-empty groups.
+// This only hides chrome — the real block is the middleware + route guard.
+function visibleGroups(disabledFeatures) {
+  return NAV_GROUPS
+    .map(group => ({
+      ...group,
+      items: group.items.filter(item => isHrefAllowed(item.href, disabledFeatures)),
+    }))
+    .filter(group => group.items.length > 0);
+}
 
 // Open the global command palette (handled by CommandPalette.jsx).
 function openCommandPalette() {
@@ -145,7 +157,7 @@ function SearchTrigger() {
 }
 
 // Full-screen drawer for narrow screens.
-function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin }) {
+function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin, groups }) {
   if (!open) return null;
   return (
     <div className="lg:hidden fixed inset-0 z-[10000]">
@@ -168,7 +180,7 @@ function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin }) {
           <Search size={15} /> Search pages & tickers…
         </button>
 
-        {NAV_GROUPS.map(group => (
+        {groups.map(group => (
           <div key={group.label} className="mb-4">
             <div className="px-1 pb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">
               {group.label}
@@ -222,7 +234,8 @@ function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin }) {
 
 export default function Navbar() {
   const pathname = usePathname();
-  const { logout, isDemo, isAdmin } = useAuth();
+  const { logout, isDemo, isAdmin, disabledFeatures } = useAuth();
+  const groups = visibleGroups(disabledFeatures);
   const [scrolled, setScrolled] = useState(false);
   const [openGroup, setOpenGroup] = useState(null); // only one dropdown open at a time
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -284,7 +297,7 @@ export default function Navbar() {
         {/* Desktop nav pill bar — menu options first, then search on the right */}
         <div className="hidden lg:flex items-center gap-1.5">
           <div className="flex items-center gap-0.5 p-1 rounded-2xl bg-gray-100/50 border border-white/60">
-            {NAV_GROUPS.map(group => (
+            {groups.map(group => (
               <NavDropdown
                 key={group.label}
                 group={group}
@@ -343,7 +356,7 @@ export default function Navbar() {
         </div>
       </div>
 
-      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} pathname={pathname} onLogout={handleLogout} isAdmin={isAdmin} />
+      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} pathname={pathname} onLogout={handleLogout} isAdmin={isAdmin} groups={groups} />
     </nav>
   );
 }

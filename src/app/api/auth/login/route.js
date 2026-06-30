@@ -7,6 +7,7 @@ import {
   DEMO_TENANT_ID,
 } from '@/lib/auth';
 import { findUserByUsername } from '@/lib/users';
+import { sanitizeFeatureKeys } from '@/lib/features';
 
 // Attach the session cookie to a JSON response.
 function withSession(body, token) {
@@ -48,9 +49,17 @@ export async function POST(request) {
         tenantId: user.tenant_id,
         role: user.role,
         isDemo: user.is_demo,
+        // Admins are never feature-restricted; for users this seeds the hard
+        // middleware gate so deep-links are blocked from the very first request.
+        disabledFeatures: user.role === 'admin' ? [] : sanitizeFeatureKeys(user.disabled_features),
       });
       return withSession(
-        { ok: true, role: user.role, accountType: user.is_demo ? 'demo' : 'prod' },
+        {
+          ok: true,
+          role: user.role,
+          accountType: user.is_demo ? 'demo' : 'prod',
+          disabledFeatures: user.role === 'admin' ? [] : sanitizeFeatureKeys(user.disabled_features),
+        },
         token
       );
     }

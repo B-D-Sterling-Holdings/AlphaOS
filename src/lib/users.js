@@ -1,6 +1,7 @@
 import 'server-only';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from './supabaseAdmin';
+import { sanitizeFeatureKeys } from './features';
 
 /*
   User + tenant management. Runs through the service-role client (BYPASSRLS)
@@ -13,17 +14,34 @@ export async function findUserByUsername(username) {
   if (!username) return null;
   const { data, error } = await supabaseAdmin
     .from('users')
-    .select('id, username, password_hash, role, tenant_id, is_demo, is_active')
+    .select('id, username, password_hash, role, tenant_id, is_demo, is_active, disabled_features')
     .ilike('username', username)
     .maybeSingle();
   if (error) throw new Error(error.message);
   return data || null;
 }
 
+/**
+ * The set of feature keys an admin has switched OFF for a user, looked up fresh
+ * (so changes apply without waiting for the user's session JWT to be reissued).
+ * Admins are never restricted. Unknown ids / bootstrap logins return [].
+ */
+export async function getDisabledFeaturesForUser(id) {
+  if (!id) return [];
+  const { data, error } = await supabaseAdmin
+    .from('users')
+    .select('role, disabled_features')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data || data.role === 'admin') return [];
+  return sanitizeFeatureKeys(data.disabled_features);
+}
+
 export async function listUsers() {
   const { data, error } = await supabaseAdmin
     .from('users')
-    .select('id, username, role, tenant_id, is_demo, is_active, created_at, tenants(name)')
+    .select('id, username, role, tenant_id, is_demo, is_active, disabled_features, created_at, tenants(name)')
     .order('created_at', { ascending: true });
   if (error) throw new Error(error.message);
   return (data || []).map((u) => ({
@@ -34,6 +52,7 @@ export async function listUsers() {
     tenantName: u.tenants?.name ?? null,
     isDemo: u.is_demo,
     isActive: u.is_active,
+    disabledFeatures: sanitizeFeatureKeys(u.disabled_features),
     createdAt: u.created_at,
   }));
 }
@@ -87,6 +106,21 @@ export async function setUserActive(id, isActive) {
     .update({ is_active: !!isActive, updated_at: new Date().toISOString() })
     .eq('id', id);
   if (error) throw new Error(error.message);
+}
+
+/**
+ * Replace the set of features switched OFF for a user. Unknown keys are dropped
+ * so a malformed payload can never persist garbage. Returns the stored list.
+ */
+export async function setUserFeatures(id, disabledFeatures) {
+  if (!id) throw new Error('id is required');
+  const clean = sanitizeFeatureKeys(disabledFeatures);
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({ disabled_features: clean, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw new Error(error.message);
+  return clean;
 }
 
 /** Insert the singleton config rows a fresh tenant needs (service role). */

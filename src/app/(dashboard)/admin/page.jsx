@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/AuthContext';
-import { UserPlus, ShieldCheck, Loader2, Users } from 'lucide-react';
+import { UserPlus, ShieldCheck, Loader2, Users, SlidersHorizontal, Lock, Check } from 'lucide-react';
+import { FEATURES } from '@/lib/features';
 
 export default function AdminPage() {
   const { isAdmin, loading: authLoading } = useAuth();
@@ -14,6 +15,46 @@ export default function AdminPage() {
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState('');
+
+  // Per-user feature-access editor: which user's panel is open, the in-progress
+  // set of DISABLED feature keys, and whether a save is in flight.
+  const [editingId, setEditingId] = useState(null);
+  const [draftDisabled, setDraftDisabled] = useState([]);
+  const [savingFeatures, setSavingFeatures] = useState(false);
+
+  function openAccessEditor(u) {
+    if (editingId === u.id) { setEditingId(null); return; }
+    setEditingId(u.id);
+    setDraftDisabled(u.disabledFeatures || []);
+  }
+
+  function toggleFeature(key) {
+    setDraftDisabled((cur) =>
+      cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]
+    );
+  }
+
+  async function saveFeatures(u) {
+    setSavingFeatures(true);
+    setError('');
+    setNotice('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: u.id, disabledFeatures: draftDisabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update access');
+      setNotice(`Updated feature access for "${u.username}".`);
+      setEditingId(null);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSavingFeatures(false);
+    }
+  }
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -150,18 +191,24 @@ export default function AdminPage() {
               <th className="px-5 py-3 font-semibold">Role</th>
               <th className="px-5 py-3 font-semibold">Workspace</th>
               <th className="px-5 py-3 font-semibold">Status</th>
+              <th className="px-5 py-3 font-semibold">Access</th>
               <th className="px-5 py-3 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} className="px-5 py-8 text-center text-gray-400">Loading…</td></tr>
+              <tr><td colSpan={6} className="px-5 py-8 text-center text-gray-400">Loading…</td></tr>
             ) : users.length === 0 ? (
-              <tr><td colSpan={5} className="px-5 py-8 text-center text-gray-400">
+              <tr><td colSpan={6} className="px-5 py-8 text-center text-gray-400">
                 No admin-created users yet. The CIO and demo logins are built-in and not listed here.
               </td></tr>
-            ) : users.map((u) => (
-              <tr key={u.id} className="border-b border-gray-50 last:border-0">
+            ) : users.map((u) => {
+              const isUser = u.role !== 'admin';
+              const enabledCount = FEATURES.length - (u.disabledFeatures?.length || 0);
+              const editing = editingId === u.id;
+              return (
+              <React.Fragment key={u.id}>
+              <tr className="border-b border-gray-50 last:border-0">
                 <td className="px-5 py-3 font-medium text-gray-800">{u.username}</td>
                 <td className="px-5 py-3">
                   <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${u.role === 'admin' ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-600'}`}>
@@ -174,6 +221,24 @@ export default function AdminPage() {
                     {u.isActive ? 'active' : 'disabled'}
                   </span>
                 </td>
+                <td className="px-5 py-3">
+                  {isUser ? (
+                    <button
+                      onClick={() => openAccessEditor(u)}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border transition-colors ${
+                        editing
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                          : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                      }`}
+                      title="Choose which features this user can access"
+                    >
+                      <SlidersHorizontal size={12} />
+                      {enabledCount}/{FEATURES.length} features
+                    </button>
+                  ) : (
+                    <span className="text-[11px] text-gray-400">Full access</span>
+                  )}
+                </td>
                 <td className="px-5 py-3 text-right">
                   <button
                     onClick={() => toggleActive(u)}
@@ -183,7 +248,61 @@ export default function AdminPage() {
                   </button>
                 </td>
               </tr>
-            ))}
+              {editing && (
+                <tr className="border-b border-gray-50 bg-gray-50/60">
+                  <td colSpan={6} className="px-5 py-4">
+                    <div className="flex items-center gap-2 mb-3 text-[12px] font-semibold text-gray-600">
+                      <Lock size={13} /> Feature access for {u.username}
+                      <span className="font-normal text-gray-400">— switch off the areas this user should not see.</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {FEATURES.map((f) => {
+                        const on = !draftDisabled.includes(f.key);
+                        return (
+                          <button
+                            key={f.key}
+                            type="button"
+                            onClick={() => toggleFeature(f.key)}
+                            className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-left transition-colors ${
+                              on
+                                ? 'border-emerald-200 bg-emerald-50/70 hover:bg-emerald-50'
+                                : 'border-gray-200 bg-white hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className={`mt-0.5 flex items-center justify-center w-4 h-4 rounded border shrink-0 ${
+                              on ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300 text-transparent'
+                            }`}>
+                              <Check size={12} strokeWidth={3} />
+                            </span>
+                            <span className="flex flex-col min-w-0">
+                              <span className={`text-[13px] font-semibold leading-tight ${on ? 'text-emerald-800' : 'text-gray-500'}`}>{f.label}</span>
+                              {f.note && <span className="text-[11px] leading-snug text-gray-400 mt-0.5">{f.note}</span>}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center gap-2 mt-3.5">
+                      <button
+                        onClick={() => saveFeatures(u)}
+                        disabled={savingFeatures}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50"
+                      >
+                        {savingFeatures ? <Loader2 className="animate-spin" size={13} /> : <Check size={13} />} Save access
+                      </button>
+                      <button
+                        onClick={() => setEditingId(null)}
+                        className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>

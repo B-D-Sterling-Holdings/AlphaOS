@@ -39,3 +39,5 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 | `004_tighten_storage_policies.sql` | Drop public INSERT/DELETE on storage buckets (keep public read). |
 | `005_multitenancy.sql` | Row-level multitenancy: `tenant_id` on every data table, RLS-enforced. |
 | `006_autonotify_sent.sql` | RPC for the auto-notify cron to write its dedup map without clobbering concurrent thesis edits. |
+| `007_lessons_learned.sql` | Lessons-learned tables. |
+| `008_feature_access.sql` | `users.disabled_features` — per-user feature suppression (admin "guard" toggles). |

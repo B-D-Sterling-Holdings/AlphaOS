@@ -23,9 +23,10 @@ function getSecret() {
  * @param {string} claims.tenantId  the data partition this session may touch
  * @param {string} [claims.role]    'admin' | 'user'
  * @param {boolean} [claims.isDemo]
+ * @param {string[]} [claims.disabledFeatures] feature keys switched off for this user
  */
-export async function createSession({ userId, username, tenantId, role = 'user', isDemo = false }) {
-  return new SignJWT({ userId, username, tenantId, role, isDemo })
+export async function createSession({ userId, username, tenantId, role = 'user', isDemo = false, disabledFeatures = [] }) {
+  return new SignJWT({ userId, username, tenantId, role, isDemo, disabledFeatures })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('7d')

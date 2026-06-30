@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { sanitizeFeatureKeys } from '@/lib/features';
 
 const AuthContext = createContext(null);
 
@@ -8,6 +9,10 @@ export function AuthProvider({ children }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [accountType, setAccountType] = useState('prod');
   const [role, setRole] = useState('user');
+  // Feature keys an admin has switched OFF for this user (empty = full access).
+  // This is the LIVE list (refreshed from /api/auth/me), used to hide nav items
+  // and block in-page rendering; the hard server gate lives in middleware.
+  const [disabledFeatures, setDisabledFeatures] = useState([]);
   const [loading, setLoading] = useState(true);
   // Flipped on when a gated API call comes back 401 — i.e. the session died after
   // we last checked (cookie expired, or the JWT secret was rotated under us). The
@@ -45,27 +50,41 @@ export function AuthProvider({ children }) {
     return () => { window.fetch = originalFetch; };
   }, []);
 
-  // On mount, check for an existing session cookie
-  useEffect(() => {
-    async function restoreSession() {
-      try {
-        const res = await fetch('/api/auth/me');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.authenticated) {
-            setAuthenticated(true);
-            setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
-            setRole(data.role === 'admin' ? 'admin' : 'user');
-          }
+  // Pull the current session + live feature-access list from the server.
+  const refreshSession = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/me');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.authenticated) {
+          setAuthenticated(true);
+          setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
+          setRole(data.role === 'admin' ? 'admin' : 'user');
+          setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
         }
-      } catch {
-        // No valid session — user will need to log in
-      } finally {
-        setLoading(false);
       }
+    } catch {
+      // No valid session — user will need to log in
     }
-    restoreSession();
   }, []);
+
+  // On mount, check for an existing session cookie.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await refreshSession();
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [refreshSession]);
+
+  // Re-check on tab focus so an admin's access change reaches an already-open
+  // session without a full reload.
+  useEffect(() => {
+    const onFocus = () => { if (authenticated) refreshSession(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [authenticated, refreshSession]);
 
   const login = useCallback(async (username, password) => {
     const res = await fetch('/api/auth/login', {
@@ -84,6 +103,7 @@ export function AuthProvider({ children }) {
     setSessionExpired(false);
     setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
     setRole(data.role === 'admin' ? 'admin' : 'user');
+    setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
     return true;
   }, []);
 
@@ -96,10 +116,14 @@ export function AuthProvider({ children }) {
     setAuthenticated(false);
     setAccountType('prod');
     setRole('user');
+    setDisabledFeatures([]);
   }, []);
 
+  // Admins are never feature-restricted, whatever the stored list says.
+  const effectiveDisabled = role === 'admin' ? [] : disabledFeatures;
+
   return (
-    <AuthContext.Provider value={{ authenticated, accountType, isDemo: accountType === 'demo', role, isAdmin: role === 'admin', loading, sessionExpired, login, logout }}>
+    <AuthContext.Provider value={{ authenticated, accountType, isDemo: accountType === 'demo', role, isAdmin: role === 'admin', disabledFeatures: effectiveDisabled, refreshSession, loading, sessionExpired, login, logout }}>
       {children}
     </AuthContext.Provider>
   );
