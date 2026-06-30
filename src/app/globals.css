@@ -245,26 +245,29 @@ body {
   container-name: valmodel;
 }
 /* Compact tier (default) */
-.vm-tile { font-size: 0.8125rem; }   /* assumption tile values */
-.vm-ticker { font-size: 0.95rem; }   /* the big ticker readout */
+.vm-tile { font-size: 1rem; }        /* assumption values */
+.vm-ticker { font-size: 1.125rem; }  /* the big ticker readout */
+.vm-label { font-size: 0.9375rem; }  /* assumption row labels (Ticker, etc.) */
 .vm-num { font-size: 0.8125rem; }    /* table cells, row labels, per-share rows */
-.vm-tile-pad { padding-top: 0.5rem; padding-bottom: 0.5rem; }
 .vm-cell-pad { padding-top: 0.375rem; padding-bottom: 0.375rem; }
 /* Roomy tier — once the model owns the full width */
 @container valmodel (min-width: 820px) {
-  .vm-tile { font-size: 1.0625rem; }
-  .vm-ticker { font-size: 1.25rem; }
+  .vm-tile { font-size: 1.25rem; }
+  .vm-ticker { font-size: 1.375rem; }
+  .vm-label { font-size: 1.125rem; }
   .vm-num { font-size: 0.9375rem; }
-  .vm-tile-pad { padding-top: 0.625rem; padding-bottom: 0.625rem; }
   .vm-cell-pad { padding-top: 0.5rem; padding-bottom: 0.5rem; }
 }
-/* Assumption tiles size to their content and sit left-aligned (their groups are
-   flex-wrap), not stretched across the row — a short label + number shouldn't sit
-   in a giant half-empty box. A min-width keeps the smallest ones tidy; the box then
-   grows to fit a longer label or a wider value (e.g. the ticker), so nothing is
-   cramped. The floor tracks the two text tiers so proportions hold. */
-.vm-tile-w { width: fit-content; min-width: 7rem; max-width: 100%; flex: none; }
-@container valmodel (min-width: 820px) {
-  .vm-tile-w { min-width: 8rem; }
+/* The assumption groups (Setup / Growth / Shareholder Returns) lay out as 1, 2, or 3
+   columns depending on the model's own width — not the viewport — so an embedded
+   half-width panel and a full-width standalone page both read well. Each group is a
+   self-sizing card; columns align to the top so a tall Growth list doesn't drag the
+   short cards down. */
+.vm-assume { columns: 1; column-gap: 0.75rem; }
+@container valmodel (min-width: 520px) {
+  .vm-assume { columns: 2; }
 }
+/* Keep each card whole within a column and space them vertically — a multi-column
+   flow packs cards of different heights with no mid-column gaps. */
+.vm-assume > * { break-inside: avoid; margin-bottom: 0.75rem; }
 

@@ -54,13 +54,13 @@ export const DEFAULT_VALUATION_INPUTS = {
 // Expense to a target, turn that on explicitly in the margin row's settings.
 export function makeDefaultRows() {
   return [
-    { id: 'revenue', name: 'Revenue (bil)', type: 'line', sign: 1, method: 'growth', base: '', rate: '', role: 'revenue', format: 'money', dec: 3, bold: true },
+    { id: 'revenue', name: 'Revenue', type: 'line', sign: 1, method: 'growth', base: '', rate: '', role: 'revenue', format: 'money', dec: 3, bold: true },
     { id: 'opex', name: 'Operating Expense', type: 'line', sign: -1, method: 'growth', base: '', rate: '', format: 'money', dec: 3 },
-    { id: 'opinc', name: 'Operating Income (bil)', type: 'subtotal', role: 'opIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
+    { id: 'opinc', name: 'Operating Income', type: 'subtotal', role: 'opIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
     { id: 'opmargin', name: 'Operating Margin', type: 'margin', refId: 'opinc', format: 'pct', dec: 2 },
     { id: 'nonop', name: 'Non-operating Income', type: 'line', sign: 1, method: 'manual', values: ['', '', '', '', '', ''], format: 'money', dec: 3 },
     { id: 'tax', name: 'Tax Expense', type: 'line', sign: -1, method: 'tax', role: 'tax', base: '', refId: 'opinc', format: 'money', dec: 3 },
-    { id: 'netinc', name: 'Net Income (bil)', type: 'subtotal', role: 'netIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
+    { id: 'netinc', name: 'Net Income', type: 'subtotal', role: 'netIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
   ];
 }
 
@@ -77,6 +77,13 @@ export function migrateInputs(inputs) {
   if (Array.isArray(inputs.rows)) {
     let changed = false;
     const rows = inputs.rows.map(r => ({ ...r }));
+    // Drop the "(bil)" unit hint that older templates baked into row names.
+    for (const r of rows) {
+      if (typeof r.name === 'string' && /\s*\(bil\)\s*$/i.test(r.name)) {
+        r.name = r.name.replace(/\s*\(bil\)\s*$/i, '');
+        changed = true;
+      }
+    }
     // Legacy: a margin-mode subtotal that held the target → move it onto its plug line.
     for (const r of rows) {
       if (r.type === 'subtotal' && r.mode === 'margin') {

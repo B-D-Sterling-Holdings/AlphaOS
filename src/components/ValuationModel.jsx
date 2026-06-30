@@ -1,7 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useImperativeHandle, useRef, forwardRef } from 'react';
-import { RefreshCw, Save, CheckCircle, Plus, Trash2, Settings2, ArrowUp, ArrowDown, Copy, TrendingUp, Percent, PencilLine, Sigma, Divide, Link2, RotateCcw, Building2, Coins } from 'lucide-react';
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useImperativeHandle, useRef, forwardRef } from 'react';
+
+// useLayoutEffect on the client, useEffect on the server — lets us measure & flip the
+// popover before paint without React's SSR "useLayoutEffect does nothing" warning.
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+import { RefreshCw, Save, CheckCircle, Plus, Trash2, Settings2, ArrowUp, ArrowDown, Copy, TrendingUp, Percent, PencilLine, Sigma, Divide, Link2, RotateCcw, Building2, X, Check } from 'lucide-react';
 import {
   DEFAULT_VALUATION_INPUTS,
   computeValuationModel,
@@ -97,10 +101,10 @@ function InputCell({ value, onChange, onBlur, pct = false, dollar = false, suffi
           placeholder={placeholder}
           onBlur={handleBlur}
           style={{ width: `${chars}ch` }}
-          className={`max-w-full bg-transparent border-0 p-0 text-left transition-all ${inputBase} ${className}`}
+          className={`max-w-full bg-transparent border-0 p-0 text-right transition-all ${inputBase} ${className}`}
         />
-        {pct && <span className={`${affix} ml-px`}>%</span>}
-        {!pct && suffix && <span className={`${affix} ml-0.5`}>{suffix}</span>}
+        {pct && <span className={`${affix} ml-1`}>%</span>}
+        {!pct && suffix && <span className={`${affix} ml-1`}>{suffix}</span>}
       </div>
     );
   }
@@ -138,31 +142,43 @@ function CalcCell({ value, format = 'number', decimals = 2, bold = false }) {
   );
 }
 
-// One labelled assumption in the top grid. Editable tiles get a soft blue field look
-// that lifts on focus; derived/read-only tiles are plain so it's obvious which is which.
-function AssumptionTile({ label, children, editable = false, accent, icon: Icon }) {
-  const tone = editable
-    ? 'bg-sky-50/50 border-sky-200/70 focus-within:border-sky-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-sky-100'
-    : accent === 'emerald'
-      ? 'bg-emerald-50/60 border-emerald-200/60'
-      : 'bg-white border-gray-200/80';
+// A group of assumptions as a clean, self-contained card: a small uppercase heading
+// over a list of label→value rows separated by hairlines. Sits flush in the
+// responsive .vm-assume grid and hugs its own content height.
+function GroupCard({ icon: Icon, title, children }) {
   return (
-    <div className={`vm-tile-w rounded-xl border px-3 vm-tile-pad transition-all ${tone}`}>
-      <div className="flex items-center gap-1 mb-1 min-w-0">
-        {Icon && <Icon size={10} className="text-sky-400 shrink-0" />}
-        <span className="text-[9.5px] font-bold uppercase tracking-wider text-gray-400 truncate" title={typeof label === 'string' ? label : undefined}>{label}</span>
-      </div>
-      {children}
+    <section className="rounded-2xl bg-white border border-gray-100 shadow-sm px-3.5">
+      <header className="flex items-center gap-1.5 pt-2.5 pb-1.5 border-b border-gray-100">
+        {Icon && <Icon size={11} className="text-gray-400" />}
+        <span className="text-[9.5px] font-bold uppercase tracking-widest text-gray-400">{title}</span>
+      </header>
+      <div className="divide-y divide-gray-100">{children}</div>
+    </section>
+  );
+}
+
+// One label→value line. The label sits muted on the left; the value (editable field
+// or derived figure) is pushed to the right by justify-between, reading as a clean
+// right-aligned figure without needing a box around it.
+function FieldRow({ label, icon: Icon, children }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-[7px]">
+      <span className="flex items-center gap-1.5 min-w-0 vm-label font-medium text-gray-600">
+        {Icon && <Icon size={12} className="text-sky-400 shrink-0" />}
+        <span className="truncate" title={typeof label === 'string' ? label : undefined}>{label}</span>
+      </span>
+      <div className="shrink-0">{children}</div>
     </div>
   );
 }
 
-// A small section heading for a group of assumptions.
-function GroupLabel({ icon: Icon, children, className = '' }) {
+// Wraps an editable value so it reads as tappable — a faint sky tint on hover, and a
+// white field with a sky ring on focus (the same "blue = editable" language as the
+// table cells), without the heavy always-on box.
+function EditValue({ children }) {
   return (
-    <div className={`flex items-center gap-1.5 mb-2 ${className}`}>
-      {Icon && <Icon size={12} className="text-gray-400" />}
-      <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">{children}</span>
+    <div className="rounded-md -mr-1.5 px-1.5 py-0.5 cursor-text hover:bg-sky-50 focus-within:bg-white focus-within:ring-1 focus-within:ring-sky-300 transition-colors">
+      {children}
     </div>
   );
 }
@@ -204,24 +220,67 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
   const [menu, setMenu] = useState(null);
   const [insertPos, setInsertPos] = useState('below');
   const triggerRef = useRef(null);
+  const popoverRef = useRef(null);
+
+  // ── Scenarios (tabs) ─────────────────────────────────────────────────────────
+  // Each tab is an independent valuation (bull / bear / base …). The ACTIVE tab's
+  // model lives in `inputs` (so every existing edit path is unchanged); the other
+  // tabs' data sit in `stashRef` until selected. On save the active scenario is
+  // written flat at the top level (backward compatible — other readers still see a
+  // normal model) plus a `__scenarios` list the engine ignores. See save/buildPayload.
+  const [tabs, setTabs] = useState([]);           // [{ id, name }]
+  const [activeId, setActiveId] = useState(null);
+  const stashRef = useRef({});                     // id -> inputs for inactive tabs
+  const [editingTabId, setEditingTabId] = useState(null);
+  const [editingTabName, setEditingTabName] = useState('');
+  const [confirmDeleteTabId, setConfirmDeleteTabId] = useState(null);
+  const deepCopy = (x) => JSON.parse(JSON.stringify(x));
 
   useEffect(() => {
     if (!ticker) return;
     setLoading(true);
     setDirty(false);
     setMenu(null);
+    setEditingTabId(null);
+    setConfirmDeleteTabId(null);
+    // Normalise one scenario's stored data into a ready-to-edit model.
+    const prep = (d) => {
+      const { __scenarios, __activeId, ...rest } = d || {};
+      return { ...DEFAULT_VALUATION_INPUTS, ...migrateInputs(rest), ticker, ...(livePrice ? { sharePrice: livePrice } : {}) };
+    };
+    const seedFresh = () => {
+      const id = uid();
+      stashRef.current = {};
+      setTabs([{ id, name: 'Base case' }]);
+      setActiveId(id);
+      setInputs({ ...makeDefaultInputs(ticker), sharePrice: livePrice || '' });
+    };
     fetch(`/api/model/${ticker}`)
       .then(r => r.json())
       .then(result => {
-        if (result.exists && result.inputs) {
-          const migrated = migrateInputs(result.inputs);
-          setInputs({ ...DEFAULT_VALUATION_INPUTS, ...migrated, ticker, ...(livePrice ? { sharePrice: livePrice } : {}) });
+        if (!result.exists || !result.inputs) { seedFresh(); return; }
+        const raw = result.inputs;
+        const list = Array.isArray(raw.__scenarios) ? raw.__scenarios.filter(s => s && s.id && s.data) : null;
+        if (list && list.length) {
+          const aId = raw.__activeId && list.some(s => s.id === raw.__activeId) ? raw.__activeId : list[0].id;
+          const stash = {};
+          for (const s of list) if (s.id !== aId) stash[s.id] = prep(s.data);
+          stashRef.current = stash;
+          setTabs(list.map(s => ({ id: s.id, name: s.name || 'Scenario' })));
+          setActiveId(aId);
+          setInputs(prep(list.find(s => s.id === aId).data));
         } else {
-          setInputs({ ...makeDefaultInputs(ticker), sharePrice: livePrice || '' });
+          // Legacy single model → wrap it as the one and only tab.
+          const id = uid();
+          stashRef.current = {};
+          setTabs([{ id, name: 'Base case' }]);
+          setActiveId(id);
+          setInputs(prep(raw));
         }
       })
-      .catch(() => setInputs({ ...makeDefaultInputs(ticker), sharePrice: livePrice || '' }))
+      .catch(() => seedFresh())
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker]);
 
   // Always keep the model's share price on the live market price for THIS ticker. The
@@ -235,6 +294,9 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
       const n = Number(price);
       if (cancelled || !Number.isFinite(n) || n <= 0) return;
       setInputs(prev => prev ? { ...prev, sharePrice: n } : prev);
+      // Share price is ticker-level — keep every scenario (not just the active one) on it.
+      const stash = stashRef.current;
+      for (const k of Object.keys(stash)) if (stash[k]) stash[k] = { ...stash[k], sharePrice: n };
     };
     if (livePrice) apply(livePrice);
     fetch(`/api/quotes?tickers=${ticker}`)
@@ -316,38 +378,92 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
     setDirty(true);
   }, []);
 
-  const save = useCallback(async () => {
-    if (!ticker || !inputs || !dirty) return;
+  // The single POST path. Wraps the model for storage: the given active scenario flat
+  // at the top (so other readers see a normal model) plus the full scenario list under
+  // `__scenarios`. Takes the tab set + active id explicitly so callers that have just
+  // changed them (e.g. delete) can persist the post-change state without waiting for a
+  // state flush — the upsert overwrites `inputs` wholesale, so a removed tab is gone.
+  const persist = useCallback(async (activeData, tabsList, activeIdVal) => {
+    if (!ticker || !activeData) return;
+    const list = tabsList
+      .map(t => ({ id: t.id, name: t.name, data: t.id === activeIdVal ? activeData : stashRef.current[t.id] }))
+      .filter(s => s.data);
     setSaving(true);
     try {
       const res = await fetch(`/api/model/${ticker}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inputs }),
+        body: JSON.stringify({ inputs: { ...activeData, __scenarios: list, __activeId: activeIdVal } }),
       });
       const result = await res.json();
       if (result.success) setDirty(false);
     } catch {} finally { setSaving(false); }
-  }, [ticker, inputs, dirty]);
+  }, [ticker]);
 
-  // Blow away this ticker's model and rebuild it from the default template, persisting
-  // immediately so the reset survives a reload.
+  const save = useCallback(async () => {
+    if (!inputs || !dirty) return;
+    await persist(inputs, tabs, activeId);
+  }, [inputs, dirty, tabs, activeId, persist]);
+
+  // Reset just the ACTIVE scenario to the default template (other tabs are untouched),
+  // persisting immediately so it survives a reload.
   const resetToDefault = useCallback(async () => {
     if (!ticker) return;
     const fresh = { ...makeDefaultInputs(ticker), sharePrice: livePrice || inputs?.sharePrice || '' };
     setInputs(fresh);
     setConfirmReset(false);
     setMenu(null);
-    setSaving(true);
-    try {
-      await fetch(`/api/model/${ticker}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inputs: fresh }),
-      });
-      setDirty(false);
-    } catch {} finally { setSaving(false); }
-  }, [ticker, livePrice, inputs]);
+    await persist(fresh, tabs, activeId);
+  }, [ticker, livePrice, inputs, tabs, activeId, persist]);
+
+  // ── Tab actions ──────────────────────────────────────────────────────────────
+  const selectTab = useCallback((id) => {
+    if (id === activeId) return;
+    if (activeId) stashRef.current[activeId] = inputs; // park the current scenario
+    const target = stashRef.current[id];
+    if (target) { delete stashRef.current[id]; setInputs(target); }
+    setActiveId(id);
+    setMenu(null);
+    setEditingTabId(null);
+  }, [activeId, inputs]);
+
+  // The "+" duplicates the scenario you're on into a new tab and switches to it.
+  const addTab = useCallback(() => {
+    if (!inputs) return;
+    if (activeId) stashRef.current[activeId] = inputs;
+    const id = uid();
+    setTabs(prev => [...prev, { id, name: `Scenario ${prev.length + 1}` }]);
+    setActiveId(id);
+    setInputs(deepCopy(inputs));
+    setDirty(true);
+    setMenu(null);
+  }, [inputs, activeId]);
+
+  const renameTab = useCallback((id, name) => {
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, name: name || 'Scenario' } : t));
+    setDirty(true);
+  }, []);
+
+  const deleteTab = useCallback((id) => {
+    if (tabs.length <= 1) return; // never remove the last scenario
+    const idx = tabs.findIndex(t => t.id === id);
+    const remaining = tabs.filter(t => t.id !== id);
+    let nextActiveId = activeId;
+    let nextActiveData = inputs;
+    if (id === activeId) {
+      const neighbor = remaining[Math.max(0, idx - 1)] || remaining[0];
+      nextActiveId = neighbor.id;
+      nextActiveData = stashRef.current[neighbor.id] || inputs;
+      delete stashRef.current[neighbor.id]; // it becomes the active scenario
+      setInputs(nextActiveData);
+      setActiveId(nextActiveId);
+    }
+    delete stashRef.current[id];
+    setTabs(remaining);
+    setConfirmDeleteTabId(null);
+    // Persist the deletion straight away so it's gone from Supabase, not just locally.
+    persist(nextActiveData, remaining, nextActiveId);
+  }, [tabs, activeId, inputs, persist]);
 
   const model = useMemo(() => {
     if (!inputs) return null;
@@ -361,8 +477,25 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
   const placeFor = (el) => {
     const r = el.getBoundingClientRect();
     const width = 268;
-    const x = Math.max(12, Math.min(r.right - width, (typeof window !== 'undefined' ? window.innerWidth : 1200) - width - 12));
-    return { x, y: r.bottom + 6 };
+    const margin = 12;
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const x = Math.max(margin, Math.min(r.right - width, vw - width - margin));
+    // Prefer opening downward from the button; if the popover would run off the
+    // bottom and there's more room above, flip it upward (like a context menu). The
+    // height is known once it has rendered — until then we drop below and the layout
+    // effect re-places it with the measured height.
+    const h = popoverRef.current?.offsetHeight || 0;
+    const spaceBelow = vh - r.bottom - margin;
+    const spaceAbove = r.top - margin;
+    let y;
+    if (h && h > spaceBelow && spaceAbove > spaceBelow) {
+      y = Math.max(margin, r.top - 6 - h); // flip above
+    } else {
+      y = r.bottom + 6;
+      if (h) y = Math.min(y, Math.max(margin, vh - margin - h)); // keep on-screen
+    }
+    return { x, y };
   };
 
   const openMenu = (kind, rowId, e) => {
@@ -387,12 +520,30 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
     };
     window.addEventListener('scroll', reposition, true);
     window.addEventListener('resize', reposition);
+    // Re-place when the popover itself grows/shrinks (e.g. expanding margin config),
+    // so it can flip up if it would now overflow the bottom.
+    let ro;
+    if (typeof ResizeObserver !== 'undefined' && popoverRef.current) {
+      ro = new ResizeObserver(reposition);
+      ro.observe(popoverRef.current);
+    }
     return () => {
       window.removeEventListener('scroll', reposition, true);
       window.removeEventListener('resize', reposition);
+      ro?.disconnect();
       cancelAnimationFrame(raf);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menu?.rowId, menu?.kind]);
+
+  // Once the popover has rendered we know its real height — re-run placement so it can
+  // flip upward if opening below would overflow the bottom of the screen.
+  useIsomorphicLayoutEffect(() => {
+    if (!menu) return;
+    const btn = triggerRef.current;
+    if (!btn || !btn.isConnected) return;
+    const next = placeFor(btn);
+    setMenu(prev => (prev && (prev.x !== next.x || prev.y !== next.y) ? { ...prev, ...next } : prev));
   }, [menu?.rowId, menu?.kind]);
 
   if (loading || !inputs || !model) {
@@ -403,14 +554,14 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
   const computedById = Object.fromEntries(model.rows.map(r => [r.id, r]));
   const protectedRow = (row) => row.role === 'revenue' || row.role === 'netIncome';
 
-  // Coupling: which lines are actively back-solved by a margin row. lineId → the
-  // margin row. A driver only counts once it has a real target (matches the engine) —
-  // a margin with a driver picked but no target yet leaves the line free to be edited
-  // and projected (e.g. as a CAGR line) like any other.
-  const hasVal = (v) => v !== '' && v !== undefined && v !== null && Number.isFinite(Number(v));
+  // Coupling: which lines are held to a target by a margin row. lineId → the margin
+  // row. This keys purely off the link (driverId), the same condition the top target
+  // tile and the link icon use, so linking/unlinking flips all three together — the
+  // line leaves the Growth list, shows the link, and the margin's target appears up
+  // top to be filled in (the engine starts solving once that target has a value).
   const drivenBy = {};
   for (const r of inputs.rows) {
-    if (r.type === 'margin' && r.driverId && hasVal(r.target)) drivenBy[r.driverId] = r;
+    if (r.type === 'margin' && r.driverId) drivenBy[r.driverId] = r;
   }
 
   // Growth-rate (CAGR) lines surface their rate up in the assumptions area — but a line
@@ -452,7 +603,7 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
   };
 
   const tailRows = [
-    { label: 'Outstanding Shares (bil)', kind: 'sharesBase', dec: 4, suffix: 'B' },
+    { label: 'Outstanding Shares', kind: 'sharesBase', dec: 4, suffix: 'B' },
     { label: 'Earnings per Share', data: model.eps, format: 'money', dec: 2, bold: true, highlight: 'violet' },
     { label: 'Share Price (at Tgt P/E)', data: model.priceArr, format: 'money', dec: 2, bold: true, highlight: 'sky' },
     { label: 'Extra Shares w/ Div Reinvested', data: model.divShares, format: 'number', dec: 4 },
@@ -594,13 +745,11 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
                     {driverLineOptions.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                   </select>
                 </Field>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <Field label="Target % (yr 5)"><InputCell value={row.target} onChange={v => u({ target: v })} pct /></Field>
-                  <Field label="From today"><Segmented size="sm" value={row.ramp === false ? 'flat' : 'ramp'} onChange={(v) => u({ ramp: v === 'ramp' })} options={[{ value: 'ramp', label: 'Ramp' }, { value: 'flat', label: 'Flat' }]} /></Field>
-                </div>
+                {/* Target % is set up top in Growth Assumptions; only the ramp shape lives here. */}
+                <Field label="From today"><Segmented size="sm" value={row.ramp === false ? 'flat' : 'ramp'} onChange={(v) => u({ ramp: v === 'ramp' })} options={[{ value: 'ramp', label: 'Ramp' }, { value: 'flat', label: 'Flat' }]} /></Field>
                 <div className="flex items-start gap-2 rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-2">
                   <Link2 size={14} className="text-sky-500 mt-0.5 shrink-0" />
-                  <p className="text-[11px] text-sky-700 leading-snug">The chosen expense is solved each year so this margin ramps to the target. Set its year-0 value in the table.</p>
+                  <p className="text-[11px] text-sky-700 leading-snug">The chosen expense is solved each year so this margin ramps to the target. Set the target up top under Growth Assumptions.</p>
                 </div>
               </>
             )}
@@ -645,11 +794,6 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
   // Review) keeps its own card and full-bleed section bands.
   const px = embedded ? 'px-0' : 'px-6';
   const band = embedded ? '' : 'bg-gray-50/30';
-  // Tiles are left-aligned and content-sized (fixed width via vm-tile-w), wrapping
-  // to the next line as needed — so a row of 2-3 short stats reads as tidy chips
-  // instead of a few boxes stretched fat across the whole width.
-  const grid3 = 'flex flex-wrap gap-2.5';
-  const gridGrowth = 'flex flex-wrap gap-2.5';
   // Numbers scale off the whole model's width (one query container on the root, see
   // .vm-scale in globals.css): both the assumption tiles and the income-statement
   // table jump between a compact and a roomy size together, so a half-width panel and
@@ -664,6 +808,65 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
           container-type makes an element a containing block for fixed descendants,
           which would otherwise re-anchor the popover off its viewport coordinates. */}
       <div className="vm-scale">
+      {/* ── Scenario tabs ── one valuation per tab (bull / bear / base …); the "+"
+          duplicates the current scenario. Double-click a tab to rename it. */}
+      <div className={`flex items-center gap-0.5 overflow-x-auto ${embedded ? 'mb-3' : 'px-4 pt-3'}`}>
+        {tabs.map(t => {
+          const isActive = t.id === activeId;
+          if (editingTabId === t.id) {
+            return (
+              <input
+                key={t.id}
+                autoFocus
+                value={editingTabName}
+                onChange={e => setEditingTabName(e.target.value)}
+                onBlur={() => { renameTab(t.id, editingTabName.trim()); setEditingTabId(null); }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { renameTab(t.id, editingTabName.trim()); setEditingTabId(null); }
+                  if (e.key === 'Escape') setEditingTabId(null);
+                }}
+                className="shrink-0 px-2.5 py-1.5 text-xs font-semibold bg-white rounded-lg outline-none ring-2 ring-emerald-500 min-w-[80px] max-w-[160px]"
+              />
+            );
+          }
+          return (
+            <button
+              key={t.id}
+              onClick={() => selectTab(t.id)}
+              onDoubleClick={() => { setEditingTabId(t.id); setEditingTabName(t.name); setConfirmDeleteTabId(null); }}
+              title="Double-click to rename"
+              className={`group/vtab shrink-0 flex items-center gap-1.5 pl-3 ${tabs.length > 1 ? 'pr-1.5' : 'pr-3'} py-1.5 text-xs font-semibold rounded-lg transition-all whitespace-nowrap ${
+                isActive ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200/70' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100/70'
+              }`}
+            >
+              <span className="max-w-[160px] truncate">{t.name}</span>
+              {tabs.length > 1 && (confirmDeleteTabId === t.id ? (
+                <span className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+                  <span role="button" title="Delete scenario" onClick={(e) => { e.stopPropagation(); deleteTab(t.id); }} className="p-0.5 rounded text-rose-500 hover:bg-rose-100"><Check size={11} strokeWidth={3} /></span>
+                  <span role="button" title="Cancel" onClick={(e) => { e.stopPropagation(); setConfirmDeleteTabId(null); }} className="p-0.5 rounded text-gray-400 hover:bg-gray-100"><X size={11} strokeWidth={3} /></span>
+                </span>
+              ) : (
+                <span
+                  role="button"
+                  title="Delete scenario"
+                  onClick={(e) => { e.stopPropagation(); setConfirmDeleteTabId(t.id); }}
+                  className={`p-0.5 rounded transition-all hover:bg-rose-100 hover:text-rose-500 ${isActive ? 'text-gray-400' : 'text-gray-300'}`}
+                >
+                  <X size={10} />
+                </span>
+              ))}
+            </button>
+          );
+        })}
+        <button
+          onClick={addTab}
+          title="Duplicate this scenario into a new tab"
+          className="shrink-0 p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-gray-100/70 rounded-lg transition-colors"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+
       {/* Header */}
       <div className={`flex items-center justify-between gap-3 border-b border-gray-100 ${embedded ? 'pb-3 mb-4' : 'px-6 py-4'}`}>
         <div className="min-w-0">
@@ -709,67 +912,57 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
         </div>
       </div>
 
-      {/* ── Assumptions ── grouped by what they do: Setup, Growth (rates + target
-          margins) with the valuation knobs beside them, and Shareholder Returns. */}
-      <div className={`${px} ${embedded ? 'py-4' : 'py-5'} ${band} ${embedded ? 'rounded-xl bg-gray-50/60 !px-4' : 'border-b border-gray-100'} space-y-4`}>
-        {/* Setup */}
-        <div>
-          <GroupLabel icon={Building2}>Setup</GroupLabel>
-          <div className={grid3}>
-            <AssumptionTile label="Ticker">
-              <div className={`${tickerNum} font-extrabold text-gray-900 tracking-wide leading-6 truncate`}>{ticker || '—'}</div>
-            </AssumptionTile>
-            <AssumptionTile label="Share Price" editable>
-              <InputCell value={inputs.sharePrice} onChange={v => update('sharePrice', v)} placeholder="0.00" dollar bare textSize={tileNum} />
-            </AssumptionTile>
-            <AssumptionTile label="Base Year" editable>
-              <InputCell value={inputs.baseYear} onChange={v => update('baseYear', v)} className="text-left" bare textSize={tileNum} />
-            </AssumptionTile>
-          </div>
-        </div>
+      {/* ── Assumptions ── three clean cards (Setup, Growth, Shareholder Returns) that
+          flow into 1/2/3 columns with the panel width. Each is a list of label→value
+          rows; editable values lift on hover/focus. */}
+      <div className={`${px} ${embedded ? 'py-4' : 'py-5'} ${band} ${embedded ? 'rounded-2xl bg-gray-50/50 !px-3' : 'border-b border-gray-100'}`}>
+        <div className="vm-assume">
+          {/* Setup & Returns — the company knobs (ticker, price, base year) and the
+              shareholder-return assumptions (dilution, dividend) in one card. */}
+          <GroupCard icon={Building2} title="Setup & Returns">
+            <FieldRow label="Ticker">
+              <span className={`${tickerNum} font-extrabold text-gray-900 tracking-wide`}>{ticker || '—'}</span>
+            </FieldRow>
+            <FieldRow label="Share Price">
+              <EditValue><InputCell value={inputs.sharePrice} onChange={v => update('sharePrice', v)} placeholder="0.00" dollar bare textSize={tileNum} /></EditValue>
+            </FieldRow>
+            <FieldRow label="Base Year">
+              <EditValue><InputCell value={inputs.baseYear} onChange={v => update('baseYear', v)} bare textSize={tileNum} /></EditValue>
+            </FieldRow>
+            <FieldRow label="Net Dilution">
+              <EditValue><InputCell value={inputs.netShareDilution} onChange={v => update('netShareDilution', v)} pct bare textSize={tileNum} /></EditValue>
+            </FieldRow>
+            <FieldRow label="Dividend Growth">
+              <EditValue><InputCell value={inputs.dividendGrowth} onChange={v => update('dividendGrowth', v)} pct bare textSize={tileNum} /></EditValue>
+            </FieldRow>
+            <FieldRow label="Current Dividend">
+              <EditValue><InputCell value={inputs.currentDividend} onChange={v => update('currentDividend', v)} dollar bare textSize={tileNum} /></EditValue>
+            </FieldRow>
+          </GroupCard>
 
-        {/* Growth assumptions — everything flows in one auto-fitting grid: the user's
-            growth rates and target margins first, then the derived EPS growth, the tax
-            rate and the target P/E, so the row fills the full width with no dead space. */}
-        <div className="border-t border-dashed border-gray-200 pt-4">
-          <GroupLabel icon={TrendingUp}>Growth Assumptions</GroupLabel>
-          <div className={gridGrowth}>
+          {/* Growth — user-set rates & target margins first, then the derived EPS
+              growth and the valuation knobs (tax, target P/E) in the same list. */}
+          <GroupCard icon={TrendingUp} title="Growth Assumptions">
             {growthRows.map(r => (
-              <AssumptionTile key={r.id} label={r.name || 'Line'} editable>
-                <InputCell value={r.rate} onChange={v => updateRow(r.id, { rate: v })} pct bare textSize={tileNum} />
-              </AssumptionTile>
+              <FieldRow key={r.id} label={r.name || 'Line'}>
+                <EditValue><InputCell value={r.rate} onChange={v => updateRow(r.id, { rate: v })} pct bare textSize={tileNum} /></EditValue>
+              </FieldRow>
             ))}
             {targetMarginRows.map(r => (
-              <AssumptionTile key={r.id} label={r.name || 'Margin'} editable icon={Link2}>
-                <InputCell value={r.target} onChange={v => updateRow(r.id, { target: v })} pct bare textSize={tileNum} />
-              </AssumptionTile>
+              <FieldRow key={r.id} label={r.name || 'Margin'} icon={Link2}>
+                <EditValue><InputCell value={r.target} onChange={v => updateRow(r.id, { target: v })} pct bare textSize={tileNum} /></EditValue>
+              </FieldRow>
             ))}
-            <AssumptionTile label="EPS Growth" accent="emerald">
-              <div className={`${tileNum} font-bold text-emerald-600 text-left tabular-nums leading-6`}>{fmtPct(model.epsGrowth, 2)}</div>
-            </AssumptionTile>
-            <AssumptionTile label="Tax Rate" editable>
-              <InputCell value={inputs.taxRate} onChange={v => update('taxRate', v)} pct bare textSize={tileNum} />
-            </AssumptionTile>
-            <AssumptionTile label="Target P/E" editable>
-              <InputCell value={inputs.targetPE} onChange={v => update('targetPE', v)} suffix="x" bare textSize={tileNum} />
-            </AssumptionTile>
-          </div>
-        </div>
-
-        {/* Shareholder returns */}
-        <div className="border-t border-dashed border-gray-200 pt-4">
-          <GroupLabel icon={Coins}>Shareholder Returns</GroupLabel>
-          <div className={grid3}>
-            <AssumptionTile label="Net Dilution" editable>
-              <InputCell value={inputs.netShareDilution} onChange={v => update('netShareDilution', v)} pct bare textSize={tileNum} />
-            </AssumptionTile>
-            <AssumptionTile label="Dividend Growth" editable>
-              <InputCell value={inputs.dividendGrowth} onChange={v => update('dividendGrowth', v)} pct bare textSize={tileNum} />
-            </AssumptionTile>
-            <AssumptionTile label="Current Dividend" editable>
-              <InputCell value={inputs.currentDividend} onChange={v => update('currentDividend', v)} dollar bare textSize={tileNum} />
-            </AssumptionTile>
-          </div>
+            <FieldRow label="EPS Growth">
+              <span className={`${tileNum} font-semibold text-emerald-600 tabular-nums`}>{fmtPct(model.epsGrowth, 2)}</span>
+            </FieldRow>
+            <FieldRow label="Tax Rate">
+              <EditValue><InputCell value={inputs.taxRate} onChange={v => update('taxRate', v)} pct bare textSize={tileNum} /></EditValue>
+            </FieldRow>
+            <FieldRow label="Target P/E">
+              <EditValue><InputCell value={inputs.targetPE} onChange={v => update('targetPE', v)} suffix="x" bare textSize={tileNum} /></EditValue>
+            </FieldRow>
+          </GroupCard>
         </div>
       </div>
 
@@ -802,7 +995,7 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
                         onChange={e => updateRow(row.id, { name: e.target.value })}
                         className={`min-w-0 flex-1 bg-transparent vm-num outline-none focus:bg-sky-50/70 rounded px-1 -ml-1 py-0.5 ${row.bold ? 'font-semibold text-gray-900' : 'text-gray-600'}`}
                       />
-                      {(drivenBy[row.id] || (row.type === 'margin' && row.driverId && hasVal(row.target))) && (
+                      {(drivenBy[row.id] || (row.type === 'margin' && row.driverId)) && (
                         <Link2
                           size={12}
                           className="shrink-0 text-sky-400"
@@ -904,6 +1097,7 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
         <>
           <div className="fixed inset-0 z-40" onMouseDown={() => setMenu(null)} />
           <div
+            ref={popoverRef}
             className="fixed z-50 bg-white border border-gray-200/80 rounded-2xl shadow-xl ring-1 ring-black/5 p-4 animate-in fade-in zoom-in-95 duration-100"
             style={{ top: menu.y, left: menu.x, width: 268 }}
             onMouseDown={(e) => e.stopPropagation()}
