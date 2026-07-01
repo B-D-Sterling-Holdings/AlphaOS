@@ -4,7 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { LogOut, ChevronDown, Sparkles, Menu, X, Search, ShieldCheck } from 'lucide-react';
+import { LogOut, ChevronDown, Menu, X, Search, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import {
   NAV_GROUPS, isGroupActive, isItemActive,
@@ -226,7 +226,7 @@ function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin, groups }) {
 
 export default function Navbar() {
   const pathname = usePathname();
-  const { logout, isDemo, isAdmin, disabledFeatures } = useAuth();
+  const { logout, isAdmin, disabledFeatures } = useAuth();
   const groups = visibleGroups(disabledFeatures);
   const [scrolled, setScrolled] = useState(false);
   const [openGroup, setOpenGroup] = useState(null); // only one dropdown open at a time
@@ -276,14 +276,6 @@ export default function Navbar() {
               Dashboard
             </span>
           </Link>
-          {isDemo && (
-            <span
-              className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 border border-amber-200"
-              title="You are in the isolated demo environment — no production data is used."
-            >
-              <Sparkles size={12} /> Demo
-            </span>
-          )}
         </div>
 
         {/* Desktop nav pill bar — menu options first, then search on the right */}

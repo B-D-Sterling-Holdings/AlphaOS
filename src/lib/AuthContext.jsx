@@ -7,7 +7,6 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [authenticated, setAuthenticated] = useState(false);
-  const [accountType, setAccountType] = useState('prod');
   const [role, setRole] = useState('user');
   // Feature keys an admin has switched OFF for this user (empty = full access).
   // This is the LIVE list (refreshed from /api/auth/me), used to hide nav items
@@ -58,7 +57,6 @@ export function AuthProvider({ children }) {
         const data = await res.json();
         if (data.authenticated) {
           setAuthenticated(true);
-          setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
           setRole(data.role === 'admin' ? 'admin' : 'user');
           setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
         }
@@ -101,7 +99,6 @@ export function AuthProvider({ children }) {
     const data = await res.json().catch(() => ({}));
     setAuthenticated(true);
     setSessionExpired(false);
-    setAccountType(data.accountType === 'demo' ? 'demo' : 'prod');
     setRole(data.role === 'admin' ? 'admin' : 'user');
     setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
     return true;
@@ -114,7 +111,6 @@ export function AuthProvider({ children }) {
       // Clear local state even if the server call fails
     }
     setAuthenticated(false);
-    setAccountType('prod');
     setRole('user');
     setDisabledFeatures([]);
   }, []);
@@ -123,7 +119,7 @@ export function AuthProvider({ children }) {
   const effectiveDisabled = role === 'admin' ? [] : disabledFeatures;
 
   return (
-    <AuthContext.Provider value={{ authenticated, accountType, isDemo: accountType === 'demo', role, isAdmin: role === 'admin', disabledFeatures: effectiveDisabled, refreshSession, loading, sessionExpired, login, logout }}>
+    <AuthContext.Provider value={{ authenticated, role, isAdmin: role === 'admin', disabledFeatures: effectiveDisabled, refreshSession, loading, sessionExpired, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

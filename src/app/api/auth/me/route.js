@@ -15,7 +15,6 @@ export async function GET(request) {
     return NextResponse.json({ authenticated: false }, { status: 401 });
   }
 
-  const isDemo = !!session.isDemo;
   const role = session.role === 'admin' ? 'admin' : 'user';
 
   // Read the live access list from the DB (falling back to the JWT claim if the
@@ -35,7 +34,6 @@ export async function GET(request) {
     authenticated: true,
     user: { username: session.username },
     role,
-    accountType: isDemo ? 'demo' : 'prod',
     disabledFeatures,
     expiresAt: session.exp ? new Date(session.exp * 1000).toISOString() : null,
   });

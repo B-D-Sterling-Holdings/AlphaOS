@@ -60,12 +60,6 @@ function runPython(payload, childEnv) {
 
 export async function POST(req) {
   const supabase = await getDb();
-  if (supabase.isDemo) {
-    return NextResponse.json(
-      { error: 'Generating thesis fundamentals is disabled in demo mode.' },
-      { status: 403 }
-    );
-  }
 
   try {
     const { ticker, fundamentals } = await req.json();

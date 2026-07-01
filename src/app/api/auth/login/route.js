@@ -4,7 +4,6 @@ import {
   createSession,
   SESSION_COOKIE_NAME,
   CIO_TENANT_ID,
-  DEMO_TENANT_ID,
 } from '@/lib/auth';
 import { findUserByUsername } from '@/lib/users';
 import { sanitizeFeatureKeys } from '@/lib/features';
@@ -48,7 +47,6 @@ export async function POST(request) {
         username: user.username,
         tenantId: user.tenant_id,
         role: user.role,
-        isDemo: user.is_demo,
         // Admins are never feature-restricted; for users this seeds the hard
         // middleware gate so deep-links are blocked from the very first request.
         disabledFeatures: user.role === 'admin' ? [] : sanitizeFeatureKeys(user.disabled_features),
@@ -57,7 +55,6 @@ export async function POST(request) {
         {
           ok: true,
           role: user.role,
-          accountType: user.is_demo ? 'demo' : 'prod',
           disabledFeatures: user.role === 'admin' ? [] : sanitizeFeatureKeys(user.disabled_features),
         },
         token
@@ -73,23 +70,8 @@ export async function POST(request) {
         username: cioUsername,
         tenantId: CIO_TENANT_ID,
         role: 'admin',
-        isDemo: false,
       });
-      return withSession({ ok: true, role: 'admin', accountType: 'prod' }, token);
-    }
-
-    // ── 3. Demo tenant (isolated, starts empty). ──
-    const demoUsername = process.env.DEMO_USERNAME || 'demo';
-    const demoPassword = process.env.DEMO_PASSWORD || 'demo';
-    if (username === demoUsername && password === demoPassword) {
-      const token = await createSession({
-        userId: 'demo',
-        username: demoUsername,
-        tenantId: DEMO_TENANT_ID,
-        role: 'user',
-        isDemo: true,
-      });
-      return withSession({ ok: true, role: 'user', accountType: 'demo' }, token);
+      return withSession({ ok: true, role: 'admin' }, token);
     }
 
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });

@@ -15,7 +15,6 @@ import ValuationModel from '@/components/ValuationModel';
 import { computeValuationModel } from '@/lib/valuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import ReviewCommentsPanel from '@/components/ReviewCommentsPanel';
-import { useAuth } from '@/lib/AuthContext';
 import { RESEARCH_TABS } from '@/lib/researchProgress';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
@@ -586,7 +585,6 @@ function QuestionSection({
 
 export default function ResearchPage() {
   const cache = useCache();
-  const { isDemo } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   // The ticker this page was opened on via ?ticker= (carried along by a stage move).

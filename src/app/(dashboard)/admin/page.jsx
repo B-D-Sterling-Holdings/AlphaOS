@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/AuthContext';
-import { UserPlus, ShieldCheck, Loader2, Users, SlidersHorizontal, Lock, Check } from 'lucide-react';
+import { UserPlus, ShieldCheck, Loader2, Users, SlidersHorizontal, Lock, Check, Trash2 } from 'lucide-react';
 import { FEATURES } from '@/lib/features';
 
 export default function AdminPage() {
@@ -225,7 +225,7 @@ export default function AdminPage() {
               <tr><td colSpan={6} className="px-5 py-8 text-center text-gray-400">Loading…</td></tr>
             ) : users.length === 0 ? (
               <tr><td colSpan={6} className="px-5 py-8 text-center text-gray-400">
-                No admin-created users yet. The CIO and demo logins are built-in and not listed here.
+                No admin-created users yet. The CIO login is built-in and not listed here.
               </td></tr>
             ) : users.map((u) => {
               const isUser = u.role !== 'admin';
@@ -265,12 +265,23 @@ export default function AdminPage() {
                   )}
                 </td>
                 <td className="px-5 py-3 text-right">
-                  <button
-                    onClick={() => toggleActive(u)}
-                    className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
-                  >
-                    {u.isActive ? 'Disable' : 'Enable'}
-                  </button>
+                  <div className="inline-flex items-center gap-2">
+                    <button
+                      onClick={() => toggleActive(u)}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
+                    >
+                      {u.isActive ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      onClick={() => handleDelete(u)}
+                      disabled={deletingId === u.id}
+                      className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-50"
+                      title="Delete user and workspace"
+                      aria-label={`Delete ${u.username}`}
+                    >
+                      {deletingId === u.id ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                    </button>
+                  </div>
                 </td>
               </tr>
               {editing && (

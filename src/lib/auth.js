@@ -2,10 +2,9 @@ import { SignJWT, jwtVerify } from 'jose';
 
 export const SESSION_COOKIE_NAME = 'session_token';
 
-// Well-known tenant UUIDs for the bootstrap logins (must match
+// Well-known tenant UUID for the bootstrap CIO login (must match
 // scripts/migrations/005_multitenancy.sql).
 export const CIO_TENANT_ID = '11111111-1111-1111-1111-111111111111';
-export const DEMO_TENANT_ID = '22222222-2222-2222-2222-222222222222';
 
 function getSecret() {
   const secret = process.env.AUTH_JWT_SECRET;
@@ -22,11 +21,10 @@ function getSecret() {
  * @param {string} claims.username
  * @param {string} claims.tenantId  the data partition this session may touch
  * @param {string} [claims.role]    'admin' | 'user'
- * @param {boolean} [claims.isDemo]
  * @param {string[]} [claims.disabledFeatures] feature keys switched off for this user
  */
-export async function createSession({ userId, username, tenantId, role = 'user', isDemo = false, disabledFeatures = [] }) {
-  return new SignJWT({ userId, username, tenantId, role, isDemo, disabledFeatures })
+export async function createSession({ userId, username, tenantId, role = 'user', disabledFeatures = [] }) {
+  return new SignJWT({ userId, username, tenantId, role, disabledFeatures })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('7d')

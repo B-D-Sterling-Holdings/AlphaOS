@@ -219,14 +219,6 @@ async function pruneResults() {
 // POST - start a run
 export async function POST(req) {
   const supabase = await getDb();
-  // Demo sessions are read-only for the macro-regime allocator: running it spawns a
-  // heavy Python process and rewrites shared server config. Demo reads seeded results.
-  if (supabase.isDemo) {
-    return NextResponse.json(
-      { error: 'Running the macro-regime allocator is disabled in demo mode.' },
-      { status: 403 }
-    );
-  }
   try {
     const { command } = await req.json();
     if (!VALID_COMMANDS.includes(command)) {

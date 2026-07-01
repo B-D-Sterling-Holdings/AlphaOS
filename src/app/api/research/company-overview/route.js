@@ -132,14 +132,6 @@ function runPython(ticker, childEnv) {
 
 export async function POST(req) {
   const supabase = await getDb();
-  // Generating an overview spawns a Python process and calls the LLM — disabled
-  // for read-only demo sessions, matching the analysis pipeline.
-  if (supabase.isDemo) {
-    return NextResponse.json(
-      { error: 'Generating a company overview is disabled in demo mode.' },
-      { status: 403 }
-    );
-  }
 
   try {
     const { ticker } = await req.json();

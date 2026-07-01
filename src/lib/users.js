@@ -14,7 +14,7 @@ export async function findUserByUsername(username) {
   if (!username) return null;
   const { data, error } = await supabaseAdmin
     .from('users')
-    .select('id, username, password_hash, role, tenant_id, is_demo, is_active, disabled_features')
+    .select('id, username, password_hash, role, tenant_id, is_active, disabled_features')
     .ilike('username', username)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -41,7 +41,7 @@ export async function getDisabledFeaturesForUser(id) {
 export async function listUsers() {
   const { data, error } = await supabaseAdmin
     .from('users')
-    .select('id, username, role, tenant_id, is_demo, is_active, disabled_features, created_at, tenants(name)')
+    .select('id, username, role, tenant_id, is_active, disabled_features, created_at, tenants(name)')
     .order('created_at', { ascending: true });
   if (error) throw new Error(error.message);
   return (data || []).map((u) => ({
@@ -50,7 +50,6 @@ export async function listUsers() {
     role: u.role,
     tenantId: u.tenant_id,
     tenantName: u.tenants?.name ?? null,
-    isDemo: u.is_demo,
     isActive: u.is_active,
     disabledFeatures: sanitizeFeatureKeys(u.disabled_features),
     createdAt: u.created_at,
@@ -121,6 +120,123 @@ export async function setUserFeatures(id, disabledFeatures) {
     .eq('id', id);
   if (error) throw new Error(error.message);
   return clean;
+}
+
+// Every tenant-scoped data table. These carry a `tenant_id` column but (unlike
+// users.tenant_id) have NO foreign key to tenants, so deleting a tenant does not
+// cascade to them — deleteUser purges them explicitly to avoid orphaned rows.
+const TENANT_DATA_TABLES = [
+  'contacts', 'interactions', 'contact_files', 'tasks', 'app_settings',
+  'research_links', 'documents', 'theses', 'valuation_models', 'holdings',
+  'portfolio_cash', 'watchlists', 'ticker_fundamentals', 'ticker_prices',
+  'allocation_config', 'sector_config', 'factor_config', 'fund_nav_data',
+  'strategic_notes', 'candidate_positions', 'ideas',
+  'prism_recommendations', 'prism_ticker_data', 'prism_ticker_documents',
+  'macro_regime_config', 'macro_regime_runs', 'macro_regime_results',
+  'macro_regime_weights',
+];
+
+// Storage buckets whose objects are namespaced by a `<tenant_id>/` path prefix
+// (see src/lib/db.js `storagePrefix`). Storage bypasses RLS, so isolation here is
+// purely by path — which is exactly why the purge below is so tightly guarded.
+const STORAGE_BUCKETS = ['research-images', 'documents'];
+
+// A tenant id MUST be a canonical UUID before it is ever used as a delete prefix.
+const TENANT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Recursively collect every object path under a storage folder. `.list()` is one
+// level deep; entries with a null id are sub-"folders" (virtual prefixes) we
+// recurse into. Returns full object paths (e.g. `<tenant>/<ticker>/<file>`).
+async function listStorageFilesUnder(bucket, folder) {
+  const out = [];
+  const stack = [folder];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (let offset = 0; ; offset += 100) {
+      const { data, error } = await supabaseAdmin.storage
+        .from(bucket)
+        .list(dir, { limit: 100, offset });
+      if (error) throw new Error(`list ${bucket}/${dir}: ${error.message}`);
+      if (!data || data.length === 0) break;
+      for (const entry of data) {
+        const full = dir ? `${dir}/${entry.name}` : entry.name;
+        if (entry.id === null) stack.push(full); // sub-folder
+        else out.push(full);                      // file
+      }
+      if (data.length < 100) break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Delete every stored object belonging to one tenant — and ONLY that tenant.
+ *
+ * This is intentionally not exported: the only way to reach it is through
+ * deleteUser(), so a prefix-wide storage wipe can never be triggered from
+ * anywhere else. It also fails closed on anything that could widen the blast
+ * radius: a non-UUID tenant id is rejected outright (an empty/garbage prefix
+ * would otherwise match the whole bucket), and every path is re-checked to be
+ * inside `<tenantId>/` before it is removed.
+ */
+async function purgeTenantStorage(tenantId) {
+  if (typeof tenantId !== 'string' || !TENANT_UUID_RE.test(tenantId)) {
+    throw new Error('refusing to purge storage: tenant id is not a valid UUID');
+  }
+  const prefix = `${tenantId}/`;
+
+  for (const bucket of STORAGE_BUCKETS) {
+    const paths = await listStorageFilesUnder(bucket, tenantId);
+    // Belt-and-suspenders: never hand `remove()` anything outside this tenant.
+    const stray = paths.find((p) => !p.startsWith(prefix));
+    if (stray) {
+      throw new Error(`refusing to purge storage: "${stray}" is outside tenant prefix`);
+    }
+    for (let i = 0; i < paths.length; i += 100) {
+      const batch = paths.slice(i, i + 100);
+      const { error } = await supabaseAdmin.storage.from(bucket).remove(batch);
+      if (error) throw new Error(`purge ${bucket}: ${error.message}`);
+    }
+  }
+}
+
+/**
+ * Permanently delete an admin-created user and its entire isolated workspace:
+ * stored files, all tenant-scoped rows, and the tenant itself (which cascades
+ * the user row). Callers must enforce admin authz and block self-deletion (see
+ * the DELETE handler).
+ */
+export async function deleteUser(id) {
+  if (!id) throw new Error('id is required');
+
+  const { data: user, error: fErr } = await supabaseAdmin
+    .from('users')
+    .select('id, tenant_id')
+    .eq('id', id)
+    .maybeSingle();
+  if (fErr) throw new Error(fErr.message);
+  if (!user) throw new Error('user not found');
+  // Guard the destructive prefix before anything is touched: a user without a
+  // proper tenant UUID must never reach the storage/data purge below.
+  if (!TENANT_UUID_RE.test(user.tenant_id || '')) {
+    throw new Error('refusing to delete: user has no valid tenant');
+  }
+
+  // 1. Stored objects first — if the prefix guard rejects, nothing else runs.
+  await purgeTenantStorage(user.tenant_id);
+
+  // 2. All tenant-scoped data (no FK cascade on these tables).
+  for (const table of TENANT_DATA_TABLES) {
+    const { error } = await supabaseAdmin.from(table).delete().eq('tenant_id', user.tenant_id);
+    // A table may not exist in every deployment — ignore "missing table" errors.
+    if (error && error.code !== '42P01' && !/does not exist/i.test(error.message)) {
+      throw new Error(`delete ${table}: ${error.message}`);
+    }
+  }
+
+  // 3. The tenant row — cascades to the user row.
+  const { error: tErr } = await supabaseAdmin.from('tenants').delete().eq('id', user.tenant_id);
+  if (tErr) throw new Error(tErr.message);
 }
 
 /** Insert the singleton config rows a fresh tenant needs (service role). */

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/db';
-import { listUsers, createUser, setUserActive, setUserFeatures } from '@/lib/users';
+import { listUsers, createUser, setUserActive, setUserFeatures, deleteUser } from '@/lib/users';
 
 // Every handler here is admin-only. Authz is enforced server-side from the
 // verified session — never trust a client-supplied role.

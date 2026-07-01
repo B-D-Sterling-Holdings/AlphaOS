@@ -36,7 +36,6 @@ export async function getSession() {
     username: session.username,
     tenantId: session.tenantId,
     role: session.role === 'admin' ? 'admin' : 'user',
-    isDemo: !!session.isDemo,
   };
 }
 
@@ -49,13 +48,12 @@ export async function getDb() {
     throw new Error('Not authenticated: no tenant for this request.');
   }
 
-  const { tenantId, role, isDemo, username, userId } = session;
+  const { tenantId, role, username, userId } = session;
   const client = await getTenantClient(tenantId);
 
   return {
     tenantId,
     role,
-    isDemo,
     username,
     userId,
     isAdmin: role === 'admin',
