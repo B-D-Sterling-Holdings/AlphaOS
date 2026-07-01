@@ -36,6 +36,24 @@ export const STAGE_LABELS = {
   position: 'Position Review',
 };
 
+// Each pipeline stage lives on its own page/tab. Promoting or demoting a name should
+// carry the analyst along to the destination tab with the same name focused, so the
+// pipeline reads as one continuous flow rather than a name vanishing from the current
+// tab. Every one of these pages honors a `?ticker=XYZ` deep link.
+export const STAGE_ROUTES = {
+  watching: '/watchlist',
+  draft: '/draft-review',
+  research: '/research',
+  position: '/position-review',
+};
+
+// Build the destination URL for a stage move, pre-selecting the moved name.
+export function routeForStage(stage, ticker) {
+  const path = STAGE_ROUTES[stage];
+  if (!path) return null;
+  return ticker ? `${path}?ticker=${encodeURIComponent(ticker)}` : path;
+}
+
 // Normalize the legacy/retired `researching` stage into `watching`.
 export function normalizeStage(stage) {
   return stage === 'researching' ? 'watching' : (stage || 'watching');

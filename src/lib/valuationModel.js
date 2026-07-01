@@ -9,16 +9,23 @@
 //
 // Row shapes:
 //   line     { type:'line', sign:1|-1, method, base, rate, target, ramp, values, refId, role, format, dec, bold, highlight }
-//   subtotal { type:'subtotal', mode:'additive'|'margin', target, refId, role, format, dec, bold, highlight }
-//   margin   { type:'margin', refId, format:'pct', dec }   (display-only ratio of refId / revenue)
+//   subtotal { type:'subtotal', role, format, dec, bold, highlight }
+//   margin   { type:'margin', refId, format:'pct', dec, driverId?, target?, ramp? }
 //
-// Line methods:
+// Coupling — a margin row can "hold an expense to a target". When it has a
+// `driverId` (a line id) and a `target`, that line is back-solved each year so the
+// running income after it ÷ revenue ramps to the target (flat when ramp === false).
+// The target lives on the MARGIN row it describes — not on the expense — and the
+// expense just shows its year-0 value (its `base`) while later years are solved.
+//
+// Line methods (the line's own behaviour when it is NOT being driven by a margin):
 //   growth  base × (1+rate)^year
 //   pctOf   refRow × pct, where pct ramps from the implied year-0 ratio to `target`
 //           (or is flat at `target` when ramp === false)
 //   manual  values[year]
-//   plug    back-solved so the linked margin subtotal hits its target margin
 //   tax     refRow × global taxRate (year-0 may be overridden with `base`)
+//   plug    LEGACY back-solve with the target stored on the line itself; new models
+//           use margin-driven coupling above. Still honoured for old saved models.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const p = (v) => (v === '' || v === undefined || v === null || isNaN(Number(v))) ? 0 : Number(v);
@@ -40,20 +47,20 @@ export const DEFAULT_VALUATION_INPUTS = {
   currentDividend: '',
 };
 
-// The default income-statement template — reproduces the classic
-// Revenue / Operating Expense (plug) / Operating Income layout. The target
-// operating margin lives on the Operating Expense line: it is back-solved each
-// year so the running margin ramps to that target; Operating Income is then a
-// plain sum of the rows above.
+// The default income-statement template — the classic Revenue / Operating Expense /
+// Operating Income layout. Nothing is coupled by default: Revenue and Operating Expense
+// are plain CAGR lines (their rates live in the Growth Rates assumptions) and Operating
+// Margin is a display-only ratio. To make the Operating Margin drive the Operating
+// Expense to a target, turn that on explicitly in the margin row's settings.
 export function makeDefaultRows() {
   return [
-    { id: 'revenue', name: 'Revenue (bil)', type: 'line', sign: 1, method: 'growth', base: '', rate: '', role: 'revenue', format: 'money', dec: 3, bold: true },
-    { id: 'opex', name: 'Operating Expense', type: 'line', sign: -1, method: 'plug', base: '', target: '', format: 'money', dec: 3 },
-    { id: 'opinc', name: 'Operating Income (bil)', type: 'subtotal', role: 'opIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
+    { id: 'revenue', name: 'Revenue', type: 'line', sign: 1, method: 'growth', base: '', rate: '', role: 'revenue', format: 'money', dec: 3, bold: true },
+    { id: 'opex', name: 'Operating Expense', type: 'line', sign: -1, method: 'growth', base: '', rate: '', format: 'money', dec: 3 },
+    { id: 'opinc', name: 'Operating Income', type: 'subtotal', role: 'opIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
     { id: 'opmargin', name: 'Operating Margin', type: 'margin', refId: 'opinc', format: 'pct', dec: 2 },
     { id: 'nonop', name: 'Non-operating Income', type: 'line', sign: 1, method: 'manual', values: ['', '', '', '', '', ''], format: 'money', dec: 3 },
     { id: 'tax', name: 'Tax Expense', type: 'line', sign: -1, method: 'tax', role: 'tax', base: '', refId: 'opinc', format: 'money', dec: 3 },
-    { id: 'netinc', name: 'Net Income (bil)', type: 'subtotal', role: 'netIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
+    { id: 'netinc', name: 'Net Income', type: 'subtotal', role: 'netIncome', format: 'money', dec: 3, bold: true, highlight: 'emerald' },
   ];
 }
 
@@ -70,6 +77,14 @@ export function migrateInputs(inputs) {
   if (Array.isArray(inputs.rows)) {
     let changed = false;
     const rows = inputs.rows.map(r => ({ ...r }));
+    // Drop the "(bil)" unit hint that older templates baked into row names.
+    for (const r of rows) {
+      if (typeof r.name === 'string' && /\s*\(bil\)\s*$/i.test(r.name)) {
+        r.name = r.name.replace(/\s*\(bil\)\s*$/i, '');
+        changed = true;
+      }
+    }
+    // Legacy: a margin-mode subtotal that held the target → move it onto its plug line.
     for (const r of rows) {
       if (r.type === 'subtotal' && r.mode === 'margin') {
         const plug = rows.find(x => x.method === 'plug' && x.refId === r.id);
@@ -79,13 +94,38 @@ export function migrateInputs(inputs) {
         changed = true;
       }
     }
+    // Legacy → new: a plug line stored its own target. Move the target onto the margin
+    // row that measures the subtotal right below it, and turn the line into a normal
+    // (manual) line that the margin drives. Couplings now live on the margin row.
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.type === 'line' && r.method === 'plug' && hasValue(r.target)) {
+        const sub = rows.slice(i + 1).find(x => x.type === 'subtotal');
+        const margin = sub ? rows.find(x => x.type === 'margin' && x.refId === sub.id) : null;
+        if (margin && !margin.driverId) {
+          margin.driverId = r.id;
+          if (!hasValue(margin.target)) margin.target = r.target;
+          if (margin.ramp === undefined) margin.ramp = true;
+          r.method = 'manual';
+          delete r.target;
+          changed = true;
+        }
+      }
+    }
     return changed ? { ...inputs, rows } : inputs;
   }
 
   const rows = makeDefaultRows();
   const set = (id, patch) => { const r = rows.find(x => x.id === id); if (r) Object.assign(r, patch); };
   set('revenue', { base: inputs.baseRevenue ?? '', rate: inputs.revenueGrowth ?? '' });
-  set('opex', { base: inputs.baseOpex ?? '', target: inputs.targetOpMargin ?? '' });
+  // These legacy models drove opex to a target operating margin, so re-create that
+  // explicit coupling on the margin row (the new default leaves it uncoupled).
+  if (hasValue(inputs.targetOpMargin)) {
+    set('opex', { method: 'manual', base: inputs.baseOpex ?? '', rate: '' });
+    set('opmargin', { driverId: 'opex', target: inputs.targetOpMargin, ramp: true });
+  } else {
+    set('opex', { base: inputs.baseOpex ?? '' });
+  }
   set('nonop', { values: [inputs.baseNonOpIncome ?? '', '', '', '', '', ''] });
   set('tax', { base: inputs.baseTaxExpense ?? '' });
   return { ...inputs, rows };
@@ -122,6 +162,15 @@ export function computeValuationModel(rawInputs) {
   const revRow = rows.find(r => r.role === 'revenue') || rows.find(r => r.type === 'line');
   const revenue = projectRevenue(revRow);
 
+  // Margin-driven coupling: a margin row with a driverId + target back-solves that
+  // line so the running income after it ÷ revenue hits the target. lineId → {target,ramp}.
+  const drivenTargets = {};
+  for (const r of rows) {
+    if (r.type === 'margin' && r.driverId && hasValue(r.target)) {
+      drivenTargets[r.driverId] = { target: p(r.target), ramp: r.ramp !== false };
+    }
+  }
+
   // Single top-down pass, carrying a running accumulator (the income statement).
   const valuesById = {};
   const acc = YEARS.map(() => 0);
@@ -133,12 +182,17 @@ export function computeValuationModel(rawInputs) {
     if (r.type === 'line') {
       if (r === revRow) {
         vals = revenue.slice();
-      } else if (r.method === 'plug') {
-        // Back-solve this line so the running margin (acc ÷ revenue) ramps from
-        // its implied year-0 level to the target by year 5.
+      } else if (drivenTargets[r.id] || r.method === 'plug') {
+        // Back-solve this line so the running margin (acc ÷ revenue) ramps from its
+        // implied year-0 level (set by the line's year-0 value) to the target by year
+        // 5. The target comes from the driving margin row, or — for legacy models —
+        // from the line's own `target`.
+        const d = drivenTargets[r.id];
+        const target = d ? d.target : p(r.target);
+        const ramp = d ? d.ramp : true;
         const rev0 = revenue[0] || 0;
         const marginStart = rev0 ? (acc[0] - p(r.base)) / rev0 : 0;
-        const m = rampSeries(marginStart, p(r.target));
+        const m = ramp ? rampSeries(marginStart, target) : YEARS.map(() => target);
         vals = YEARS.map(i => acc[i] - revenue[i] * m[i]);
       } else if (r.method === 'tax' || r.role === 'tax') {
         const ref = refVals(r.refId, valuesById, revenue);

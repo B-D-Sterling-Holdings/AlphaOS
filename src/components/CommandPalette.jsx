@@ -4,6 +4,8 @@ import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, CornerDownLeft, TrendingUp } from 'lucide-react';
 import { ALL_PAGES } from '@/lib/navigation';
+import { isHrefAllowed } from '@/lib/features';
+import { useAuth } from '@/lib/AuthContext';
 
 // How each ticker context maps to a destination. Ordered by deep-link quality:
 // research and holdings can open a specific ticker; the others land on the page.
@@ -43,6 +45,7 @@ function fuzzyScore(query, text) {
 
 export default function CommandPalette() {
   const router = useRouter();
+  const { disabledFeatures } = useAuth();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
@@ -137,7 +140,11 @@ export default function CommandPalette() {
 
   // Build the ranked result list from pages + tickers.
   const results = useMemo(() => {
-    const pageItems = ALL_PAGES.map(p => ({
+    // Hide destinations this account can't reach so the palette can't be used to
+    // jump straight to a suppressed feature (the middleware blocks it regardless).
+    const pageItems = ALL_PAGES
+      .filter(p => isHrefAllowed(p.href, disabledFeatures))
+      .map(p => ({
       type: 'page',
       key: `page:${p.href}`,
       title: p.label,
@@ -167,7 +174,7 @@ export default function CommandPalette() {
         href: dest.href(t.ticker),
         haystack: `${t.ticker} ${t.name}`,
       };
-    });
+    }).filter(item => isHrefAllowed(item.href, disabledFeatures));
 
     return [...pageItems, ...tickerItems]
       .map(item => ({ item, score: fuzzyScore(trimmed, item.haystack) }))
@@ -175,7 +182,7 @@ export default function CommandPalette() {
       .sort((a, b) => a.score - b.score)
       .slice(0, 50)
       .map(({ item }) => item);
-  }, [query, tickers]);
+  }, [query, tickers, disabledFeatures]);
 
   const go = useCallback((item) => {
     if (!item) return;

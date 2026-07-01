@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { useCache } from '@/lib/CacheContext';
-import { writeWatchlistCache } from '@/lib/stageMove';
+import { writeWatchlistCache, routeForStage } from '@/lib/stageMove';
 import { formatMoneyPrecise, formatPct, formatLargeNumber } from '@/lib/formatters';
-import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft, RefreshCw } from 'lucide-react';
 import { Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -255,6 +256,7 @@ function StockCard({
   onSyncNoteRows,
   canMoveLeft = false,
   canMoveRight = false,
+  moving = false,
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -378,9 +380,11 @@ function StockCard({
       <div className="mt-4 flex justify-end">
         <button
           onClick={() => onMove(stock.ticker, 'draft')}
-          className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition-colors"
+          disabled={moving}
+          className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Move to Draft &amp; Review <ArrowRight size={13} />
+          {moving ? 'Moving…' : 'Move to Draft & Review'}
+          {moving ? <RefreshCw size={13} className="animate-spin" /> : <ArrowRight size={13} />}
         </button>
       </div>
     </div>
@@ -568,7 +572,11 @@ function WatchlistSelector({ watchlists, activeId, onSwitch, onCreate, onRename,
 /* ── Main Page ────────────────────────────────────────────────── */
 export default function WatchlistPage() {
   const cache = useCache();
+  const router = useRouter();
   const [allData, setAllData] = useState(null); // { watchlists: [...], activeWatchlistId }
+  // Ticker currently being promoted (null = idle). Drives that card's button spinner
+  // so the click has immediate feedback while the move + navigation resolve.
+  const [movingTicker, setMovingTicker] = useState(null);
   const [quotes, setQuotes] = useState({});
   const [tickerInput, setTickerInput] = useState('');
   const [loading, setLoading] = useState(true);
@@ -767,9 +775,17 @@ export default function WatchlistPage() {
   // field on the stock and its thesis is left untouched, so a name can round-trip
   // between the Watchlist and Draft & Review tabs without losing any data.
   const moveStock = async (ticker, newStage) => {
-    await saveStocks(stocks.map(s =>
-      s.ticker === ticker ? { ...s, stage: newStage } : s
-    ));
+    if (movingTicker) return;
+    setMovingTicker(ticker);
+    try {
+      await saveStocks(stocks.map(s =>
+        s.ticker === ticker ? { ...s, stage: newStage } : s
+      ));
+      // Follow the name to its new stage's tab so the pipeline reads as one flow.
+      router.push(routeForStage(newStage, ticker));
+    } catch {
+      setMovingTicker(null);
+    }
   };
 
   const moveStockOrder = async (ticker, direction) => {
@@ -1004,6 +1020,7 @@ export default function WatchlistPage() {
                   onSyncNoteRows={syncNoteRows}
                   canMoveLeft={index > 0}
                   canMoveRight={index < watching.length - 1}
+                  moving={movingTicker === stock.ticker}
                 />
               ))}
             </div>

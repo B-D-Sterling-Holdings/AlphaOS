@@ -669,11 +669,24 @@ function InvestorRows({ investor, columns, cellBase, rowLabel, sectionLabel, sta
 
 function InvestorPerformanceTab({ computedTimeline, state }) {
   const [selectedInvestor, setSelectedInvestor] = useState(null);
+  // Daily fund/S&P NAV series (same source as the dashboard performance chart).
+  // Feeds the S&P benchmark IRR so it stays computable beyond the hardcoded
+  // period anchors. null = not yet loaded; [] = loaded but empty.
+  const [navSeries, setNavSeries] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/fund-nav')
+      .then(res => (res.ok ? res.json() : []))
+      .then(data => { if (!cancelled) setNavSeries(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setNavSeries([]); });
+    return () => { cancelled = true; };
+  }, []);
 
   const perfData = useMemo(() => {
     if (!state || computedTimeline.length === 0) return null;
-    return computeInvestorPerformance(computedTimeline, state);
-  }, [computedTimeline, state]);
+    return computeInvestorPerformance(computedTimeline, state, navSeries);
+  }, [computedTimeline, state, navSeries]);
 
   if (!perfData) {
     return <div className="text-gray-400 text-sm py-12 text-center">No data available.</div>;
@@ -695,22 +708,26 @@ function InvestorPerformanceTab({ computedTimeline, state }) {
             <Users size={16} className="text-emerald-600" />
             Investor Performance Summary
           </h2>
+          <p className="text-xs text-gray-400 mt-1">
+            Personal IRR is each investor&apos;s annualized return on their own dated contributions (XIRR) — so it reflects when they actually put money in. Total Return is cumulative gain on contributed capital. S&P 500 IRR mirrors the same cash flows into the index; Alpha is the difference.
+          </p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50/50">
                 <th className={`${headerCell} text-left`}>Investor</th>
-                <th className={headerCell}>Total Contributed</th>
+                <th className={headerCell}>Contributed</th>
                 <th className={headerCell}>Current Shares</th>
                 <th className={headerCell}>Ownership %</th>
                 <th className={headerCell}>Avg Cost NAV</th>
                 <th className={headerCell}>Current NAV</th>
                 <th className={headerCell}>Current Capital</th>
                 <th className={headerCell}>Unrealized P/L $</th>
-                <th className={headerCell}>Since Inception TWR</th>
-                <th className={headerCell}>S&P 500 TWR</th>
-                <th className={headerCell}>Alpha</th>
+                <th className={headerCell}>Total Return</th>
+                <th className={headerCell}>Personal IRR</th>
+                <th className={headerCell}>S&P 500 IRR</th>
+                <th className={headerCell}>Alpha (IRR)</th>
               </tr>
             </thead>
             <tbody>
@@ -733,8 +750,9 @@ function InvestorPerformanceTab({ computedTimeline, state }) {
                   <td className={`${cellBase} text-gray-900`}>{fmtNav(m.currentNAV)}</td>
                   <td className={`${cellBase} text-gray-900 font-semibold`}>{fmt$(m.currentValue)}</td>
                   <td className={`${cellBase} font-semibold ${valColor(m.unrealizedPL)}`}>{fmt$(m.unrealizedPL)}</td>
-                  <td className={`${cellBase} font-semibold ${valColor(m.sinceInceptionTWR)}`}>{m.sinceInceptionTWR != null ? fmtPct(m.sinceInceptionTWR) : '—'}</td>
-                  <td className={`${cellBase} font-semibold ${valColor(m.sinceInceptionSPTWR)}`}>{m.sinceInceptionSPTWR != null ? fmtPct(m.sinceInceptionSPTWR) : '—'}</td>
+                  <td className={`${cellBase} font-semibold ${valColor(m.unrealizedPLPct)}`}>{m.unrealizedPLPct != null ? fmtPct(m.unrealizedPLPct) : '—'}</td>
+                  <td className={`${cellBase} font-semibold ${valColor(m.irr)}`}>{m.irr != null ? fmtPct(m.irr) : '—'}</td>
+                  <td className={`${cellBase} font-semibold ${valColor(m.spIRR)}`}>{m.spIRR != null ? fmtPct(m.spIRR) : '—'}</td>
                   <td className={`${cellBase} font-semibold ${valColor(m.alpha)}`}>{m.alpha != null ? fmtPct(m.alpha) : '—'}</td>
                 </tr>
               ))}
@@ -787,42 +805,119 @@ function InvestorPerformanceTab({ computedTimeline, state }) {
               </div>
             </div>
 
-            {/* Period-by-Period Returns */}
-            <div className="px-5 py-4">
-              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Period-by-Period Returns (Active Periods Only)</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr className="border-b border-gray-100 bg-gray-50/50">
-                      <th className={headerCell}>Quarter</th>
-                      <th className={headerCell}>Start Date</th>
-                      <th className={headerCell}>End Date</th>
-                      <th className={headerCell}>Start NAV</th>
-                      <th className={headerCell}>End NAV</th>
-                      <th className={headerCell}>Shares at Start</th>
-                      <th className={headerCell}>Period Return</th>
-                      <th className={headerCell}>Cumulative TWR</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {m.periodDetail.map((p, i) => (
-                      <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/30">
-                        <td className={`${cellBase} text-gray-600`}>{p.quarterLabel}</td>
-                        <td className={`${cellBase} text-gray-600`}>{fmtDate(p.startDate)}</td>
-                        <td className={`${cellBase} text-gray-600`}>{fmtDate(p.endDate)}</td>
-                        <td className={`${cellBase} text-gray-900`}>{fmtNav(p.startNAV)}</td>
-                        <td className={`${cellBase} text-gray-900`}>{fmtNav(p.endNAV)}</td>
-                        <td className={`${cellBase} text-gray-900`}>{fmtShares(p.sharesAtStart)}</td>
-                        <td className={`${cellBase} font-semibold ${valColor(p.periodReturn)}`}>{fmtPct(p.periodReturn)}</td>
-                        <td className={`${cellBase} font-semibold ${valColor(p.cumulativeTWR)}`}>{fmtPct(p.cumulativeTWR)}</td>
-                      </tr>
-                    ))}
-                    {m.periodDetail.length === 0 && (
-                      <tr><td colSpan={8} className="px-3 py-6 text-center text-sm text-gray-400">No active periods — investor has not yet been invested at the start of any subperiod.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+            {/* IRR Visualization */}
+            <div className="px-5 py-5">
+              {(() => {
+                const r = m.irr, sr = m.spIRR;
+                const valDate = m.valuationDate;
+                const MS_YR = 365 * 24 * 3600 * 1000;
+                const tEnd = new Date(valDate + 'T00:00:00').getTime();
+                const yearsTo = d => (tEnd - new Date(d + 'T00:00:00').getTime()) / MS_YR;
+                const grow = (amt, rate, d) => rate != null ? amt * Math.pow(1 + rate, yearsTo(d)) : amt;
+
+                const rows = m.contributionDetail.map(c => ({
+                  date: c.date,
+                  amount: c.amount,
+                  grown: grow(c.amount, r, c.date),
+                  spGrown: sr != null ? grow(c.amount, sr, c.date) : null,
+                }));
+                const maxBar = Math.max(1, ...rows.map(x => Math.max(x.grown, x.spGrown ?? 0)));
+                const t0 = new Date(m.contributionDetail[0].date + 'T00:00:00').getTime();
+                const span = Math.max(tEnd - t0, 1);
+                const maxAmt = Math.max(1, ...rows.map(x => x.amount));
+
+                return (
+                  <>
+                    {/* ── Hero metric tiles ── */}
+                    <div className="grid grid-cols-3 gap-3 mb-6">
+                      <div className="rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white px-4 py-3">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700/60">Money-Weighted IRR</div>
+                        <div className={`text-2xl font-bold tabular-nums ${valColor(r)}`}>{r != null ? fmtPct(r) : '—'}</div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">annualized · since {fmtDate(m.firstDate)}</div>
+                      </div>
+                      <div className="rounded-xl border border-gray-100 bg-gradient-to-br from-gray-50 to-white px-4 py-3">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">S&amp;P 500 IRR</div>
+                        <div className={`text-2xl font-bold tabular-nums ${valColor(sr)}`}>{sr != null ? fmtPct(sr) : '—'}</div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">same cash flows, into SPX</div>
+                      </div>
+                      <div className={`rounded-xl border px-4 py-3 ${m.alpha == null ? 'border-gray-100 bg-gray-50' : m.alpha >= 0 ? 'border-emerald-100 bg-gradient-to-br from-emerald-50 to-white' : 'border-red-100 bg-gradient-to-br from-red-50 to-white'}`}>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Alpha vs S&amp;P</div>
+                        <div className={`text-2xl font-bold tabular-nums ${valColor(m.alpha)}`}>{m.alpha != null ? `${m.alpha >= 0 ? '+' : ''}${fmtPct(m.alpha)}` : '—'}</div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">{m.alpha == null ? 'no benchmark data' : m.alpha >= 0 ? 'beating the index' : 'trailing the index'}</div>
+                      </div>
+                    </div>
+
+                    {/* ── Cash-flow timeline ── */}
+                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Cash-Flow Timeline</h3>
+                    <div className="relative h-20 mb-1">
+                      <div className="absolute left-0 right-0 top-1/2 h-px bg-gray-200" />
+                      {rows.map((x, i) => {
+                        const left = (((new Date(x.date + 'T00:00:00').getTime()) - t0) / span) * 100;
+                        const sz = 10 + Math.sqrt(x.amount / maxAmt) * 16;
+                        return (
+                          <div key={i} className="absolute -translate-x-1/2 -translate-y-1/2 group" style={{ left: `${left}%`, top: '50%' }}>
+                            <div className="rounded-full bg-emerald-500/80 ring-2 ring-white shadow-sm cursor-default transition-transform group-hover:scale-110" style={{ width: sz, height: sz }} />
+                            <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1 whitespace-nowrap text-[10px] font-medium text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {fmt$(x.amount)} · {fmtDate(x.date)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2">
+                        <div className="w-5 h-5 rounded-full bg-amber-400 ring-2 ring-white shadow flex items-center justify-center">
+                          <TrendingUp size={11} className="text-white" />
+                        </div>
+                      </div>
+                      <div className="absolute left-0 bottom-0 text-[10px] text-gray-400 font-medium">{fmtDate(m.firstDate)}</div>
+                      <div className="absolute right-0 bottom-0 text-[10px] text-amber-600 font-semibold text-right">today · {fmt$(m.currentValue)}</div>
+                    </div>
+
+                    {/* ── Growth decomposition ── */}
+                    <div className="flex items-baseline justify-between mt-6 mb-3">
+                      <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                        Each deposit, compounded at {r != null ? fmtPct(r) : 'your IRR'} → today
+                      </h3>
+                      <div className="flex items-center gap-3 text-[10px] font-medium text-gray-400">
+                        <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-gray-300" />principal</span>
+                        <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-emerald-400" />gain</span>
+                        <span className="flex items-center gap-1"><span className="inline-block w-0 h-3 border-l-2 border-dashed border-amber-400" />S&amp;P</span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {rows.map((x, i) => {
+                        const wGrown = (x.grown / maxBar) * 100;
+                        const wPrincipal = (x.amount / maxBar) * 100;
+                        const gain = x.grown >= x.amount;
+                        const spLeft = x.spGrown != null ? (x.spGrown / maxBar) * 100 : null;
+                        return (
+                          <div key={i} className="flex items-center gap-3">
+                            <div className="w-14 shrink-0 text-[11px] font-medium text-gray-500 tabular-nums">{fmtDate(x.date)}</div>
+                            <div className="relative flex-1 h-7 rounded-md bg-gray-50">
+                              <div className={`absolute inset-y-0 left-0 rounded-md ${gain ? 'bg-emerald-400/80' : 'bg-red-400/80'}`} style={{ width: `${wGrown}%` }} />
+                              <div className="absolute inset-y-0 left-0 rounded-l-md bg-gray-300/90" style={{ width: `${wPrincipal}%` }} />
+                              {spLeft != null && (
+                                <div className="absolute inset-y-0 border-l-2 border-dashed border-amber-400" style={{ left: `${Math.min(spLeft, 100)}%` }} title={`S&P would be ${fmt$(x.spGrown)}`} />
+                              )}
+                            </div>
+                            <div className="w-44 shrink-0 text-right text-[11px] tabular-nums">
+                              <span className="text-gray-400">{fmt$(x.amount)}</span>
+                              <span className="text-gray-300 mx-1">→</span>
+                              <span className={`font-bold ${valColor(x.grown - x.amount)}`}>{fmt$(x.grown)}</span>
+                              <span className="text-gray-400 ml-1">×{(x.grown / x.amount).toFixed(2)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* ── Sum footer (the IRR identity) ── */}
+                    <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-100 text-[12px]">
+                      <span className="text-gray-400">Deposits grown at your IRR sum to your current value — that&apos;s what IRR <em>means</em>.</span>
+                      <span className="font-bold text-gray-700 tabular-nums">{fmt$(rows.reduce((s, x) => s + x.grown, 0))}</span>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         );

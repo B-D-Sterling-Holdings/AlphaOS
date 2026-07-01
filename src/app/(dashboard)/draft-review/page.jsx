@@ -7,10 +7,11 @@ import { RefreshCw, Save, CheckCircle, MessagesSquare, ArrowLeft, ArrowRight, Us
 import Card from '@/components/Card';
 import Toast from '@/components/Toast';
 import DraftReview from '@/components/DraftReview';
+import ValuationModel from '@/components/ValuationModel';
 import TickerSearchSelect from '@/components/TickerSearchSelect';
 import { useCache } from '@/lib/CacheContext';
 import { normalizeAutoNotify } from '@/lib/autoNotify';
-import { persistStageMove, writeWatchlistCache, STAGE_LABELS } from '@/lib/stageMove';
+import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 
 // --- thesis.underwriting.draftReview shaping (kept local to this page) -------
 
@@ -58,16 +59,28 @@ export default function DraftReviewPage() {
   const cache = useCache();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const appliedTickerParam = useRef(null);
+  // The ticker this page was opened on via ?ticker= (carried along by a stage move).
+  // Captured on mount and honored stubbornly: the "keep a valid ticker" fallback below
+  // won't run until this name is selected or proven absent after a real fetch — so a
+  // momentarily-stale watchlist load can't bounce the selection to the first name.
+  const requestedTickerRef = useRef(searchParams.get('ticker')?.toUpperCase() || null);
 
   const [allData, setAllData] = useState(() => cache.get('deep_research_watchlist') || null);
-  const [selectedTicker, setSelectedTicker] = useState(() => cache.get('deep_research_selectedTicker') || '');
+  const [selectedTicker, setSelectedTicker] = useState(() => searchParams.get('ticker')?.toUpperCase() || cache.get('deep_research_selectedTicker') || '');
   const [loading, setLoading] = useState(() => !cache.get('deep_research_watchlist'));
+  const [fetchedOnce, setFetchedOnce] = useState(false);
   const [thesis, setThesis] = useState(null);
   const [thesisLoading, setThesisLoading] = useState(false);
   const [thesisSaving, setThesisSaving] = useState(false);
   const [thesisDirty, setThesisDirty] = useState(false);
   const [toast, setToast] = useState(null);
+  // Live quote feeds the valuation model's share price (same as Research / Position
+  // Review). The valuation itself (rows, assumptions) lives in /api/model/<ticker>,
+  // shared across the pipeline, so work started here follows the name into Research.
+  const [liveQuote, setLiveQuote] = useState(null);
+  // Which stage a promote/demote is currently persisting to (null = idle). Drives the
+  // per-button spinner so the click has immediate feedback while the move resolves.
+  const [movingTo, setMovingTo] = useState(null);
 
   // Only names actively in the Draft & Review stage. Research is its own page now;
   // a name's paper/threads are preserved in its thesis and reappear here untouched
@@ -97,13 +110,16 @@ export default function DraftReviewPage() {
       writeWatchlistCache(cache, data);
     } catch {} finally {
       setLoading(false);
+      setFetchedOnce(true);
     }
   }, [cache]);
 
   useEffect(() => { loadResearchStocks(); }, [loadResearchStocks]);
 
-  // Keep a valid research-stage ticker selected.
+  // Keep a valid research-stage ticker selected. Skipped while a deep-link target is
+  // still pending so it can't override the moved name with the first in the list.
   useEffect(() => {
+    if (requestedTickerRef.current) return;
     if (!researchStocks.length) {
       if (selectedTicker) { setSelectedTicker(''); cache.set('deep_research_selectedTicker', ''); }
       return;
@@ -115,17 +131,21 @@ export default function DraftReviewPage() {
     }
   }, [cache, researchStocks, selectedTicker]);
 
-  // Deep-link support: /draft-review?ticker=XYZ (from the Workflow page).
+  // Deep-link support: /draft-review?ticker=XYZ (from a stage move or the Workflow
+  // page). Honor it as soon as the name appears in this stage; give up only once a
+  // real fetch has confirmed it isn't here, so the fallback above can take over.
   useEffect(() => {
-    const requested = searchParams.get('ticker')?.toUpperCase();
-    if (!requested || appliedTickerParam.current === requested) return;
+    const requested = requestedTickerRef.current;
+    if (!requested) return;
     if (researchStocks.some(stock => stock.ticker === requested)) {
-      appliedTickerParam.current = requested;
+      requestedTickerRef.current = null;
       setSelectedTicker(requested);
       cache.set('deep_research_selectedTicker', requested);
-      router.replace('/draft-review');
+      if (searchParams.get('ticker')) router.replace('/draft-review');
+    } else if (fetchedOnce && researchStocks.length) {
+      requestedTickerRef.current = null;
     }
-  }, [searchParams, researchStocks, cache, router]);
+  }, [searchParams, researchStocks, fetchedOnce, cache, router]);
 
   useEffect(() => {
     if (!selectedTicker) { setThesis(null); return; }
@@ -142,6 +162,19 @@ export default function DraftReviewPage() {
       .then(data => { if (!cancelled) setThesis(data); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setThesisLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedTicker]);
+
+  // Live quote for the valuation model's share price. Cleared up front and guarded so
+  // a slow response can't leak the prior name's price onto the new selection.
+  useEffect(() => {
+    if (!selectedTicker) { setLiveQuote(null); return; }
+    let cancelled = false;
+    setLiveQuote(null);
+    fetch(`/api/quotes?tickers=${selectedTicker}`)
+      .then(r => r.json())
+      .then(data => { if (!cancelled && data.quotes?.[selectedTicker]) setLiveQuote(data.quotes[selectedTicker]); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [selectedTicker]);
 
@@ -225,8 +258,9 @@ export default function DraftReviewPage() {
   // threads and every thesis field are preserved (and reappear here if demoted back
   // from Research). Entering Research seeds its workspace once, never overwriting.
   const moveStage = useCallback(async (newStage) => {
-    if (!selectedStock || !allData) return;
+    if (!selectedStock || !allData || movingTo) return;
     const ticker = selectedStock.ticker;
+    setMovingTo(newStage);
     try {
       const { next } = await persistStageMove({
         watchlistData: allData,
@@ -237,10 +271,13 @@ export default function DraftReviewPage() {
       setAllData(next);
       writeWatchlistCache(cache, next);
       setToast({ message: `${ticker} moved to ${STAGE_LABELS[newStage]}`, type: 'success' });
+      // Follow the name to its new stage's tab so the pipeline reads as one flow.
+      router.push(routeForStage(newStage, ticker));
     } catch {
       setToast({ message: `Failed to move ${ticker}`, type: 'error' });
+      setMovingTo(null);
     }
-  }, [selectedStock, allData, cache]);
+  }, [selectedStock, allData, cache, router, movingTo]);
 
   if (loading) {
     return (
@@ -291,7 +328,10 @@ export default function DraftReviewPage() {
         )}
       </div>
 
-      <Card className="mb-8 animate-fade-in-up stagger-2">
+      {/* relative z-50: the fade-in-up transform makes this Card its own stacking
+          context, which would otherwise trap the company dropdown's z-index and let
+          the content section below paint over the open option list. */}
+      <Card className="relative z-50 mb-8 animate-fade-in-up stagger-2">
         <div className="flex items-center gap-4">
           <label className="text-xs text-gray-500 uppercase tracking-wider font-bold">Select Company</label>
           <TickerSearchSelect items={researchStocks} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
@@ -310,17 +350,21 @@ export default function DraftReviewPage() {
             <div className="ml-auto flex items-center gap-2">
               <button
                 onClick={() => moveStage('watching')}
+                disabled={!!movingTo}
                 title="Demote back to the Watchlist"
-                className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-2 rounded-lg transition-colors"
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <ArrowLeft size={13} /> Back to Watchlist
+                {movingTo === 'watching' ? <RefreshCw size={13} className="animate-spin" /> : <ArrowLeft size={13} />}
+                {movingTo === 'watching' ? 'Moving…' : 'Back to Watchlist'}
               </button>
               <button
                 onClick={() => moveStage('research')}
+                disabled={!!movingTo}
                 title="Promote to Research"
-                className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors"
+                className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Move to Research <ArrowRight size={13} />
+                {movingTo === 'research' ? 'Moving…' : 'Move to Research'}
+                {movingTo === 'research' ? <RefreshCw size={13} className="animate-spin" /> : <ArrowRight size={13} />}
               </button>
             </div>
           )}
@@ -352,6 +396,7 @@ export default function DraftReviewPage() {
           onReviewerChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, reviewer: value }), persist)}
           onAutoNotifyChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, autoNotify: value }), persist)}
           onNotify={notifyReview}
+          valuationSlot={<ValuationModel ticker={selectedTicker} livePrice={liveQuote?.price || null} embedded />}
         />
       )}
 

@@ -487,9 +487,72 @@ export function validateTimeline(computedTimeline, state) {
 // Does NOT create a separate accounting system — reads the same
 // computedTimeline produced by computeFullTimeline.
 
-export function computeInvestorPerformance(computedTimeline, state) {
+// Annualized money-weighted return (XIRR). Solves for the rate r where the
+// net present value of the dated cash flows is zero, using actual calendar
+// time between flows so contribution TIMING — not just amount — drives the
+// result. Convention: contributions are negative (cash out of pocket), the
+// terminal stake value is the final positive flow.
+//
+// Robust bisection: with a single sign change (all contributions negative, one
+// positive terminal value) the IRR is unique, and NPV is monotonic enough that
+// bracketing on (-1, +∞) always converges. Returns null when the inputs can't
+// yield a rate (need at least one inflow and one outflow).
+export function annualizedIRR(cashflows) {
+  const flows = cashflows.filter(cf => cf && isFinite(cf.amount) && cf.date);
+  if (flows.length < 2) return null;
+  if (!flows.some(cf => cf.amount > 0) || !flows.some(cf => cf.amount < 0)) return null;
+
+  const MS_PER_YEAR = 365 * 24 * 3600 * 1000;
+  const t0 = new Date(flows[0].date + 'T00:00:00').getTime();
+  const years = flows.map(cf => (new Date(cf.date + 'T00:00:00').getTime() - t0) / MS_PER_YEAR);
+  const npv = r => flows.reduce((s, cf, i) => s + cf.amount / Math.pow(1 + r, years[i]), 0);
+
+  // Bracket: just above -100% (NPV → +∞ there since the terminal inflow has the
+  // largest exponent) and a very high rate (NPV → the t=0 outflow, negative).
+  let lo = -0.999999, hi = 1000;
+  let flo = npv(lo), fhi = npv(hi);
+  if (flo * fhi > 0) return null; // no sign change in bracket — can't solve
+
+  for (let i = 0; i < 300; i++) {
+    const mid = (lo + hi) / 2;
+    const fmid = npv(mid);
+    if (Math.abs(fmid) < 1e-9 || (hi - lo) < 1e-12) return mid;
+    if (flo * fmid < 0) { hi = mid; fhi = fmid; }
+    else { lo = mid; flo = fmid; }
+  }
+  return (lo + hi) / 2;
+}
+
+export function computeInvestorPerformance(computedTimeline, state, navSeries = null) {
   const { investors, inceptionNAV, initialShares, inceptionDate } = state;
   const EPSILON = 0.01;
+
+  // ── Daily S&P benchmark series (optional) ───────────────────────────
+  // Pass the rows from /api/fund-nav ({ date, sp500_nav }) here. Used ONLY for
+  // the S&P benchmark leg of the IRR — the fund's own value comes from the (live)
+  // accounting timeline, not this series. The series matters because the seed's
+  // hardcoded per-period spEnd anchors only cover through 2025, so without a daily
+  // sp500_nav the benchmark goes blank for current dates. (sp500_nav is rebased to
+  // 100 at inception, but the IRR uses only price RATIOS, so rebasing is moot.)
+  const priceSeries = Array.isArray(navSeries)
+    ? navSeries
+        .filter(d => d && d.date)
+        .map(d => ({
+          date: d.date,
+          sp: d.sp500_nav != null && Number(d.sp500_nav) > 0 ? Number(d.sp500_nav) : null,
+        }))
+        .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    : [];
+  const useSeries = priceSeries.length > 0;
+  // Latest S&P level on or before a date (handles weekends/holidays/gaps).
+  const spOnOrBefore = (date) => {
+    if (!date) return null;
+    let val = null;
+    for (const pt of priceSeries) {
+      if (pt.date <= date) { if (pt.sp != null) val = pt.sp; } else break;
+    }
+    return val;
+  };
 
   // ── Collect all contribution events and period events in order ──────
   const investorContributions = {};
@@ -503,10 +566,16 @@ export function computeInvestorPerformance(computedTimeline, state) {
         date: inceptionDate,
         amount: initShares * inceptionNAV,
         nav: inceptionNAV,
-        sharesIssued: initShares
+        sharesIssued: initShares,
+        sp: state.inceptionSP ?? null // S&P level when this money went in
       });
     }
   }
+
+  // Track the most recent period-end S&P level so each contribution can record
+  // the benchmark price it "bought in" at (a contribution freezes at the prior
+  // period's end NAV, so the matching S&P level is that period's spEnd).
+  let lastSpEnd = state.inceptionSP ?? null;
 
   for (const quarter of computedTimeline) {
     for (const event of quarter.computedEvents) {
@@ -518,7 +587,8 @@ export function computeInvestorPerformance(computedTimeline, state) {
               date: event.date,
               amount,
               nav: event.frozenNAV,
-              sharesIssued: event.newShares[inv]
+              sharesIssued: event.newShares[inv],
+              sp: lastSpEnd
             });
           }
         }
@@ -538,6 +608,7 @@ export function computeInvestorPerformance(computedTimeline, state) {
           investorSharesAtStart,
           periodReturn: event.periodReturn
         });
+        if (event.spEnd != null) lastSpEnd = event.spEnd;
       }
     }
   }
@@ -545,7 +616,18 @@ export function computeInvestorPerformance(computedTimeline, state) {
   const lastPeriod = allPeriods[allPeriods.length - 1];
   if (!lastPeriod) return null;
 
+  // Fund value comes entirely from the (live) accounting timeline — the SAME
+  // computedTimeline the workbook renders, whose last period carries the live
+  // holdings AUM and an end date of today. So currentNAV / Current Capital here
+  // match the workbook's current NAV-per-share exactly. The daily price series is
+  // used ONLY for the S&P benchmark (its sp500_nav), taken at the most recent day
+  // on or before the valuation date. All prior contributions stay in the
+  // cash-flow stream; the fund's whole performance history is captured implicitly
+  // via each contribution's share count plus this terminal value.
   const currentNAV = lastPeriod.endNAV;
+  const valuationDate = lastPeriod.endDate;
+  const spNow = useSeries ? spOnOrBefore(valuationDate)
+    : (lastPeriod.spEnd != null ? lastPeriod.spEnd : null);
 
   // Get current shares from the last period event
   let currentTotalShares = 0;
@@ -563,8 +645,6 @@ export function computeInvestorPerformance(computedTimeline, state) {
       }
     }
   }
-
-  const lastQuarterLabel = computedTimeline[computedTimeline.length - 1]?.label;
 
   // ── Build per-investor metrics ─────────────────────────────────────
   const investorMetrics = [];
@@ -601,39 +681,54 @@ export function computeInvestorPerformance(computedTimeline, state) {
       };
     });
 
-    // ── TWR: chain subperiod returns where investor had shares ─────
-    let twrProduct = 1;
-    let spTwrProduct = 1;
-    let hasActivePeriod = false;
-    let hasActiveSP = false;
-    let qtdProduct = 1;
-    let hasActiveQTD = false;
-    let latestPeriodReturn = null;
-    const periodDetail = [];
+    // ── Money-weighted return (XIRR): personal, timing-aware ───────
+    // Each contribution is a dated cash outflow; the current stake value is the
+    // terminal inflow. Because the dates are real, two people who entered at
+    // inception but added money at different times get DIFFERENT returns — this
+    // is the "specific investor performance" a time-weighted return can't show.
+    // Terminal flow is the stake value at the valuation date; spNow is the S&P
+    // level on that same day, so both legs are measured to the same instant.
+    const terminalDate = valuationDate;
 
+    const cashflows = contribs.map(c => ({ date: c.date, amount: -c.amount }));
+    cashflows.push({ date: terminalDate, amount: currentValue });
+    const irr = annualizedIRR(cashflows);
+
+    // S&P 500 benchmark: invest the SAME dollars on the SAME dates into the
+    // index, grow each to today at the index's price ratio, then take the IRR of
+    // that mirrored cash-flow stream. Apples-to-apples with the investor's IRR.
+    let spTerminalValue = 0;
+    let spDataComplete = spNow != null && contribs.length > 0;
+    for (const c of contribs) {
+      const spAtContrib = useSeries ? spOnOrBefore(c.date) : c.sp;
+      if (spDataComplete && spAtContrib != null && spAtContrib > 0) {
+        spTerminalValue += c.amount * (spNow / spAtContrib);
+      } else {
+        spDataComplete = false;
+      }
+    }
+    let spIRR = null;
+    if (spDataComplete) {
+      const spCashflows = contribs.map(c => ({ date: c.date, amount: -c.amount }));
+      spCashflows.push({ date: terminalDate, amount: spTerminalValue });
+      spIRR = annualizedIRR(spCashflows);
+    }
+    const alpha = (irr != null && spIRR != null) ? irr - spIRR : null;
+
+    // ── Per-period NAV path over the investor's active periods ─────
+    // Context for the detail view: how the fund NAV moved while this investor
+    // was invested. cumulativeNavGrowth is the compounded NAV change since their
+    // first active period (a fund fact, not a per-dollar personal return).
+    let navProduct = 1;
+    const periodDetail = [];
     for (let pi = 0; pi < allPeriods.length; pi++) {
       const p = allPeriods[pi];
       const sharesAtStart = p.investorSharesAtStart[inv] || 0;
-
       if (sharesAtStart > EPSILON) {
         const r = p.startNAV > 0 ? (p.endNAV / p.startNAV - 1) : 0;
-        twrProduct *= (1 + r);
-        hasActivePeriod = true;
-        latestPeriodReturn = r;
-
-        // S&P 500 return for same subperiod
-        let spReturn = null;
-        if (p.spStart != null && p.spEnd != null && p.spStart > 0) {
-          spReturn = p.spEnd / p.spStart - 1;
-          spTwrProduct *= (1 + spReturn);
-          hasActiveSP = true;
-        }
-
-        if (p.quarterLabel === lastQuarterLabel) {
-          qtdProduct *= (1 + r);
-          hasActiveQTD = true;
-        }
-
+        navProduct *= (1 + r);
+        const spReturn = (p.spStart != null && p.spEnd != null && p.spStart > 0)
+          ? p.spEnd / p.spStart - 1 : null;
         periodDetail.push({
           startDate: p.startDate,
           endDate: p.endDate,
@@ -642,18 +737,11 @@ export function computeInvestorPerformance(computedTimeline, state) {
           endNAV: p.endNAV,
           periodReturn: r,
           spReturn,
-          cumulativeTWR: twrProduct - 1,
-          cumulativeSPTWR: hasActiveSP ? spTwrProduct - 1 : null,
+          cumulativeNavGrowth: navProduct - 1,
           sharesAtStart
         });
       }
     }
-
-    const sinceInceptionTWR = hasActivePeriod ? twrProduct - 1 : null;
-    const sinceInceptionSPTWR = hasActiveSP ? spTwrProduct - 1 : null;
-    const alpha = (sinceInceptionTWR != null && sinceInceptionSPTWR != null)
-      ? sinceInceptionTWR - sinceInceptionSPTWR : null;
-    const qtdTWR = hasActiveQTD ? qtdProduct - 1 : null;
 
     // ── Per-investor validation ────────────────────────────────────
     const engineShares = currentShares[inv] || 0;
@@ -672,8 +760,8 @@ export function computeInvestorPerformance(computedTimeline, state) {
       name: inv, firstDate, latestDate, numContributions,
       totalContributed, shares, ownership, avgCostNAV,
       currentNAV, currentValue, unrealizedPL, unrealizedPLPct,
-      qtdTWR, sinceInceptionTWR, sinceInceptionSPTWR, alpha,
-      latestPeriodReturn, contributionDetail, periodDetail
+      irr, spIRR, alpha, spTerminalValue: spDataComplete ? spTerminalValue : null,
+      valuationDate, contributionDetail, periodDetail
     });
   }
 
@@ -688,7 +776,7 @@ export function computeInvestorPerformance(computedTimeline, state) {
     validationErrors.push(`Value sum = ${valueSum.toFixed(2)}, AUM = ${currentAUM.toFixed(2)} — mismatch`);
   }
 
-  return { investorMetrics, validationErrors, currentNAV, currentTotalShares, currentAUM };
+  return { investorMetrics, validationErrors, currentNAV, currentTotalShares, currentAUM, valuationDate };
 }
 
 

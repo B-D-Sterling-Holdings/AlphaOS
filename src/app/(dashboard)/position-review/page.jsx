@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { RefreshCw, Download, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, Star, ChevronDown, ExternalLink, Link as LinkIcon, Send, MessageSquare, FileText, BookOpen, Mic, MoreHorizontal, Pencil, Search, ArrowLeft } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
@@ -16,7 +16,7 @@ import ValuationModel from '@/components/ValuationModel';
 import { computeValuationModel } from '@/lib/valuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
-import { persistStageMove, writeWatchlistCache, persistHoldingsBackfill, STAGE_LABELS } from '@/lib/stageMove';
+import { persistStageMove, writeWatchlistCache, persistHoldingsBackfill, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -216,11 +216,25 @@ function SortableTab({ tab, isActive, isConfirming, isEditing, editingTabTitle, 
 
 export default function ResearchPage() {
   const cache = useCache();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const urlTicker = searchParams.get('ticker');
+  // The ticker this page was opened on via ?ticker= (carried along by a stage move).
+  // Captured on mount and honored stubbornly: the "keep a valid name" fallback below
+  // won't run until this name is selected or proven absent after a real fetch — so a
+  // momentarily-stale watchlist load can't bounce the selection to the first name.
+  const requestedTickerRef = useRef(urlTicker?.toUpperCase() || null);
+  const [fetchedOnce, setFetchedOnce] = useState(false);
   const [portfolio, setPortfolio] = useState(() => cache.get('research_portfolio') || null);
   const [selectedTicker, setSelectedTicker] = useState(() => urlTicker || cache.get('research_selectedTicker') || '');
-  const [tickerData, setTickerData] = useState(() => cache.get('research_tickerData') || null);
+  // Fundamentals are cached per ticker. Seed from the initially-selected name's own
+  // cache entry — never a generic shared slot, which is how one company's charts used
+  // to bleed onto another's page.
+  const tickerDataReqRef = useRef(null);
+  const [loadedTickerData, setLoadedTickerData] = useState(() => {
+    const t = urlTicker || cache.get('research_selectedTicker');
+    return t ? (cache.get(`research_tickerData_${t}`) || null) : null;
+  });
   const [watchlistData, setWatchlistData] = useState(() => cache.get('watchlist_data') || null);
 
   // Position Review membership: every `stage === 'position'` watchlist stock, tagged
@@ -240,14 +254,24 @@ export default function ResearchPage() {
     [positionStocks, selectedTicker]
   );
 
+  // Only ever render fundamentals tagged with the currently selected name. A stale
+  // in-flight fetch or a leftover cache payload could otherwise briefly surface one
+  // company's charts under another company's header.
+  const tickerData = loadedTickerData?.ticker === selectedTicker ? loadedTickerData : null;
+
+  // Which stage a demote is currently persisting to (null = idle). Drives the button
+  // spinner so the click has immediate feedback while the move resolves.
+  const [movingTo, setMovingTo] = useState(null);
+
   // Demote the selected name out of Position Review. Every name here is a real
   // `position`-stage watchlist stock, so this just flips `stock.stage` back to
   // `research` — the name then leaves Position Review entirely (no holdings union to
   // keep it pinned here). Data-safe: only the stage flips; the thesis
   // (researchWorkspace/draftReview/valuation) and the portfolio book are untouched.
   const moveStage = useCallback(async (newStage) => {
-    if (!selectedPositionStock || !watchlistData) return;
+    if (!selectedPositionStock || !watchlistData || movingTo) return;
     const ticker = selectedPositionStock.ticker;
+    setMovingTo(newStage);
     try {
       const { next } = await persistStageMove({
         watchlistData,
@@ -258,10 +282,13 @@ export default function ResearchPage() {
       setWatchlistData(next);
       writeWatchlistCache(cache, next);
       setToast({ message: `${ticker} moved to ${STAGE_LABELS[newStage]}`, type: 'success' });
+      // Follow the name to its new stage's tab so the pipeline reads as one flow.
+      router.push(routeForStage(newStage, ticker));
     } catch {
       setToast({ message: `Failed to move ${ticker}`, type: 'error' });
+      setMovingTo(null);
     }
-  }, [selectedPositionStock, watchlistData, cache]);
+  }, [selectedPositionStock, watchlistData, cache, router, movingTo]);
   const [loading, setLoading] = useState(() => !cache.get('research_portfolio'));
   const [tickerLoading, setTickerLoading] = useState(false);
   const [toast, setToast] = useState(null);
@@ -303,6 +330,7 @@ export default function ResearchPage() {
         writeWatchlistCache(cache, nextWl);
       }
       setLoading(false);
+      setFetchedOnce(true);
     });
     return () => { alive = false; };
   }, [cache]);
@@ -310,7 +338,10 @@ export default function ResearchPage() {
   // Keep a valid Position Review name selected. When the current pick leaves the stage
   // (e.g. just demoted) fall back to the first remaining position; when the stage is
   // empty, clear the selection so the empty state shows instead of a stale ticker.
+  // Skipped while a deep-link target is still pending so it can't override the moved
+  // name with the first in the list.
   useEffect(() => {
+    if (requestedTickerRef.current) return;
     if (!positionStocks.length) {
       if (selectedTicker) { setSelectedTicker(''); cache.set('research_selectedTicker', ''); }
       return;
@@ -322,38 +353,43 @@ export default function ResearchPage() {
     }
   }, [positionStocks]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Honor /position-review?ticker=XYZ (e.g. from the command palette or the Workflow
-  // Position card) even when the page is already mounted — select it if it's a name in
-  // the Position Review stage.
+  // Honor /position-review?ticker=XYZ (from a stage move, the command palette or the
+  // Workflow Position card). Select it as soon as the name appears in the Position
+  // Review stage; give up only once a real fetch has confirmed it isn't here.
   useEffect(() => {
-    if (!urlTicker) return;
-    const t = urlTicker.toUpperCase();
-    if (t !== selectedTicker && positionStocks.some(s => s.ticker === t)) {
-      setSelectedTicker(t);
-      cache.set('research_selectedTicker', t);
+    const requested = requestedTickerRef.current;
+    if (!requested) return;
+    if (positionStocks.some(s => s.ticker === requested)) {
+      requestedTickerRef.current = null;
+      setSelectedTicker(requested);
+      cache.set('research_selectedTicker', requested);
+    } else if (fetchedOnce && positionStocks.length) {
+      requestedTickerRef.current = null;
     }
-  }, [urlTicker, positionStocks]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [positionStocks, fetchedOnce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadTickerData = useCallback(async (ticker) => {
     if (!ticker) return;
-    // Use cache if available for this ticker
+    // Track the latest requested ticker so a slow fetch for a name we've navigated
+    // away from can't overwrite the current selection's data.
+    tickerDataReqRef.current = ticker;
     const cached = cache.get(`research_tickerData_${ticker}`);
     if (cached) {
-      setTickerData(cached);
-      cache.set('research_tickerData', cached);
+      setLoadedTickerData(cached);
       return;
     }
+    // Clear stale data while loading so the prior name's charts don't linger.
+    setLoadedTickerData(null);
     setTickerLoading(true);
     try {
       const res = await fetch(`/api/ticker/${ticker}`);
       const data = await res.json();
-      setTickerData(data);
-      cache.set('research_tickerData', data);
       cache.set(`research_tickerData_${ticker}`, data);
+      if (tickerDataReqRef.current === ticker) setLoadedTickerData(data);
     } catch (e) {
       setToast({ message: `Failed to load data for ${ticker}`, type: 'error' });
     } finally {
-      setTickerLoading(false);
+      if (tickerDataReqRef.current === ticker) setTickerLoading(false);
     }
   }, [cache]);
 
@@ -828,10 +864,12 @@ export default function ResearchPage() {
           {selectedPositionStock && (
             <button
               onClick={() => moveStage('research')}
+              disabled={!!movingTo}
               title="Demote back to Research — it leaves Position Review; nothing is deleted, the thesis is kept"
-              className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors"
+              className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <ArrowLeft size={13} /> Back to Research
+              {movingTo === 'research' ? <RefreshCw size={13} className="animate-spin" /> : <ArrowLeft size={13} />}
+              {movingTo === 'research' ? 'Moving…' : 'Back to Research'}
             </button>
           )}
         </div>
