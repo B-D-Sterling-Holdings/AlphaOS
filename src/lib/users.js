@@ -38,6 +38,28 @@ export async function getDisabledFeaturesForUser(id) {
   return sanitizeFeatureKeys(data.disabled_features);
 }
 
+/**
+ * Live auth state for a users-table id: whether the account is still active,
+ * plus its current role and disabled features. Returns null when the id has no
+ * row (deleted user — or a bootstrap login, which callers must exclude by id
+ * shape before treating null as "revoked").
+ */
+export async function getUserAuthState(id) {
+  if (!id) return null;
+  const { data, error } = await supabaseAdmin
+    .from('users')
+    .select('role, is_active, disabled_features')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+  return {
+    isActive: data.is_active !== false,
+    role: data.role === 'admin' ? 'admin' : 'user',
+    disabledFeatures: data.role === 'admin' ? [] : sanitizeFeatureKeys(data.disabled_features),
+  };
+}
+
 export async function listUsers() {
   const { data, error } = await supabaseAdmin
     .from('users')

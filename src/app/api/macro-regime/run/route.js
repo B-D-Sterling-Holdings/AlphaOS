@@ -7,8 +7,12 @@ import { getLatestResultSignal } from '@/lib/macroRegimeSignal';
 
 const MACRO_DIR = path.resolve(process.cwd(), 'macro_regime_allocator');
 const OUTPUT_DIR = path.join(MACRO_DIR, 'outputs');
+// The status file is GLOBAL on purpose — the pipeline shares one outputs dir
+// and one config.yaml, so only one run may execute at a time across tenants.
+// It records which tenant owns the run so another tenant's GET never sees the
+// owner's command/log details. Logs are per-tenant files.
 const STATUS_FILE = '/tmp/macro-regime-run-status.json';
-const LOG_FILE = '/tmp/macro-regime-run-output.log';
+const logFileFor = (tenantId) => `/tmp/macro-regime-run-output-${tenantId}.log`;
 
 const CONFIG_YAML = path.join(MACRO_DIR, 'config.yaml');
 const VALID_COMMANDS = ['run', 'predict', 'fast', 'validate', 'clean'];
@@ -31,10 +35,13 @@ async function syncConfigToYaml() {
     ];
     for (const [k, v] of Object.entries(cfg)) {
       if (k === 'deriskOverlay') continue; // frontend-only field
+      // Keys and values come from a user-editable JSON blob; never let either
+      // break out of its YAML scalar (quote/newline smuggling into new keys).
+      if (!/^[A-Za-z0-9_-]+$/.test(k)) continue;
       if (v === null) lines.push(`${k}: null`);
       else if (typeof v === 'boolean') lines.push(`${k}: ${v}`);
-      else if (typeof v === 'number') lines.push(`${k}: ${v}`);
-      else lines.push(`${k}: "${v}"`);
+      else if (typeof v === 'number' && Number.isFinite(v)) lines.push(`${k}: ${v}`);
+      else lines.push(`${k}: ${JSON.stringify(String(v))}`); // JSON strings are valid YAML
     }
     lines.push('');
     fs.writeFileSync(CONFIG_YAML, lines.join('\n'));
@@ -285,9 +292,10 @@ export async function POST(req) {
 
     const fileEnv = loadEnvFile();
     const startedAt = new Date().toISOString();
+    const LOG_FILE = logFileFor(supabase.tenantId);
 
-    // Write initial status
-    fs.writeFileSync(STATUS_FILE, JSON.stringify({ running: true, command, startedAt, pid: null }));
+    // Write initial status (stamped with the owning tenant)
+    fs.writeFileSync(STATUS_FILE, JSON.stringify({ running: true, command, startedAt, pid: null, tenantId: supabase.tenantId }));
     fs.writeFileSync(LOG_FILE, `[${startedAt}] Starting: make ${command}\n`);
 
     // Record run in Supabase
@@ -321,7 +329,7 @@ export async function POST(req) {
       }
 
       fs.writeFileSync(STATUS_FILE, JSON.stringify({
-        running: false, command, startedAt, completedAt, exitCode, pid: null,
+        running: false, command, startedAt, completedAt, exitCode, pid: null, tenantId: supabase.tenantId,
       }));
       fs.appendFileSync(LOG_FILE, `\n[${completedAt}] Finished with exit code ${exitCode}\n`);
 
@@ -347,7 +355,7 @@ export async function POST(req) {
     });
 
     // Update status with PID
-    fs.writeFileSync(STATUS_FILE, JSON.stringify({ running: true, command, startedAt, pid: proc.pid }));
+    fs.writeFileSync(STATUS_FILE, JSON.stringify({ running: true, command, startedAt, pid: proc.pid, tenantId: supabase.tenantId }));
 
     proc.stdout.on('data', (data) => {
       fs.appendFileSync(LOG_FILE, data.toString());
@@ -359,7 +367,7 @@ export async function POST(req) {
     proc.on('close', async (code) => {
       const completedAt = new Date().toISOString();
       fs.writeFileSync(STATUS_FILE, JSON.stringify({
-        running: false, command, startedAt, completedAt, exitCode: code, pid: proc.pid,
+        running: false, command, startedAt, completedAt, exitCode: code, pid: proc.pid, tenantId: supabase.tenantId,
       }));
       fs.appendFileSync(LOG_FILE, `\n[${completedAt}] Finished with exit code ${code}\n`);
 
@@ -405,9 +413,18 @@ export async function GET(req) {
       return NextResponse.json({ run: data || null });
     }
 
+    const LOG_FILE = logFileFor(supabase.tenantId);
+
     let status = fs.existsSync(STATUS_FILE)
       ? JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'))
       : { running: false };
+
+    // Another tenant's run: expose only that the runner is busy — never its
+    // command, timing, pid or (below) its log. A pre-multitenancy status file
+    // has no tenantId; treat it as belonging to the caller.
+    if (status.tenantId && status.tenantId !== supabase.tenantId) {
+      status = { running: !!status.running, foreign: true };
+    }
 
     // Guard against a stale "running" flag left behind by an interrupted run
     // (server restart / redeploy / crash). Without this, the recorded PID is

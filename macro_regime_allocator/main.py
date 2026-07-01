@@ -60,19 +60,32 @@ def main():
             sys.exit(1)
 
         merged = pd.read_csv(merged_path, index_col="date", parse_dates=True)
-        features = engineer_features(merged, cfg)
+        # Extend one lag into the future so we predict the UPCOMING month from
+        # the newest data, not the last data month.
+        features = engineer_features(merged, cfg, extend_for_live=True)
         model = RegimeClassifier(cfg)
         model.load_model()
 
-        latest_date = features.index[-1]
-        latest_features = features.reindex(columns=model.feature_names).iloc[[-1]]
-        if latest_features.isna().any(axis=None):
-            missing = latest_features.columns[latest_features.isna().iloc[0]].tolist()
-            print(f"ERROR: Latest features missing: {missing}")
+        # Use the latest month with a COMPLETE feature set — if the newest month
+        # is missing a not-yet-published series, fall back rather than failing.
+        model_feats = features.reindex(columns=model.feature_names)
+        complete = model_feats.dropna()
+        if complete.empty:
+            print(f"ERROR: No month has a complete feature set.")
             sys.exit(1)
+        latest_date = complete.index[-1]
+        latest_features = complete.iloc[[-1]]
+        newest = model_feats.index[-1]
+        if latest_date != newest:
+            missing = model_feats.columns[model_feats.loc[newest].isna()].tolist()
+            print(f"  NOTE: newest month {newest.strftime('%Y-%m')} incomplete "
+                  f"(missing {missing}); using latest complete month "
+                  f"{latest_date.strftime('%Y-%m')}.")
 
         proba = model.predict_proba(latest_features)[0]
-        market_data = _gather_market_data(merged, latest_date)
+        # Unlagged market signals from the latest real data month (the extended
+        # feature month is not present in merged).
+        market_data = _gather_market_data(merged, merged.index[-1])
         _, weights, overlay_reason = probabilities_to_weights(proba, cfg, market_data)
 
         # Read last backtest weight for smoothing
@@ -170,17 +183,31 @@ def main():
     print("\n── Step 5: Live Prediction ───────────────────────────────")
     import numpy as np
 
-    # Use full features (not intersected with labels) so the latest month is available
-    latest_date = features.index[-1]
-    latest_features = features.reindex(columns=final_model.feature_names).iloc[[-1]]
-    if latest_features.isna().any(axis=None):
-        missing = latest_features.columns[latest_features.isna().iloc[0]].tolist()
-        print(f"  WARNING: Latest features missing: {missing}")
-        print(f"  Skipping live prediction.")
+    # Build features extended one lag into the future so the newest DATA month
+    # (e.g. June) produces a prediction for the UPCOMING month (July) rather than
+    # the last data month. If the newest month is missing a not-yet-published
+    # series, fall back to the most recent month with a COMPLETE feature set
+    # rather than skipping the live prediction (which leaves the UI stale).
+    live_features = engineer_features(merged, cfg, extend_for_live=True)
+    model_feats = live_features.reindex(columns=final_model.feature_names)
+    complete = model_feats.dropna()
+    if complete.empty:
+        print(f"  WARNING: No month has a complete feature set; skipping live prediction.")
     else:
+        latest_date = complete.index[-1]
+        latest_features = complete.iloc[[-1]]
+        newest = model_feats.index[-1]
+        if latest_date != newest:
+            missing = model_feats.columns[model_feats.loc[newest].isna()].tolist()
+            print(f"  NOTE: newest month {newest.strftime('%Y-%m')} incomplete "
+                  f"(missing {missing}); using latest complete month "
+                  f"{latest_date.strftime('%Y-%m')}.")
         proba = final_model.predict_proba(latest_features)[0]
         pred_class = np.argmax(proba)
-        market_data = _gather_market_data(merged, latest_date)
+        # Current (unlagged) market signals come from the latest REAL data month,
+        # which is the last row actually present in merged (the extended feature
+        # month is not in merged).
+        market_data = _gather_market_data(merged, merged.index[-1])
         _, weights, overlay_reason = probabilities_to_weights(proba, cfg, market_data)
 
         # Smooth against last backtest weight

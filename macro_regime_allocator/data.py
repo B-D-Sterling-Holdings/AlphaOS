@@ -126,7 +126,7 @@ def load_data(cfg: Config) -> pd.DataFrame:
 
 # ── Feature Engineering ─────────────────────────────────────────────────────
 
-def engineer_features(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame, cfg: Config, extend_for_live: bool = False) -> pd.DataFrame:
     """Build the full feature matrix. All features lagged by macro_lag_months.
 
     The uniform 1-month lag serves two purposes:
@@ -134,6 +134,14 @@ def engineer_features(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
       - Market series (VIX, equity) at t-1 are PREDICTIVE of t+1 outcomes
         (momentum persistence, volatility clustering), whereas t=0 values
         describe damage that already happened this month.
+
+    extend_for_live: when True, append `macro_lag_months` future month rows so
+    the newest available data, once lagged, produces a feature row for the
+    UPCOMING month. Without this, shift() pushes the latest month's data off the
+    end of the index and the model can only ever predict for the last DATA month
+    — never the next one. Used only for the live prediction; the backtest calls
+    this with the default (un-extended) matrix so its universe and realized
+    returns are unchanged.
     """
     print("Engineering features...")
     feats = pd.DataFrame(index=df.index)
@@ -180,15 +188,26 @@ def engineer_features(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
         if "equity_intramonth_dd" in df.columns:
             feats["equity_intramonth_dd"] = df["equity_intramonth_dd"]
 
+    # Optionally extend the index into the future so the newest month's data,
+    # once shifted by the lag, lands on a real feature row for the next month.
+    if extend_for_live and cfg.macro_lag_months > 0 and len(feats.index) > 0:
+        future = pd.DatetimeIndex([
+            feats.index[-1] + pd.offsets.MonthEnd(i)
+            for i in range(1, cfg.macro_lag_months + 1)
+        ])
+        feats = feats.reindex(feats.index.append(future))
+
     # Lag all features
     feats = feats.shift(cfg.macro_lag_months).dropna(how="all")
 
-    print(f"  Features ({len(feats.columns)}): {list(feats.columns)}")
-    print(f"  Shape: {feats.shape}")
-
-    os.makedirs(cfg.data_dir, exist_ok=True)
-    feats.to_csv(os.path.join(cfg.data_dir, "features.csv"))
-    print(f"  Saved to {cfg.data_dir}/features.csv")
+    # The extended matrix is a transient view for the live prediction — don't
+    # print/overwrite the canonical features.csv the backtest just wrote.
+    if not extend_for_live:
+        print(f"  Features ({len(feats.columns)}): {list(feats.columns)}")
+        print(f"  Shape: {feats.shape}")
+        os.makedirs(cfg.data_dir, exist_ok=True)
+        feats.to_csv(os.path.join(cfg.data_dir, "features.csv"))
+        print(f"  Saved to {cfg.data_dir}/features.csv")
     return feats
 
 

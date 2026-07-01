@@ -44,6 +44,7 @@ export function buildSignalFromLivePrediction(lp) {
     probTbills: lp.prob_tbills != null ? Number(lp.prob_tbills) : null,
     overlay: lp.overlay || 'none',
     marketSignals: lp.market_signals || {},
+    source: 'live',
     ...deriveRegime(eqWeight),
   };
 }
@@ -74,6 +75,7 @@ export function buildSignalFromBacktest(backtest = []) {
     probTbills: last.prob_tbills != null ? Number(last.prob_tbills) : null,
     overlay: last.overlay || 'none',
     marketSignals: last.market_signals || {},
+    source: 'backtest',
     ...deriveRegime(eqWeight),
   };
 }

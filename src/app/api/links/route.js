@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { getDb } from '@/lib/db';
 import { summarizeByType } from '@/lib/summarizer';
 
@@ -64,27 +66,91 @@ function extractTextFromHtml(html) {
   return text.replace(/\s+/g, ' ').trim().substring(0, 5000);
 }
 
+/* ── SSRF guard ────────────────────────────────────────────────
+   These URLs are user-supplied and fetched from the server, so they must never
+   be able to reach loopback/private/link-local addresses (internal services,
+   cloud metadata endpoints). Every hop of a redirect chain is re-validated. */
+
+function isPrivateIPv4(ip) {
+  const [a, b] = ip.split('.').map(Number);
+  return (
+    a === 0 || a === 10 || a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||     // CGNAT
+    (a === 169 && b === 254) ||               // link-local / cloud metadata
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+}
+
+function isPrivateAddress(ip) {
+  if (isIP(ip) === 4) return isPrivateIPv4(ip);
+  const lower = ip.toLowerCase();
+  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return isPrivateIPv4(mapped[1]);
+  return (
+    lower === '::' || lower === '::1' ||
+    lower.startsWith('fc') || lower.startsWith('fd') ||  // unique local
+    lower.startsWith('fe8') || lower.startsWith('fe9') ||
+    lower.startsWith('fea') || lower.startsWith('feb')   // link-local
+  );
+}
+
+async function isSafePublicUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (!host || host === 'localhost' || host.endsWith('.localhost') ||
+      host.endsWith('.local') || host.endsWith('.internal')) {
+    return false;
+  }
+  try {
+    const addrs = isIP(host)
+      ? [{ address: host }]
+      : await lookup(host, { all: true });
+    return addrs.length > 0 && addrs.every((a) => !isPrivateAddress(a.address));
+  } catch {
+    return false; // unresolvable — nothing legitimate to fetch anyway
+  }
+}
+
 async function tryExtractFromUrl(url) {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    // Follow redirects manually so every hop is validated, not just the first.
+    let current = url;
+    for (let hop = 0; hop < 4; hop++) {
+      if (!(await isSafePublicUrl(current))) return '';
 
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; ResearchBot/1.0)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
 
-    clearTimeout(timeout);
-    if (!res.ok) return '';
+      const res = await fetch(current, {
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; ResearchBot/1.0)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
 
-    const ct = res.headers.get('content-type') || '';
-    if (!ct.includes('text/html') && !ct.includes('text/plain')) return '';
+      clearTimeout(timeout);
 
-    const html = await res.text();
-    return extractTextFromHtml(html);
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location) return '';
+        current = new URL(location, current).toString();
+        continue;
+      }
+
+      if (!res.ok) return '';
+
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('text/html') && !ct.includes('text/plain')) return '';
+
+      const html = await res.text();
+      return extractTextFromHtml(html);
+    }
+    return ''; // too many redirects
   } catch {
     return '';
   }

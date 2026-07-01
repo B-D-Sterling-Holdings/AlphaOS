@@ -1,6 +1,6 @@
 # Auto-synced from UI config before run
 
-end_date: "2026-06-01"
+end_date: "2026-07-01"
 max_iter: 1000
 max_weight: 0.97
 min_weight: 0.01
