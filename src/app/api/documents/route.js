@@ -3,6 +3,17 @@ import { getDb } from '@/lib/db';
 
 const BUCKET = 'documents';
 
+// Storage isolation is by the `<tenant_id>/` path prefix (storage bypasses
+// table RLS), so user-supplied values that land in an object path must not be
+// able to introduce separators or dot-dot segments.
+function safeSegment(value, fallback) {
+  const clean = String(value ?? '')
+    .replace(/[/\\]/g, '_')
+    .replace(/\.{2,}/g, '.')
+    .trim();
+  return clean || fallback;
+}
+
 export async function GET(request) {
   const supabase = await getDb();
   try {
@@ -38,7 +49,7 @@ export async function POST(request) {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const path = `${supabase.storagePrefix}${category}/${Date.now()}_${file.name}`;
+    const path = `${supabase.storagePrefix}${safeSegment(category, 'other')}/${Date.now()}_${safeSegment(file.name, 'file')}`;
 
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from(BUCKET)

@@ -16,6 +16,24 @@ export async function proxy(request) {
   // never restricted. The disabled-feature list rides in the signed session JWT
   // (set at login from the DB), so this stays edge-fast with no DB call.
   if (!pathname.startsWith('/api/')) {
+    // /admin is role-gated, not feature-gated: only admins may load it. The
+    // admin APIs are separately enforced server-side, but the page itself must
+    // not be reachable by a non-admin deep-linking to it.
+    if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+      const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+      // No/invalid session: let the client-side AuthGate handle login redirects.
+      if (!token) return NextResponse.next();
+      const session = await verifySession(token);
+      if (!session) return NextResponse.next();
+      if (session.role !== 'admin') {
+        const url = request.nextUrl.clone();
+        url.pathname = '/';
+        url.search = '';
+        return NextResponse.redirect(url);
+      }
+      return NextResponse.next();
+    }
+
     const feature = featureForPath(pathname);
     if (!feature) return NextResponse.next();
 
@@ -73,6 +91,7 @@ export const config = {
     '/api/:path*',
     // Gated page routes (feature suppression). `:path*` also matches the bare
     // route. Keep in sync with the feature hrefs in src/lib/features.js.
+    '/admin/:path*',
     '/holdings/:path*',
     '/allocation/:path*',
     '/macro-regime/:path*',

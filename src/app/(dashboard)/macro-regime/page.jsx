@@ -27,8 +27,9 @@ const DEFAULT_CONFIG = {
 };
 
 const CFG = [
-  { label: 'Data', fields: [
-    { key: 'start_date', label: 'Start', type: 'text' }, { key: 'end_date', label: 'End', type: 'text' },
+  { label: 'Dates', fields: [
+    { key: 'end_date', label: 'Data through', type: 'month', desc: 'Latest data month to include. The model allocates for the following month.' },
+    { key: 'start_date', label: 'History start', type: 'month', desc: 'First month of training history.' },
     { key: 'equity_ticker', label: 'Ticker', type: 'text' }, { key: 'forecast_horizon_months', label: 'Horizon', type: 'number', step: 1, suffix: 'mo' },
   ]},
   { label: 'Features', fields: [
@@ -376,14 +377,25 @@ function CfgField({ f, value, onChange }) {
   );
   if (f.type === 'select') return (
     <div>
-      <label className="mb-0.5 block text-[10px] text-gray-400">{f.label}</label>
+      <label className="mb-0.5 block text-[10px] text-gray-400" title={f.desc}>{f.label}</label>
       <select value={value || ''} onChange={e => onChange(f.key, e.target.value)}
         className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 focus:border-gray-400 focus:outline-none">{f.options.map(o => <option key={o}>{o}</option>)}</select>
     </div>
   );
+  // A month picker shows/edits YYYY-MM but stores a full YYYY-MM-01 date, so the
+  // value the Python pipeline reads (pd.Timestamp) is unchanged from the old text field.
+  if (f.type === 'month') return (
+    <div>
+      <label className="mb-0.5 block text-[10px] text-gray-400" title={f.desc}>{f.label}</label>
+      <input type="month" value={String(value ?? '').slice(0, 7)}
+        onChange={e => onChange(f.key, e.target.value ? `${e.target.value}-01` : '')}
+        className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-[11px] text-gray-700 focus:border-gray-400 focus:outline-none" />
+      {f.desc && <p className="mt-0.5 text-[9px] leading-tight text-gray-300">{f.desc}</p>}
+    </div>
+  );
   return (
     <div>
-      <label className="mb-0.5 block text-[10px] text-gray-400">{f.label}</label>
+      <label className="mb-0.5 block text-[10px] text-gray-400" title={f.desc}>{f.label}</label>
       <div className="relative">
         <input type={f.type} value={value ?? ''} step={f.step}
           onChange={e => { let v = e.target.value; if (f.type === 'number' && v !== '') v = Number(v); onChange(f.key, v); }}
@@ -752,6 +764,28 @@ export default function MacroRegimePage() {
   const cr = bt.filter((_, i) => i % step === 0 || i === bt.length - 1);
   const lbl = cr.map(r => fd(r.date));
 
+  // Allocation-over-time series = backtest weights + the current live prediction
+  // appended as the newest point. The live month has no realized return, so it's
+  // added ONLY to this weights chart, never to the performance charts (which
+  // still use cr/lbl). Works for any newly-added month, not just July: whatever
+  // `predict` currently reports becomes the last point (replacing it if the
+  // backtest already covers that month).
+  const allocRows = (() => {
+    const rows = cr.map(r => ({ date: fd(r.date), weight_equity: r.weight_equity, live: false }));
+    if (predict && predict.equityWeight != null && predict.allocationFor) {
+      const livePoint = { date: predict.allocationFor, weight_equity: predict.equityWeight, live: true };
+      if (rows.length && rows[rows.length - 1].date === predict.allocationFor) {
+        rows[rows.length - 1] = livePoint; // same month already in backtest — override
+      } else if (!rows.length || predict.allocationFor > rows[rows.length - 1].date) {
+        rows.push(livePoint); // newer month — append
+      }
+    }
+    return rows;
+  })();
+  const allocLbl = allocRows.map(r => r.date);
+  // Highlight only the live point so the newest prediction is visible on the line.
+  const allocPointRadius = allocRows.map(r => (r.live ? 4 : 0));
+
   if (loading) return (
     <div className="mx-auto max-w-6xl px-6 py-8">
       <div className="h-5 w-36 rounded skeleton mb-8" />
@@ -788,8 +822,14 @@ export default function MacroRegimePage() {
               <div className="absolute top-0 left-0 right-0 h-0.5" style={{ backgroundColor: regimeColor }} />
 
               {/* Date tag */}
-              <div className="text-[10px] text-gray-400 mb-5">
-                {sig.allocationFor || '--'} · data thru {sig.dataAsOf || '--'}
+              <div className="text-[10px] text-gray-400 mb-5 flex items-center gap-1.5 flex-wrap">
+                <span>{sig.allocationFor || '--'} · data thru {sig.dataAsOf || '--'}</span>
+                {sig.source === 'backtest' && (
+                  <span title="The last full run did not produce a live prediction (the latest month's data was incomplete), so this is derived from the most recent backtest row. Re-run once the data is available."
+                    className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 ring-1 ring-amber-200">
+                    backtest fallback
+                  </span>
+                )}
               </div>
 
               {/* Doughnut centered */}
@@ -851,14 +891,14 @@ export default function MacroRegimePage() {
           )}
 
           {/* Allocation Over Time Chart */}
-          {cr.length > 0 && (
+          {allocRows.length > 0 && (
             <div className="rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 p-5">
               <h3 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-4">Allocation Over Time</h3>
               <div className="h-52">
                 <Line
-                  data={{ labels: lbl, datasets: [
-                    { label: 'Equity', data: cr.map(r => r.weight_equity), borderColor: regimeColor || '#111', backgroundColor: `${regimeColor || '#111'}10`, fill: true, stepped: 'before', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 3 },
-                    { label: 'T-Bills', data: cr.map(r => r.weight_equity != null ? 1 : null), borderColor: 'transparent', backgroundColor: 'rgba(0,0,0,0.02)', fill: true, stepped: 'before', borderWidth: 0, pointRadius: 0, pointHoverRadius: 0 },
+                  data={{ labels: allocLbl, datasets: [
+                    { label: 'Equity', data: allocRows.map(r => r.weight_equity), borderColor: regimeColor || '#111', backgroundColor: `${regimeColor || '#111'}10`, fill: true, stepped: 'before', borderWidth: 1.5, pointRadius: allocPointRadius, pointHoverRadius: 3, pointBackgroundColor: regimeColor || '#111', pointBorderColor: '#fff', pointBorderWidth: 1 },
+                    { label: 'T-Bills', data: allocRows.map(r => r.weight_equity != null ? 1 : null), borderColor: 'transparent', backgroundColor: 'rgba(0,0,0,0.02)', fill: true, stepped: 'before', borderWidth: 0, pointRadius: 0, pointHoverRadius: 0 },
                   ]}}
                   options={{
                     ...cOpts01(cOpts('pct')),
@@ -1475,6 +1515,37 @@ export default function MacroRegimePage() {
         {/* ── Config Tab ── */}
         {detailTab === 'config' && (
           <div className="rounded-2xl bg-white shadow-sm ring-1 ring-gray-100 p-5">
+            {(() => {
+              // Mirror the Python live prediction: data_as_of = the "Data
+              // through" month, allocation_month = that month + Macro Lag (the
+              // pipeline extends the feature index one lag into the future so the
+              // newest data predicts the upcoming month). Shown live so the
+              // target months are obvious before running.
+              const asOf = String(config.end_date || '').slice(0, 7);
+              const lag = Number(config.macro_lag_months) || 0;
+              let allocFor = '--';
+              if (/^\d{4}-\d{2}$/.test(asOf)) {
+                const [y, m] = asOf.split('-').map(Number);
+                const d = new Date(Date.UTC(y, m - 1 + lag, 1));
+                allocFor = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+              }
+              return (
+                <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-gray-100">
+                  <div>
+                    <div className="text-[9px] uppercase tracking-wider text-gray-400">Data as of</div>
+                    <div className="text-sm font-semibold text-gray-800">{asOf || '--'}</div>
+                  </div>
+                  <div className="text-gray-300">→</div>
+                  <div>
+                    <div className="text-[9px] uppercase tracking-wider text-gray-400">Allocation for</div>
+                    <div className="text-sm font-semibold text-gray-800">{allocFor}</div>
+                  </div>
+                  <p className="ml-auto max-w-sm text-[10px] leading-tight text-gray-400">
+                    Set “Data through” to your latest complete data month. The model allocates for the following month. If a series for that month isn’t published yet, it uses the latest month that is.
+                  </p>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
               {CFG.map(s => (
                 <div key={s.label}>

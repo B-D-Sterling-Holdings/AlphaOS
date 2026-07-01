@@ -7,6 +7,12 @@ import {
 } from '@/lib/auth';
 import { findUserByUsername } from '@/lib/users';
 import { sanitizeFeatureKeys } from '@/lib/features';
+import {
+  clientIp,
+  isLoginBlocked,
+  recordLoginFailure,
+  clearLoginFailures,
+} from '@/lib/loginRateLimit';
 
 // Attach the session cookie to a JSON response.
 function withSession(body, token) {
@@ -28,6 +34,16 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
     }
 
+    // Brute-force guard: repeated failures for this ip/username are refused
+    // before any password check runs. Successful logins clear the counter.
+    const ip = clientIp(request);
+    if (isLoginBlocked(ip, username)) {
+      return NextResponse.json(
+        { error: 'Too many failed attempts. Try again in a few minutes.' },
+        { status: 429 }
+      );
+    }
+
     // ── 1. Admin-created users (the users table). Each has its own tenant. ──
     let user = null;
     try {
@@ -40,8 +56,10 @@ export async function POST(request) {
         return NextResponse.json({ error: 'Account is disabled' }, { status: 403 });
       }
       if (!bcrypt.compareSync(password, user.password_hash)) {
+        recordLoginFailure(ip, username);
         return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
       }
+      clearLoginFailures(ip, username);
       const token = await createSession({
         userId: user.id,
         username: user.username,
@@ -65,6 +83,7 @@ export async function POST(request) {
     const cioUsername = process.env.AUTH_USERNAME;
     const cioHash = process.env.AUTH_PASSWORD_HASH;
     if (cioUsername && cioHash && username === cioUsername && bcrypt.compareSync(password, cioHash)) {
+      clearLoginFailures(ip, username);
       const token = await createSession({
         userId: 'cio-admin',
         username: cioUsername,
@@ -74,6 +93,7 @@ export async function POST(request) {
       return withSession({ ok: true, role: 'admin' }, token);
     }
 
+    recordLoginFailure(ip, username);
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
   } catch {
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });

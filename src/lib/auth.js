@@ -33,7 +33,8 @@ export async function createSession({ userId, username, tenantId, role = 'user',
 
 export async function verifySession(token) {
   try {
-    const { payload } = await jwtVerify(token, getSecret());
+    // Pin the algorithm so a token signed any other way is never accepted.
+    const { payload } = await jwtVerify(token, getSecret(), { algorithms: ['HS256'] });
     return payload;
   } catch {
     return null;
