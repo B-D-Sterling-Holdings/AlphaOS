@@ -99,7 +99,7 @@ function NavDropdown({ group, pathname, isOpen, onToggle, onOpen, onClose }) {
           <div className="px-3 pt-1.5 pb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">
             {group.label}
           </div>
-          {group.items.map(({ href, label, icon: ItemIcon, desc }) => {
+          {group.items.map(({ href, label, icon: ItemIcon }) => {
             const itemActive = isItemActive(href, pathname);
             return (
               <Link
@@ -119,13 +119,8 @@ function NavDropdown({ group, pathname, isOpen, onToggle, onOpen, onClose }) {
                 >
                   <ItemIcon size={17} />
                 </span>
-                <span className="flex flex-col min-w-0">
-                  <span className={`text-[14px] font-semibold leading-tight ${itemActive ? 'text-emerald-700' : 'text-gray-800'}`}>
-                    {label}
-                  </span>
-                  <span className="text-[11.5px] leading-tight truncate text-gray-400">
-                    {desc}
-                  </span>
+                <span className={`text-[14px] font-semibold leading-tight min-w-0 ${itemActive ? 'text-emerald-700' : 'text-gray-800'}`}>
+                  {label}
                 </span>
               </Link>
             );
@@ -186,7 +181,7 @@ function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin, groups }) {
               {group.label}
             </div>
             <div className="flex flex-col gap-0.5">
-              {group.items.map(({ href, label, icon: ItemIcon, desc }) => {
+              {group.items.map(({ href, label, icon: ItemIcon }) => {
                 const itemActive = isItemActive(href, pathname);
                 return (
                   <Link
@@ -200,10 +195,7 @@ function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin, groups }) {
                       ${itemActive ? 'bg-gradient-to-br from-emerald-500 to-teal-500 text-white' : 'bg-gray-100 text-gray-500'}`}>
                       <ItemIcon size={17} />
                     </span>
-                    <span className="flex flex-col min-w-0">
-                      <span className={`text-[14px] font-semibold leading-tight ${itemActive ? 'text-emerald-700' : 'text-gray-800'}`}>{label}</span>
-                      <span className="text-[11.5px] leading-tight truncate text-gray-400">{desc}</span>
-                    </span>
+                    <span className={`text-[14px] font-semibold leading-tight min-w-0 ${itemActive ? 'text-emerald-700' : 'text-gray-800'}`}>{label}</span>
                   </Link>
                 );
               })}

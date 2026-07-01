@@ -58,3 +58,20 @@ export async function PATCH(request) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
+
+export async function DELETE(request) {
+  const gate = await requireAdmin();
+  if (gate.error) return NextResponse.json({ error: gate.error }, { status: gate.status });
+
+  try {
+    const { id } = await request.json();
+    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    if (id === gate.session.userId) {
+      return NextResponse.json({ error: 'You cannot delete your own account' }, { status: 400 });
+    }
+    await deleteUser(id);
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return NextResponse.json({ error: e.message }, { status: 400 });
+  }
+}

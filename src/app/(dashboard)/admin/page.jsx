@@ -15,6 +15,7 @@ export default function AdminPage() {
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState('');
+  const [deletingId, setDeletingId] = useState(null);
 
   // Per-user feature-access editor: which user's panel is open, the in-progress
   // set of DISABLED feature keys, and whether a save is in flight.
@@ -111,6 +112,30 @@ export default function AdminPage() {
       loadUsers();
     } catch (e) {
       setError(e.message);
+    }
+  }
+
+  async function handleDelete(u) {
+    if (!window.confirm(
+      `Permanently delete "${u.username}" and its entire workspace?\n\nThis erases all of this user's data and cannot be undone.`
+    )) return;
+    setError('');
+    setNotice('');
+    setDeletingId(u.id);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: u.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+      setNotice(`Deleted "${u.username}" and its workspace.`);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDeletingId(null);
     }
   }
 
