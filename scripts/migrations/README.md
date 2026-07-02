@@ -41,3 +41,4 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 | `006_autonotify_sent.sql` | RPC for the auto-notify cron to write its dedup map without clobbering concurrent thesis edits. |
 | `007_lessons_learned.sql` | Lessons-learned tables. |
 | `008_feature_access.sql` | `users.disabled_features` — per-user feature suppression (admin "guard" toggles). |
+| `009_finish_tenant_keys.sql` | Re-scope the remaining GLOBAL keys per tenant (ticker_prices/fundamentals, theses, valuation_models, fund_nav_data, app_settings) so two tenants can hold the same ticker/date/setting. Also required for the demo login to seed those sections fully. |

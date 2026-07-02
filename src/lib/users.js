@@ -14,7 +14,7 @@ export async function findUserByUsername(username) {
   if (!username) return null;
   const { data, error } = await supabaseAdmin
     .from('users')
-    .select('id, username, password_hash, role, tenant_id, is_active, disabled_features')
+    .select('id, username, password_hash, role, tenant_id, is_active, is_demo, disabled_features')
     .ilike('username', username)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -155,7 +155,7 @@ const TENANT_DATA_TABLES = [
   'strategic_notes', 'candidate_positions', 'ideas',
   'prism_recommendations', 'prism_ticker_data', 'prism_ticker_documents',
   'macro_regime_config', 'macro_regime_runs', 'macro_regime_results',
-  'macro_regime_weights',
+  'macro_regime_weights', 'lessons', 'lesson_patterns',
 ];
 
 // Storage buckets whose objects are namespaced by a `<tenant_id>/` path prefix

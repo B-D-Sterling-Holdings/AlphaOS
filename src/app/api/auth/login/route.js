@@ -6,6 +6,7 @@ import {
   CIO_TENANT_ID,
 } from '@/lib/auth';
 import { findUserByUsername } from '@/lib/users';
+import { resetDemoTenant } from '@/lib/demoSeed';
 import { sanitizeFeatureKeys } from '@/lib/features';
 import {
   clientIp,
@@ -60,6 +61,17 @@ export async function POST(request) {
         return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
       }
       clearLoginFailures(ip, username);
+      // Demo accounts get a controlled, always-identical workspace: every login
+      // wipes the demo tenant and re-seeds the showcase dataset. Edits made
+      // during a demo session work normally but never survive to the next
+      // login. Non-fatal on failure — worst case the demo shows stale data.
+      if (user.is_demo) {
+        try {
+          await resetDemoTenant();
+        } catch (err) {
+          console.error('[demo] reset failed, logging in with existing data:', err);
+        }
+      }
       const token = await createSession({
         userId: user.id,
         username: user.username,
