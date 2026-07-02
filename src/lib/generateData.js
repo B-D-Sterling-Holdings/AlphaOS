@@ -86,6 +86,21 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// A cross-tenant upsert conflict surfaces as an RLS violation: until
+// scripts/migrations/009_finish_tenant_keys.sql runs, ticker data is keyed
+// GLOBALLY on (ticker, data_type), so once any tenant holds a row for a name
+// no other tenant can write theirs. Name the real fix instead of leaking the
+// raw Postgres error to the toast.
+function saveError(what, error) {
+  if (/row-level security/i.test(error?.message || '')) {
+    return new Error(
+      `Failed to save ${what}: another workspace already holds ${what} for this ticker, and the database still uses global ticker keys. ` +
+      `Run scripts/migrations/009_finish_tenant_keys.sql in the Supabase SQL editor, then retry.`
+    );
+  }
+  return new Error(`Failed to save ${what}: ${error?.message || 'unknown error'}`);
+}
+
 export async function generateTickerData(ticker, apiKey) {
   const supabase = await getDb();
   const upper = ticker.toUpperCase();
@@ -125,16 +140,33 @@ export async function generateTickerData(ticker, apiKey) {
     marketData.push({ metric: 'pct_change_1y', value: Math.round(pct1y * 100) / 100, date: currentDate });
   }
 
-  // Save prices to Supabase
-  await supabase.from('ticker_prices').upsert([
+  // Save prices to Supabase. Failing here (not just logging) matters twice
+  // over: silently dropping the price history left half-generated tickers, and
+  // erroring before the Alpha Vantage calls below spares ~25s of rate-limit
+  // sleeps plus three calls of daily API quota when the write can't land.
+  const { error: priceError } = await supabase.from('ticker_prices').upsert([
     { ticker: upper, data_type: 'daily_prices', data: dailyPrices, updated_at: new Date().toISOString() },
     { ticker: upper, data_type: 'market_data', data: marketData, updated_at: new Date().toISOString() },
   ]);
+  if (priceError) throw saveError('price history', priceError);
 
   // Fetch fundamentals from Alpha Vantage
   const incomeRaw = await fetchAlphaVantage('INCOME_STATEMENT', upper, apiKey);
   const incomeQ = parseReports(incomeRaw, 'quarterlyReports');
   const incomeA = parseReports(incomeRaw, 'annualReports');
+
+  // Alpha Vantage answers symbols it doesn't cover (OTC pink sheets, many
+  // foreign listings — e.g. CNSWF) with an empty body `{}` instead of an
+  // error, so the run used to sail through, report success with zero
+  // fundamentals rows, and the research page then said "no data" forever.
+  // Fail on the first empty statement: it spares the two remaining calls
+  // (+24s of rate-limit sleeps) and turns the silent nothing into an
+  // actionable message.
+  if (incomeQ.length === 0 && incomeA.length === 0) {
+    throw new Error(
+      `Alpha Vantage has no fundamentals for ${upper} — it generally doesn't cover OTC or foreign listings. Try the company's primary exchange symbol.`
+    );
+  }
   await sleep(12000);
 
   const balanceRaw = await fetchAlphaVantage('BALANCE_SHEET', upper, apiKey);
@@ -256,10 +288,16 @@ export async function generateTickerData(ticker, apiKey) {
     }
   }
 
-  if (fundamentalUpserts.length > 0) {
-    const { error } = await supabase.from('ticker_fundamentals').upsert(fundamentalUpserts);
-    if (error) throw new Error(`Failed to save fundamentals: ${error.message}`);
+  // Belt-and-braces for the partial-coverage case (statements exist but no
+  // metric has the 4 quarters TTM math needs): the page treats a ticker with
+  // no fundamentals rows as "no data", so returning success here would lie.
+  if (fundamentalUpserts.length === 0) {
+    throw new Error(
+      `Alpha Vantage returned no usable fundamentals for ${upper} (fewer than 4 quarters of every metric), so the research charts would be empty.`
+    );
   }
+  const { error } = await supabase.from('ticker_fundamentals').upsert(fundamentalUpserts);
+  if (error) throw saveError('fundamentals', error);
 
   return { ticker: upper, pricesDays: dailyPrices.length, fundamentalsTypes: fundamentalUpserts.length };
 }

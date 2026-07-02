@@ -18,6 +18,7 @@ import ReviewCommentsPanel from '@/components/ReviewCommentsPanel';
 import { RESEARCH_TABS } from '@/lib/researchProgress';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
+import { startGeneration, isGenerating, subscribeGeneration } from '@/lib/generateTickerJob';
 
 const FUNDAMENTALS_BOXES = [
   { key: 'revenueGrowth', label: 'Revenue and Growth', color: 'blue', placeholder: 'Revenue CAGR, segment growth, unit economics, pricing, and demand drivers...' },
@@ -703,6 +704,10 @@ export default function ResearchPage() {
     const cached = cache.get(`deep_research_tickerData_${ticker}`);
     if (cached) {
       setLoadedTickerData(cached);
+      // An older fetch's finally-block only clears the spinner when its ticker
+      // is still the latest request — landing on a cache hit right after
+      // switching names would otherwise leave the skeleton up forever.
+      setTickerLoading(false);
       return;
     }
     // Clear stale data while loading so the prior name's charts don't linger.
@@ -809,6 +814,32 @@ export default function ResearchPage() {
   useEffect(() => {
     cache.set('deep_research_activeTab', activeResearchTab);
   }, [activeResearchTab, cache]);
+
+  // "Generate Data" runs in a module-scope job (src/lib/generateTickerJob) so
+  // navigating to another tab, page, or company doesn't orphan it. On mount /
+  // company change, restore the spinner if that name is still generating; on
+  // completion, reload only if the finished name is the one on screen — the old
+  // in-component reload used to blank whichever company the user had switched to.
+  useEffect(() => {
+    setGenerating(isGenerating(selectedTicker));
+    return subscribeGeneration(({ ticker, ok, error }) => {
+      if (ticker === selectedTicker) {
+        setGenerating(false);
+        if (ok) {
+          setToast({ message: `Data generated for ${ticker}`, type: 'success' });
+          loadTickerData(ticker);
+        } else {
+          setToast({ message: `Error: ${error}`, type: 'error' });
+        }
+      } else {
+        // A run started on another name finished in the background; its caches
+        // are already invalidated by the job, so just surface the outcome.
+        setToast(ok
+          ? { message: `Data generated for ${ticker}`, type: 'success' }
+          : { message: `${ticker}: ${error}`, type: 'error' });
+      }
+    });
+  }, [selectedTicker, loadTickerData]);
 
   const saveThesis = useCallback(async (data) => {
     if (!selectedTicker || (!thesisDirty && !data)) return;
@@ -990,32 +1021,15 @@ export default function ResearchPage() {
     saveThesis(updated);
   };
 
-  const generateData = async () => {
-    setGenerating(true);
+  const generateData = () => {
     setShowGenerateModal(false);
     setShowUpdateModal(false);
+    if (!selectedTicker || isGenerating(selectedTicker)) return;
+    setGenerating(true);
     setToast({ message: `Generating data for ${selectedTicker}... This may take ~30 seconds.`, type: 'info' });
-    try {
-      const res = await fetch('/api/generate-data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: selectedTicker }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setToast({ message: `Data generated for ${selectedTicker}`, type: 'success' });
-        cache.set(`deep_research_tickerData_${selectedTicker}`, null);
-        cache.set(`deep_research_quote_${selectedTicker}`, null);
-        cache.set('deep_research_liveQuote', null);
-        loadTickerData(selectedTicker);
-      } else {
-        setToast({ message: `Error: ${data.error}`, type: 'error' });
-      }
-    } catch (e) {
-      setToast({ message: `Generation failed: ${e.message}`, type: 'error' });
-    } finally {
-      setGenerating(false);
-    }
+    // Cache invalidation and completion handling live in the job / the
+    // subscription above, so they run even if this page has unmounted.
+    startGeneration(selectedTicker, cache);
   };
 
   const updateFundamentalBox = (key, value, persist = false) => {

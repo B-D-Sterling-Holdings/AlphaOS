@@ -95,15 +95,23 @@ BEGIN
   END IF;
 END $$;
 
--- app_settings: deployed PK is (key) — global across tenants. Re-key on the
--- serial id (the per-tenant UNIQUE(tenant_id, key) from 005 already guards
--- business uniqueness; all reads/upserts go through it), and realign the id
--- sequence so future inserts can't collide with existing rows.
+-- app_settings: deployed PK is (key) — global across tenants. The DEPLOYED
+-- table is a bare key/value/tenant_id table with NO id column (it predates the
+-- schema file's `id SERIAL` version), so re-key the PK to (tenant_id, key)
+-- directly — all reads/upserts already target that pair. If the table DOES
+-- have the schema-file shape (serial id), keep id as the PK and realign its
+-- sequence instead; per-tenant uniqueness then stays with 005's UNIQUE.
 DO $$
 DECLARE
   pk_cols text;
+  has_id  boolean;
 BEGIN
   IF to_regclass('public.app_settings') IS NULL THEN RETURN; END IF;
+
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'app_settings' AND column_name = 'id'
+  ) INTO has_id;
 
   SELECT string_agg(a.attname, ',' ORDER BY k.ord) INTO pk_cols
   FROM pg_constraint c
@@ -111,16 +119,22 @@ BEGIN
   JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
   WHERE c.conrelid = 'public.app_settings'::regclass AND c.contype = 'p';
 
-  IF pk_cols IS DISTINCT FROM 'id' THEN
+  IF has_id THEN
+    IF pk_cols IS DISTINCT FROM 'id' THEN
+      ALTER TABLE public.app_settings DROP CONSTRAINT IF EXISTS app_settings_pkey;
+      ALTER TABLE public.app_settings ADD PRIMARY KEY (id);
+    END IF;
+    PERFORM setval(
+      pg_get_serial_sequence('public.app_settings', 'id'),
+      COALESCE((SELECT MAX(id) FROM public.app_settings), 0) + 1,
+      false
+    );
+  ELSIF pk_cols IS DISTINCT FROM 'tenant_id,key' THEN
     ALTER TABLE public.app_settings DROP CONSTRAINT IF EXISTS app_settings_pkey;
-    ALTER TABLE public.app_settings ADD PRIMARY KEY (id);
+    ALTER TABLE public.app_settings ADD PRIMARY KEY (tenant_id, key);
+    -- 005's per-tenant UNIQUE is now redundant with the PK.
+    ALTER TABLE public.app_settings DROP CONSTRAINT IF EXISTS app_settings_tenant_key_key;
   END IF;
-
-  PERFORM setval(
-    pg_get_serial_sequence('public.app_settings', 'id'),
-    COALESCE((SELECT MAX(id) FROM public.app_settings), 0) + 1,
-    false
-  );
 END $$;
 
 -- VERIFY:
@@ -133,7 +147,8 @@ END $$;
 -- Expect: PK (tenant_id, ticker, data_type) on the ticker tables,
 --         PK (tenant_id, ticker) on theses / valuation_models,
 --         UNIQUE (tenant_id, date) on fund_nav_data,
---         PK (id) + UNIQUE (tenant_id, key) on app_settings.
+--         PK (tenant_id, key) on app_settings (deployed shape, no id column)
+--         — or PK (id) + UNIQUE (tenant_id, key) if the table has a serial id.
 --
 -- NOTE: src/lib/generateData.js upserts rely on the PK as the conflict
 -- target, so they pick the per-tenant key up automatically.

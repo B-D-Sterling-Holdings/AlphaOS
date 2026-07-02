@@ -1,5 +1,6 @@
 import Navbar from "@/components/Navbar";
 import CommandPalette from "@/components/CommandPalette";
+import IssuesWidget from "@/components/IssuesWidget";
 import { CacheProvider } from "@/lib/CacheContext";
 import AuthGate from "@/components/AuthGate";
 import FeatureRouteGuard from "@/components/FeatureRouteGuard";
@@ -11,6 +12,7 @@ export default function DashboardLayout({ children }) {
         <div className="min-h-screen bg-white">
           <Navbar />
           <CommandPalette />
+          <IssuesWidget />
           <main className="pt-20">
             <FeatureRouteGuard>{children}</FeatureRouteGuard>
           </main>

@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { generateTickerData } from '@/lib/generateData';
 
+// Generation makes three Alpha Vantage calls with rate-limit pauses (~30s
+// total); a deployed serverless default timeout (10s) would kill it mid-run.
+export const maxDuration = 60;
+
 export async function POST(request) {
   try {
     const body = await request.json();
