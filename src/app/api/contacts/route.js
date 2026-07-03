@@ -78,7 +78,7 @@ export async function POST(req) {
     tags: body.tags || [],
     city: body.city || '',
     phone: body.phone || '',
-    notes: '',
+    notes: body.notes || '',
     last_meeting_note: '',
     updated_at: new Date().toISOString(),
   };

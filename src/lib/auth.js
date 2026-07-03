@@ -7,7 +7,8 @@ export const SESSION_COOKIE_NAME = 'session_token';
 export const CIO_TENANT_ID = '11111111-1111-1111-1111-111111111111';
 
 function getSecret() {
-  const secret = process.env.AUTH_JWT_SECRET;
+  const secret = process.env.AUTH_JWT_SECRET
+    || (process.env.NODE_ENV !== 'production' ? 'alphaos-local-preview-secret' : '');
   if (!secret) throw new Error('AUTH_JWT_SECRET is not set');
   return new TextEncoder().encode(secret);
 }
