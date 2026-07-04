@@ -8,6 +8,7 @@ import {
 import { findUserByUsername } from '@/lib/users';
 import { resetDemoTenant } from '@/lib/demoSeed';
 import { sanitizeFeatureKeys } from '@/lib/features';
+import { isUnrestrictedRole } from '@/lib/roles';
 import {
   clientIp,
   isLoginBlocked,
@@ -45,7 +46,8 @@ export async function POST(request) {
       );
     }
 
-    // ── 1. Admin-created users (the users table). Each has its own tenant. ──
+    // ── 1. Managed users (the users table). Owners/standalone users carry
+    //       their own tenant; sub-users carry their workspace's tenant. ──
     let user = null;
     try {
       user = await findUserByUsername(username);
@@ -72,23 +74,20 @@ export async function POST(request) {
           console.error('[demo] reset failed, logging in with existing data:', err);
         }
       }
+      // Admins and workspace owners are never feature-restricted; for users
+      // this seeds the hard middleware gate so deep-links are blocked from the
+      // very first request.
+      const disabledFeatures = isUnrestrictedRole(user.role)
+        ? []
+        : sanitizeFeatureKeys(user.disabled_features);
       const token = await createSession({
         userId: user.id,
         username: user.username,
         tenantId: user.tenant_id,
         role: user.role,
-        // Admins are never feature-restricted; for users this seeds the hard
-        // middleware gate so deep-links are blocked from the very first request.
-        disabledFeatures: user.role === 'admin' ? [] : sanitizeFeatureKeys(user.disabled_features),
+        disabledFeatures,
       });
-      return withSession(
-        {
-          ok: true,
-          role: user.role,
-          disabledFeatures: user.role === 'admin' ? [] : sanitizeFeatureKeys(user.disabled_features),
-        },
-        token
-      );
+      return withSession({ ok: true, role: user.role, disabledFeatures }, token);
     }
 
     // ── 2. Bootstrap CIO admin from env — owns the CIO tenant (existing data). ──

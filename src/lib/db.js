@@ -3,6 +3,7 @@ import { supabaseAdmin } from './supabaseAdmin';
 import { getTenantClient } from './supabaseTenant';
 import { SESSION_COOKIE_NAME, verifySession } from './auth';
 import { getUserAuthState } from './users';
+import { normalizeRole } from './roles';
 
 /*
   Request-scoped, tenant-aware data access.
@@ -63,7 +64,7 @@ export async function getSession() {
     userId: session.userId,
     username: session.username,
     tenantId: session.tenantId,
-    role: session.role === 'admin' ? 'admin' : 'user',
+    role: normalizeRole(session.role),
   };
 }
 

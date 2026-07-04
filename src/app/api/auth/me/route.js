@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { SESSION_COOKIE_NAME, createSession, verifySession } from '@/lib/auth';
 import { getUserAuthState } from '@/lib/users';
 import { sanitizeFeatureKeys } from '@/lib/features';
+import { normalizeRole, isUnrestrictedRole } from '@/lib/roles';
 
 const USERS_TABLE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -17,14 +18,14 @@ export async function GET(request) {
     return NextResponse.json({ authenticated: false }, { status: 401 });
   }
 
-  let role = session.role === 'admin' ? 'admin' : 'user';
+  let role = normalizeRole(session.role);
 
   // Read the live access list from the DB (falling back to the JWT claim if the
   // lookup fails) so an admin's change shows up on the user's next page load —
-  // not only after their week-long session JWT is reissued. Admins are never
-  // restricted. The same lookup enforces disable/delete mid-session: a revoked
-  // account is logged out here rather than riding out its 7-day token.
-  let disabledFeatures = role === 'admin' ? [] : sanitizeFeatureKeys(session.disabledFeatures);
+  // not only after their week-long session JWT is reissued. Admins and owners
+  // are never restricted. The same lookup enforces disable/delete mid-session: a
+  // revoked account is logged out here rather than riding out its 7-day token.
+  let disabledFeatures = isUnrestrictedRole(role) ? [] : sanitizeFeatureKeys(session.disabledFeatures);
   let claimsStale = false;
   if (USERS_TABLE_ID_RE.test(session.userId || '')) {
     try {
