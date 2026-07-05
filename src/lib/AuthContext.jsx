@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { sanitizeFeatureKeys } from '@/lib/features';
+import { normalizeRole, isUnrestrictedRole, canManageUsers } from '@/lib/roles';
 
 const AuthContext = createContext(null);
 
@@ -57,7 +58,7 @@ export function AuthProvider({ children }) {
         const data = await res.json();
         if (data.authenticated) {
           setAuthenticated(true);
-          setRole(data.role === 'admin' ? 'admin' : 'user');
+          setRole(normalizeRole(data.role));
           setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
         }
       }
@@ -99,7 +100,7 @@ export function AuthProvider({ children }) {
     const data = await res.json().catch(() => ({}));
     setAuthenticated(true);
     setSessionExpired(false);
-    setRole(data.role === 'admin' ? 'admin' : 'user');
+    setRole(normalizeRole(data.role));
     setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
     return true;
   }, []);
@@ -115,11 +116,26 @@ export function AuthProvider({ children }) {
     setDisabledFeatures([]);
   }, []);
 
-  // Admins are never feature-restricted, whatever the stored list says.
-  const effectiveDisabled = role === 'admin' ? [] : disabledFeatures;
+  // Admins and workspace owners are never feature-restricted, whatever the
+  // stored list says.
+  const effectiveDisabled = isUnrestrictedRole(role) ? [] : disabledFeatures;
 
   return (
-    <AuthContext.Provider value={{ authenticated, role, isAdmin: role === 'admin', disabledFeatures: effectiveDisabled, refreshSession, loading, sessionExpired, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        authenticated,
+        role,
+        isAdmin: role === 'admin',
+        // Workspace owners manage their own team; admins manage everyone.
+        canManageUsers: canManageUsers(role),
+        disabledFeatures: effectiveDisabled,
+        refreshSession,
+        loading,
+        sessionExpired,
+        login,
+        logout,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

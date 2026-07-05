@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { verifySession, SESSION_COOKIE_NAME } from '@/lib/auth';
 import { featureForPath, sanitizeFeatureKeys } from '@/lib/features';
+import { canManageUsers, isUnrestrictedRole } from '@/lib/roles';
 
 // Next.js proxy (formerly "middleware"). Runs on the edge for both API routes
 // and the gated page routes listed in `config.matcher` below.
@@ -16,16 +17,17 @@ export async function proxy(request) {
   // never restricted. The disabled-feature list rides in the signed session JWT
   // (set at login from the DB), so this stays edge-fast with no DB call.
   if (!pathname.startsWith('/api/')) {
-    // /admin is role-gated, not feature-gated: only admins may load it. The
-    // admin APIs are separately enforced server-side, but the page itself must
-    // not be reachable by a non-admin deep-linking to it.
+    // /admin is role-gated, not feature-gated: only admins and workspace
+    // owners may load it. The admin APIs are separately enforced server-side
+    // (owners are scoped to their own tenant there), but the page itself must
+    // not be reachable by a plain user deep-linking to it.
     if (pathname === '/admin' || pathname.startsWith('/admin/')) {
       const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
       // No/invalid session: let the client-side AuthGate handle login redirects.
       if (!token) return NextResponse.next();
       const session = await verifySession(token);
       if (!session) return NextResponse.next();
-      if (session.role !== 'admin') {
+      if (!canManageUsers(session.role)) {
         const url = request.nextUrl.clone();
         url.pathname = '/';
         url.search = '';
@@ -42,7 +44,8 @@ export async function proxy(request) {
     if (!token) return NextResponse.next();
     const session = await verifySession(token);
     if (!session) return NextResponse.next();
-    if (session.role === 'admin') return NextResponse.next();
+    // Admins and workspace owners are never feature-restricted.
+    if (isUnrestrictedRole(session.role)) return NextResponse.next();
 
     if (sanitizeFeatureKeys(session.disabledFeatures).includes(feature.key)) {
       const url = request.nextUrl.clone();

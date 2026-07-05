@@ -20,7 +20,7 @@ function getSecret() {
  * @param {string} claims.userId    stable id for the user (uuid, or a bootstrap id)
  * @param {string} claims.username
  * @param {string} claims.tenantId  the data partition this session may touch
- * @param {string} [claims.role]    'admin' | 'user'
+ * @param {string} [claims.role]    'admin' (global) | 'owner' (workspace main account) | 'user'
  * @param {string[]} [claims.disabledFeatures] feature keys switched off for this user
  */
 export async function createSession({ userId, username, tenantId, role = 'user', disabledFeatures = [] }) {

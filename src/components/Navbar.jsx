@@ -157,7 +157,7 @@ function SearchTrigger() {
 }
 
 // Full-screen drawer for narrow screens.
-function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin, groups }) {
+function MobileDrawer({ open, onClose, pathname, onLogout, canManageUsers, groups }) {
   if (!open) return null;
   return (
     <div className="lg:hidden fixed inset-0 z-[10000]">
@@ -208,7 +208,7 @@ function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin, groups }) {
           </div>
         ))}
 
-        {isAdmin && (
+        {canManageUsers && (
           <Link
             href="/admin"
             onClick={onClose}
@@ -231,7 +231,7 @@ function MobileDrawer({ open, onClose, pathname, onLogout, isAdmin, groups }) {
 
 export default function Navbar() {
   const pathname = usePathname();
-  const { logout, isAdmin, disabledFeatures } = useAuth();
+  const { logout, canManageUsers, disabledFeatures } = useAuth();
   const groups = visibleGroups(disabledFeatures);
   const [scrolled, setScrolled] = useState(false);
   const [openGroup, setOpenGroup] = useState(null); // only one dropdown open at a time
@@ -310,7 +310,7 @@ export default function Navbar() {
             <CircleDot size={17} />
           </button>
 
-          {isAdmin && (
+          {canManageUsers && (
             <Link
               href="/admin"
               className={`flex items-center justify-center w-9 h-9 rounded-xl transition-all duration-200 no-underline ${
@@ -361,7 +361,7 @@ export default function Navbar() {
         </div>
       </div>
 
-      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} pathname={pathname} onLogout={handleLogout} isAdmin={isAdmin} groups={groups} />
+      <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} pathname={pathname} onLogout={handleLogout} canManageUsers={canManageUsers} groups={groups} />
     </nav>
   );
 }
