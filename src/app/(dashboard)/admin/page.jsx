@@ -20,8 +20,10 @@ import { FEATURES } from '@/lib/features';
 
 // What a login IS, in words a human would use. `shared` = other logins exist
 // in the same workspace (a lone role-'user' login is a legacy solo account,
-// not somebody's team member).
+// not somebody's team member). The built-in CIO login is shown as the owner
+// of its workspace, whatever its global role.
 function roleLabel(u, shared) {
+  if (u.builtin) return 'Owner';
   if (u.role === 'admin') return 'Admin';
   if (u.role === 'owner') return 'Owner';
   return shared ? 'Member' : 'Solo user';
@@ -51,8 +53,10 @@ function StatusChip({ active }) {
 }
 
 // One login row: identity on the left, access + actions on the right.
-function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, onToggleActive, onDelete }) {
-  const restrictable = u.role === 'user';
+// `onSetRole` is admin-only: promote a member/solo login to workspace owner
+// or demote an owner back to member.
+function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, onToggleActive, onDelete, onSetRole }) {
+  const restrictable = u.role !== 'admin' && !u.builtin;
   const enabledCount = FEATURES.length - (u.disabledFeatures?.length || 0);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3">
@@ -62,6 +66,11 @@ function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, o
         <RoleChip label={label} />
         <StatusChip active={u.isActive} />
       </div>
+      {u.builtin ? (
+        <span className="text-[11px] text-gray-400 px-1" title="Credentials come from the server's environment variables — this login cannot be edited or deleted here">
+          Built-in login · full access
+        </span>
+      ) : (
       <div className="flex items-center gap-2">
         {restrictable ? (
           <button
@@ -78,6 +87,17 @@ function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, o
           </button>
         ) : (
           <span className="text-[11px] text-gray-400 px-1">Full access</span>
+        )}
+        {onSetRole && u.role !== 'admin' && (
+          <button
+            onClick={() => onSetRole(u)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-sky-200 text-sky-600 hover:bg-sky-50"
+            title={u.role === 'owner'
+              ? 'Demote to a regular member — they lose team management'
+              : 'Make this login the workspace’s owner — they can add and manage members'}
+          >
+            <Crown size={12} /> {u.role === 'owner' ? 'Make member' : 'Make owner'}
+          </button>
         )}
         <button
           onClick={() => onResetPassword(u)}
@@ -103,12 +123,16 @@ function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, o
           {deleting ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
         </button>
       </div>
+      )}
     </div>
   );
 }
 
 // Expanding panel under a member row: toggle which features stay visible.
-function FeatureAccessEditor({ username, draftDisabled, onToggle, onSave, onCancel, saving }) {
+// `features` is the grantable set: everything for admins; for owners, only
+// the features the admin left enabled for THEM (the server enforces the same
+// ceiling, this just keeps the UI honest).
+function FeatureAccessEditor({ username, features, draftDisabled, onToggle, onSave, onCancel, saving }) {
   return (
     <div className="px-5 py-4 bg-gray-50/60 border-t border-gray-100">
       <div className="flex items-center gap-2 mb-3 text-[12px] font-semibold text-gray-600">
@@ -116,7 +140,7 @@ function FeatureAccessEditor({ username, draftDisabled, onToggle, onSave, onCanc
         <span className="font-normal text-gray-400">— switch off the areas this user should not see.</span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-        {FEATURES.map((f) => {
+        {features.map((f) => {
           const on = !draftDisabled.includes(f.key);
           return (
             <button
@@ -206,7 +230,14 @@ function InlineMemberForm({ onSubmit, onCancel, busy }) {
 }
 
 export default function AdminPage() {
-  const { canManageUsers, isAdmin, loading: authLoading } = useAuth();
+  const { canManageUsers, isAdmin, disabledFeatures: myDisabled, loading: authLoading } = useAuth();
+
+  // What the caller may grant: admins hand out anything; owners only the
+  // features the admin left enabled for them (server enforces this too).
+  const grantableFeatures = useMemo(
+    () => (isAdmin ? FEATURES : FEATURES.filter((f) => !(myDisabled || []).includes(f.key))),
+    [isAdmin, myDisabled]
+  );
 
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -222,6 +253,7 @@ export default function AdminPage() {
   const [addingMember, setAddingMember] = useState(false);
 
   const [deletingId, setDeletingId] = useState(null);
+  const [deletingTenantId, setDeletingTenantId] = useState(null);
 
   // Per-user feature-access editor.
   const [editingId, setEditingId] = useState(null);
@@ -249,24 +281,33 @@ export default function AdminPage() {
 
   // Admin view: group logins into workspaces (owner first, then members) and a
   // separate Administrators list. Admins are global, so their personal tenant
-  // is an implementation detail we don't surface as a "workspace".
-  const { workspaces, admins } = useMemo(() => {
-    const admins = users.filter((u) => u.role === 'admin');
+  // is an implementation detail we don't surface as a "workspace" — except the
+  // built-in CIO login, which IS the owner of the CIO Alpha workspace. That
+  // one is split out as `adminWorkspace` and pinned at the top of the page,
+  // visually set apart to show it sits above the ordinary workspaces.
+  const { adminWorkspace, workspaces, admins } = useMemo(() => {
+    const admins = users.filter((u) => u.role === 'admin' && !u.builtin);
     const byTenant = new Map();
     for (const u of users) {
-      if (u.role === 'admin') continue;
+      if (u.role === 'admin' && !u.builtin) continue;
       if (!byTenant.has(u.tenantId)) {
         byTenant.set(u.tenantId, { id: u.tenantId, name: u.tenantName || u.username, users: [] });
       }
       byTenant.get(u.tenantId).users.push(u);
     }
     const rank = { owner: 0, user: 1 };
-    const workspaces = [...byTenant.values()].map((ws) => ({
+    const userRank = (u) => (u.builtin ? 0 : (rank[u.role] ?? 2));
+    const all = [...byTenant.values()].map((ws) => ({
       ...ws,
-      users: [...ws.users].sort((a, b) => (rank[a.role] ?? 2) - (rank[b.role] ?? 2)),
+      builtin: ws.users.some((u) => u.builtin),
+      users: [...ws.users].sort((a, b) => userRank(a) - userRank(b)),
     }));
-    workspaces.sort((a, b) => a.name.localeCompare(b.name));
-    return { workspaces, admins };
+    all.sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      adminWorkspace: all.find((ws) => ws.builtin) || null,
+      workspaces: all.filter((ws) => !ws.builtin),
+      admins,
+    };
   }, [users]);
 
   // Owner view: just their members; their own login is the admin's to manage.
@@ -405,7 +446,7 @@ export default function AdminPage() {
     const isSharedMember =
       u.role === 'user' && users.some((o) => o.id !== u.id && o.tenantId === u.tenantId);
     const warning = isSharedMember
-      ? `Remove "${u.username}" from the workspace?\n\nTheir login is deleted. The workspace's data is kept.`
+      ? `Remove "${u.username}" from the workspace?\n\nOnly their login is deleted — the workspace's data stays with the rest of the team. To erase everything, use the workspace's "Delete workspace" button.`
       : `Permanently delete "${u.username}" and its entire workspace?\n\nThis erases all workspace data${u.role === 'owner' ? ' and every member\'s login' : ''} and cannot be undone.`;
     if (!window.confirm(warning)) return;
     setError('');
@@ -432,6 +473,55 @@ export default function AdminPage() {
     }
   }
 
+  // Admin: promote a login to workspace owner, or demote an owner to member.
+  async function handleSetRole(u) {
+    const promote = u.role !== 'owner';
+    const warning = promote
+      ? `Make "${u.username}" an owner of this workspace?\n\nOwners can add members and manage the team's feature access — limited to the access you've granted them.`
+      : `Make "${u.username}" a regular member?\n\nThey lose the ability to add or manage team members.`;
+    if (!window.confirm(warning)) return;
+    setError('');
+    setNotice('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: u.id, role: promote ? 'owner' : 'user' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to change role');
+      setNotice(promote ? `"${u.username}" is now a workspace owner.` : `"${u.username}" is now a regular member.`);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  // Admin: erase a whole workspace — data, files, and every login in it.
+  async function handleDeleteWorkspace(ws) {
+    const logins = ws.users.length === 1 ? '1 login' : `${ws.users.length} logins`;
+    const warning = `Permanently delete workspace "${ws.name}"?\n\nThis erases all of its data, its files, and ${logins}, and cannot be undone.`;
+    if (!window.confirm(warning)) return;
+    setError('');
+    setNotice('');
+    setDeletingTenantId(ws.id);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: ws.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete workspace');
+      setNotice(`Deleted workspace "${ws.name}" and all of its data.`);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDeletingTenantId(null);
+    }
+  }
+
   if (authLoading) return null;
 
   if (!canManageUsers) {
@@ -449,12 +539,100 @@ export default function AdminPage() {
     onResetPassword: resetPassword,
     onToggleActive: toggleActive,
     onDelete: handleDelete,
+    onSetRole: isAdmin ? handleSetRole : null,
   };
 
   const CREATE_ROLE_HINTS = {
     owner: 'A workspace owner gets a fresh, isolated workspace and can add and manage their own team members.',
     user: 'A solo user gets a fresh, isolated workspace just for themselves — no team.',
     admin: 'An admin has full access to every workspace and manages all users. Use sparingly.',
+  };
+
+  // One workspace card (admin view). The built-in CIO workspace gets violet
+  // accents to mark it as the admin tier, and can never be deleted.
+  const renderWorkspaceCard = (ws) => {
+    const shared = ws.users.length > 1;
+    return (
+      <div
+        key={ws.id}
+        className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
+          ws.builtin ? 'border-violet-200' : 'border-gray-200/80'
+        }`}
+      >
+        <div
+          className={`flex items-center justify-between px-5 py-3 border-b ${
+            ws.builtin ? 'bg-violet-50/60 border-violet-100' : 'bg-gray-50/70 border-gray-100'
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {ws.builtin
+              ? <ShieldCheck size={15} className="text-violet-500 shrink-0" />
+              : <Building2 size={15} className="text-gray-400 shrink-0" />}
+            <span className="font-semibold text-gray-800 truncate">{ws.name}</span>
+            {ws.builtin && (
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-violet-100 text-violet-700">
+                Admin
+              </span>
+            )}
+            <span className="text-[11px] text-gray-400">
+              {ws.users.length} {ws.users.length === 1 ? 'login' : 'logins'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setAddingTenantId(addingTenantId === ws.id ? null : ws.id)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-white"
+            >
+              <Plus size={12} /> Add member
+            </button>
+            {!ws.builtin && (
+              <button
+                onClick={() => handleDeleteWorkspace(ws)}
+                disabled={deletingTenantId === ws.id}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-50"
+                title="Permanently delete this workspace: all data, files, and every login"
+              >
+                {deletingTenantId === ws.id
+                  ? <Loader2 className="animate-spin" size={12} />
+                  : <Trash2 size={12} />}
+                Delete workspace
+              </button>
+            )}
+          </div>
+        </div>
+        {addingTenantId === ws.id && (
+          <InlineMemberForm
+            busy={addingMember}
+            onSubmit={(fields) => handleAddMember(ws.id, fields)}
+            onCancel={() => setAddingTenantId(null)}
+          />
+        )}
+        <div className="divide-y divide-gray-50">
+          {ws.users.map((u) => (
+            <div key={u.id}>
+              <UserRow
+                u={u}
+                label={roleLabel(u, shared)}
+                editing={editingId === u.id}
+                deleting={deletingId === u.id}
+                {...rowHandlers}
+              />
+              {editingId === u.id && (
+                <FeatureAccessEditor
+                  username={u.username}
+                  features={grantableFeatures}
+                  draftDisabled={draftDisabled}
+                  onToggle={toggleFeature}
+                  onSave={() => saveFeatures(u)}
+                  onCancel={() => setEditingId(null)}
+                  saving={savingFeatures}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -531,68 +709,29 @@ export default function AdminPage() {
         <div className="py-10 text-center text-gray-400 text-sm">Loading…</div>
       ) : isAdmin ? (
         <>
+          {/* ── Admin workspace: the CIO's own, pinned on top of the hierarchy ── */}
+          {adminWorkspace && (
+            <>
+              <div className="flex items-center gap-2 mb-3 text-[11px] font-bold uppercase tracking-wide text-violet-500">
+                <ShieldCheck size={13} /> Admin workspace
+              </div>
+              <div className="flex flex-col gap-4 mb-8">
+                {renderWorkspaceCard(adminWorkspace)}
+              </div>
+            </>
+          )}
+
           {/* ── Workspaces, one card each ── */}
           <div className="flex items-center gap-2 mb-3 text-[11px] font-bold uppercase tracking-wide text-gray-400">
             <Building2 size={13} /> Workspaces
           </div>
           {workspaces.length === 0 ? (
             <div className="bg-white rounded-2xl border border-gray-200/80 shadow-sm px-5 py-8 text-center text-gray-400 text-sm mb-8">
-              No workspaces yet. Create one above — the CIO login is built-in and not listed here.
+              No workspaces yet. Create one above.
             </div>
           ) : (
             <div className="flex flex-col gap-4 mb-8">
-              {workspaces.map((ws) => {
-                const shared = ws.users.length > 1;
-                return (
-                  <div key={ws.id} className="bg-white rounded-2xl border border-gray-200/80 shadow-sm overflow-hidden">
-                    <div className="flex items-center justify-between px-5 py-3 bg-gray-50/70 border-b border-gray-100">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Building2 size={15} className="text-gray-400 shrink-0" />
-                        <span className="font-semibold text-gray-800 truncate">{ws.name}</span>
-                        <span className="text-[11px] text-gray-400">
-                          {ws.users.length} {ws.users.length === 1 ? 'login' : 'logins'}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => setAddingTenantId(addingTenantId === ws.id ? null : ws.id)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-white"
-                      >
-                        <Plus size={12} /> Add member
-                      </button>
-                    </div>
-                    {addingTenantId === ws.id && (
-                      <InlineMemberForm
-                        busy={addingMember}
-                        onSubmit={(fields) => handleAddMember(ws.id, fields)}
-                        onCancel={() => setAddingTenantId(null)}
-                      />
-                    )}
-                    <div className="divide-y divide-gray-50">
-                      {ws.users.map((u) => (
-                        <div key={u.id}>
-                          <UserRow
-                            u={u}
-                            label={roleLabel(u, shared)}
-                            editing={editingId === u.id}
-                            deleting={deletingId === u.id}
-                            {...rowHandlers}
-                          />
-                          {editingId === u.id && (
-                            <FeatureAccessEditor
-                              username={u.username}
-                              draftDisabled={draftDisabled}
-                              onToggle={toggleFeature}
-                              onSave={() => saveFeatures(u)}
-                              onCancel={() => setEditingId(null)}
-                              saving={savingFeatures}
-                            />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+              {workspaces.map(renderWorkspaceCard)}
             </div>
           )}
 
@@ -645,6 +784,7 @@ export default function AdminPage() {
                   {editingId === u.id && (
                     <FeatureAccessEditor
                       username={u.username}
+                      features={grantableFeatures}
                       draftDisabled={draftDisabled}
                       onToggle={toggleFeature}
                       onSave={() => saveFeatures(u)}

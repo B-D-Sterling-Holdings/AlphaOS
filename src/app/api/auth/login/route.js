@@ -74,7 +74,7 @@ export async function POST(request) {
           console.error('[demo] reset failed, logging in with existing data:', err);
         }
       }
-      // Admins and workspace owners are never feature-restricted; for users
+      // Only global admins are never feature-restricted; for owners and users
       // this seeds the hard middleware gate so deep-links are blocked from the
       // very first request.
       const disabledFeatures = isUnrestrictedRole(user.role)

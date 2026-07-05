@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from './supabaseAdmin';
 import { sanitizeFeatureKeys } from './features';
 import { ROLES, normalizeRole, isUnrestrictedRole } from './roles';
+import { CIO_TENANT_ID } from './auth';
 
 /*
   User + tenant management. Runs through the service-role client (BYPASSRLS)
@@ -74,6 +75,40 @@ export async function getUserAuthState(id) {
 }
 
 /**
+ * The bootstrap CIO login as a virtual users-row shape, so the admin UI can
+ * show it as the owner of the CIO Alpha workspace. It has no users row (it
+ * lives in env vars), so `builtin: true` tells callers it can never be
+ * edited, disabled, or deleted through the users API. Null when the env
+ * login is not configured.
+ */
+export async function getBuiltinCioUser() {
+  const username = process.env.AUTH_USERNAME;
+  if (!username) return null;
+  let tenantName = 'CIO Alpha';
+  try {
+    const { data } = await supabaseAdmin
+      .from('tenants')
+      .select('name')
+      .eq('id', CIO_TENANT_ID)
+      .maybeSingle();
+    if (data?.name) tenantName = data.name;
+  } catch {
+    // tenants not migrated yet — the fallback name is fine for display
+  }
+  return {
+    id: 'cio-admin',
+    username,
+    role: 'admin',
+    builtin: true,
+    tenantId: CIO_TENANT_ID,
+    tenantName,
+    isActive: true,
+    disabledFeatures: [],
+    createdAt: null,
+  };
+}
+
+/**
  * List users, optionally scoped to one tenant. Owners MUST pass their own
  * tenantId — this helper does not know who is asking.
  */
@@ -112,8 +147,11 @@ const USER_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * no seeding — the account shares the workspace's data (scoped by RLS) and
  * sees only the features left enabled for it. Callers must have already
  * verified the caller is allowed to add users to that tenant.
+ *
+ * `disabledFeatures` seeds the new login's feature restrictions — used so a
+ * restricted owner's new members start with (at most) the owner's own access.
  */
-export async function createUser({ username, password, role = 'user', tenantId = null, createdBy = null }) {
+export async function createUser({ username, password, role = 'user', tenantId = null, createdBy = null, disabledFeatures = [] }) {
   const uname = String(username || '').trim();
   if (!uname) throw new Error('username is required');
   if (!password || String(password).length < 6) {
@@ -127,6 +165,7 @@ export async function createUser({ username, password, role = 'user', tenantId =
 
   const created_by = USER_UUID_RE.test(createdBy || '') ? createdBy : null;
   const password_hash = bcrypt.hashSync(String(password), 10);
+  const disabled_features = sanitizeFeatureKeys(disabledFeatures);
 
   // ── Sub-user: join an existing workspace ────────────────────────────────
   if (tenantId) {
@@ -144,7 +183,7 @@ export async function createUser({ username, password, role = 'user', tenantId =
 
     const { data: user, error: uErr } = await supabaseAdmin
       .from('users')
-      .insert({ username: uname, password_hash, role, tenant_id: tenantId, created_by })
+      .insert({ username: uname, password_hash, role, tenant_id: tenantId, created_by, disabled_features })
       .select('id, username, role, tenant_id')
       .single();
     if (uErr) throw new Error(uErr.message);
@@ -163,7 +202,7 @@ export async function createUser({ username, password, role = 'user', tenantId =
   // 2. user
   const { data: user, error: uErr } = await supabaseAdmin
     .from('users')
-    .insert({ username: uname, password_hash, role, tenant_id: tenant.id, created_by })
+    .insert({ username: uname, password_hash, role, tenant_id: tenant.id, created_by, disabled_features })
     .select('id, username, role, tenant_id')
     .single();
   if (uErr) {
@@ -187,6 +226,25 @@ export async function setUserPassword(id, password) {
   const { error } = await supabaseAdmin
     .from('users')
     .update({ password_hash, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Switch a login between workspace 'owner' and regular 'user' (member).
+ * Admin-only (callers enforce). Never touches 'admin' rows or the builtin
+ * CIO login (which has no users row anyway) — the global tier is not
+ * reachable from here.
+ */
+export async function setUserRole(id, role) {
+  if (!id) throw new Error('id is required');
+  if (!['owner', 'user'].includes(role)) throw new Error('invalid role');
+  const target = await getUserById(id);
+  if (!target) throw new Error('user not found');
+  if (target.role === 'admin') throw new Error('admin logins cannot be changed here');
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({ role, updated_at: new Date().toISOString() })
     .eq('id', id);
   if (error) throw new Error(error.message);
 }
@@ -264,9 +322,9 @@ async function listStorageFilesUnder(bucket, folder) {
 /**
  * Delete every stored object belonging to one tenant — and ONLY that tenant.
  *
- * This is intentionally not exported: the only way to reach it is through
- * deleteUser(), so a prefix-wide storage wipe can never be triggered from
- * anywhere else. It also fails closed on anything that could widen the blast
+ * This is intentionally not exported: the only ways to reach it are
+ * deleteUser() and deleteWorkspace(), so a prefix-wide storage wipe can never
+ * be triggered from anywhere else. It also fails closed on anything that could widen the blast
  * radius: a non-UUID tenant id is rejected outright (an empty/garbage prefix
  * would otherwise match the whole bucket), and every path is re-checked to be
  * inside `<tenantId>/` before it is removed.
@@ -319,14 +377,21 @@ export async function deleteUser(id) {
   // Sub-user in a shared workspace: remove only the login. The tenant (and its
   // data, owned by the remaining logins) must survive.
   if (user.role === 'user') {
-    const { data: sibling, error: sErr } = await supabaseAdmin
-      .from('users')
-      .select('id')
-      .eq('tenant_id', user.tenant_id)
-      .neq('id', user.id)
-      .limit(1);
-    if (sErr) throw new Error(sErr.message);
-    if (sibling && sibling.length > 0) {
+    // The CIO workspace's owner is the built-in env login, which has no users
+    // row — a member there is never "the last login", so the sibling check
+    // would wrongly see an empty workspace and wipe the CIO's data.
+    let shared = user.tenant_id === CIO_TENANT_ID;
+    if (!shared) {
+      const { data: sibling, error: sErr } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('tenant_id', user.tenant_id)
+        .neq('id', user.id)
+        .limit(1);
+      if (sErr) throw new Error(sErr.message);
+      shared = !!(sibling && sibling.length > 0);
+    }
+    if (shared) {
       const { error: dErr } = await supabaseAdmin.from('users').delete().eq('id', user.id);
       if (dErr) throw new Error(dErr.message);
       return { workspaceDeleted: false };
@@ -338,12 +403,42 @@ export async function deleteUser(id) {
     throw new Error('refusing to delete: user has no valid tenant');
   }
 
+  await deleteWorkspace(user.tenant_id);
+  return { workspaceDeleted: true };
+}
+
+/**
+ * Permanently delete an entire workspace: stored files, every tenant-scoped
+ * row, and the tenant itself (which cascades all of its users rows — owner,
+ * members, everyone). Nothing is kept.
+ *
+ * This is the cleanse behind the owner/solo path of deleteUser() and the
+ * admin's explicit "Delete workspace" action. Callers must enforce authz
+ * (global admin only) and never pass the caller's own tenant.
+ */
+export async function deleteWorkspace(tenantId) {
+  if (!TENANT_UUID_RE.test(tenantId || '')) {
+    throw new Error('refusing to delete: not a valid tenant id');
+  }
+  // The CIO tenant holds the original production data and its owner is the
+  // built-in env login — it must never be wiped through this path.
+  if (tenantId === CIO_TENANT_ID) {
+    throw new Error('the built-in CIO workspace cannot be deleted');
+  }
+  const { data: tenant, error: tfErr } = await supabaseAdmin
+    .from('tenants')
+    .select('id')
+    .eq('id', tenantId)
+    .maybeSingle();
+  if (tfErr) throw new Error(tfErr.message);
+  if (!tenant) throw new Error('workspace not found');
+
   // 1. Stored objects first — if the prefix guard rejects, nothing else runs.
-  await purgeTenantStorage(user.tenant_id);
+  await purgeTenantStorage(tenantId);
 
   // 2. All tenant-scoped data (no FK cascade on these tables).
   for (const table of TENANT_DATA_TABLES) {
-    const { error } = await supabaseAdmin.from(table).delete().eq('tenant_id', user.tenant_id);
+    const { error } = await supabaseAdmin.from(table).delete().eq('tenant_id', tenantId);
     // A table may not exist in every deployment — ignore "missing table" errors.
     if (error && error.code !== '42P01' && !/does not exist/i.test(error.message)) {
       throw new Error(`delete ${table}: ${error.message}`);
@@ -351,9 +446,8 @@ export async function deleteUser(id) {
   }
 
   // 3. The tenant row — cascades to every users row in the workspace.
-  const { error: tErr } = await supabaseAdmin.from('tenants').delete().eq('id', user.tenant_id);
+  const { error: tErr } = await supabaseAdmin.from('tenants').delete().eq('id', tenantId);
   if (tErr) throw new Error(tErr.message);
-  return { workspaceDeleted: true };
 }
 
 /** Insert the singleton config rows a fresh tenant needs (service role). */
