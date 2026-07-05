@@ -216,6 +216,38 @@ export async function createUser({ username, password, role = 'user', tenantId =
   return { id: user.id, username: user.username, role: user.role, tenantId: user.tenant_id };
 }
 
+/**
+ * Rename a login. Admin-only (callers enforce). The old name stays in any
+ * live session JWT until the user's next login/refresh — display only.
+ */
+export async function setUsername(id, username) {
+  if (!id) throw new Error('id is required');
+  const uname = String(username || '').trim();
+  if (!uname) throw new Error('username is required');
+  const existing = await findUserByUsername(uname);
+  if (existing && existing.id !== id) {
+    throw new Error(`username "${uname}" is already taken`);
+  }
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({ username: uname, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw new Error(error.message);
+  return uname;
+}
+
+/** Rename a workspace — its display name only. Admin-only (callers enforce). */
+export async function renameWorkspace(tenantId, name) {
+  if (!TENANT_UUID_RE.test(tenantId || '')) {
+    throw new Error('not a valid tenant id');
+  }
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('name is required');
+  const { error } = await supabaseAdmin.from('tenants').update({ name: clean }).eq('id', tenantId);
+  if (error) throw new Error(error.message);
+  return clean;
+}
+
 /** Reset a user's password. Callers must enforce authz (admin/owner-scoped). */
 export async function setUserPassword(id, password) {
   if (!id) throw new Error('id is required');

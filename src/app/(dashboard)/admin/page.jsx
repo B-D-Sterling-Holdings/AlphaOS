@@ -4,7 +4,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import {
   UserPlus, ShieldCheck, Loader2, Users, SlidersHorizontal, Lock, Check,
-  Trash2, KeyRound, Building2, Plus, X, Crown,
+  Trash2, KeyRound, Building2, Plus, X, Crown, MoreHorizontal, Power,
+  Eye, EyeOff, Pencil,
 } from 'lucide-react';
 import { FEATURES } from '@/lib/features';
 
@@ -44,18 +45,58 @@ function RoleChip({ label }) {
   );
 }
 
+// Active is the norm, so only the exception is flagged.
 function StatusChip({ active }) {
+  if (active) return null;
   return (
-    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${active ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
-      {active ? 'active' : 'disabled'}
+    <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-red-100 text-red-600">
+      disabled
     </span>
+  );
+}
+
+// Kebab dropdown holding the rare per-login actions, so a row shows one
+// quiet button instead of a strip of them. Items: { icon, label, danger?, onClick }.
+function ActionMenu({ items, ariaLabel }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors ${
+          open ? 'border-gray-300 bg-gray-100 text-gray-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+        }`}
+        aria-label={ariaLabel}
+        aria-expanded={open}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-9 z-20 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1">
+            {items.map((it) => (
+              <button
+                key={it.label}
+                onClick={() => { setOpen(false); it.onClick(); }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12px] font-medium ${
+                  it.danger ? 'text-red-600 hover:bg-red-50' : 'text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <it.icon size={13} /> {it.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
 // One login row: identity on the left, access + actions on the right.
 // `onSetRole` is admin-only: promote a member/solo login to workspace owner
 // or demote an owner back to member.
-function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, onToggleActive, onDelete, onSetRole }) {
+function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, onToggleActive, onDelete, onSetRole, onRename }) {
   const restrictable = u.role !== 'admin' && !u.builtin;
   const enabledCount = FEATURES.length - (u.disabledFeatures?.length || 0);
   return (
@@ -88,40 +129,35 @@ function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, o
         ) : (
           <span className="text-[11px] text-gray-400 px-1">Full access</span>
         )}
-        {onSetRole && u.role !== 'admin' && (
-          <button
-            onClick={() => onSetRole(u)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-sky-200 text-sky-600 hover:bg-sky-50"
-            title={u.role === 'owner'
-              ? 'Demote to a regular member — they lose team management'
-              : 'Make this login the workspace’s owner — they can add and manage members'}
-          >
-            <Crown size={12} /> {u.role === 'owner' ? 'Make member' : 'Make owner'}
-          </button>
+        {deleting ? (
+          <span className="inline-flex items-center justify-center w-8 h-8 text-gray-400">
+            <Loader2 className="animate-spin" size={14} />
+          </span>
+        ) : (
+          <ActionMenu
+            ariaLabel={`Actions for ${u.username}`}
+            items={[
+              ...(onRename
+                ? [{ icon: Pencil, label: 'Rename login', onClick: () => onRename(u) }]
+                : []),
+              ...(onSetRole && u.role !== 'admin'
+                ? [{
+                    icon: Crown,
+                    label: u.role === 'owner' ? 'Make member' : 'Make owner',
+                    onClick: () => onSetRole(u),
+                  }]
+                : []),
+              { icon: KeyRound, label: 'Reset password', onClick: () => onResetPassword(u) },
+              { icon: Power, label: u.isActive ? 'Disable login' : 'Enable login', onClick: () => onToggleActive(u) },
+              {
+                icon: Trash2,
+                label: label === 'Member' ? 'Remove from workspace' : 'Delete login & workspace',
+                danger: true,
+                onClick: () => onDelete(u),
+              },
+            ]}
+          />
         )}
-        <button
-          onClick={() => onResetPassword(u)}
-          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50"
-          title="Reset password"
-          aria-label={`Reset password for ${u.username}`}
-        >
-          <KeyRound size={14} />
-        </button>
-        <button
-          onClick={() => onToggleActive(u)}
-          className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
-        >
-          {u.isActive ? 'Disable' : 'Enable'}
-        </button>
-        <button
-          onClick={() => onDelete(u)}
-          disabled={deleting}
-          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-50"
-          title={label === 'Member' ? 'Remove from workspace' : 'Delete login and workspace'}
-          aria-label={`Delete ${u.username}`}
-        >
-          {deleting ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
-        </button>
       </div>
       )}
     </div>
@@ -134,7 +170,7 @@ function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, o
 // ceiling, this just keeps the UI honest).
 function FeatureAccessEditor({ username, features, draftDisabled, onToggle, onSave, onCancel, saving }) {
   return (
-    <div className="px-5 py-4 bg-gray-50/60 border-t border-gray-100">
+    <div className="px-5 py-4 bg-gray-50/60 border-t border-gray-100 rounded-b-2xl">
       <div className="flex items-center gap-2 mb-3 text-[12px] font-semibold text-gray-600">
         <Lock size={13} /> Feature access for {username}
         <span className="font-normal text-gray-400">— switch off the areas this user should not see.</span>
@@ -185,6 +221,34 @@ function FeatureAccessEditor({ username, features, draftDisabled, onToggle, onSa
   );
 }
 
+// Password field with the usual eye toggle to reveal what was typed.
+// `className` styles the wrapper (grid/flex sizing), `inputClassName` the
+// input itself, so it can match either form's look.
+function PasswordInput({ className = '', inputClassName, value, onChange, ...props }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className={`relative ${className}`}>
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={onChange}
+        className={`w-full pr-9 ${inputClassName}`}
+        {...props}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        tabIndex={-1}
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-gray-400 hover:text-gray-600"
+        aria-label={show ? 'Hide password' : 'Show password'}
+        title={show ? 'Hide password' : 'Show password'}
+      >
+        {show ? <EyeOff size={15} /> : <Eye size={15} />}
+      </button>
+    </div>
+  );
+}
+
 // Compact inline username/password form ("Add member" inside a workspace card).
 function InlineMemberForm({ onSubmit, onCancel, busy }) {
   const [username, setUsername] = useState('');
@@ -202,13 +266,13 @@ function InlineMemberForm({ onSubmit, onCancel, busy }) {
         autoFocus
         className="flex-1 min-w-[140px] px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
       />
-      <input
-        type="password"
+      <PasswordInput
         value={password}
         onChange={(e) => setPassword(e.target.value)}
         placeholder="Password (min 6 chars)"
         required
-        className="flex-1 min-w-[180px] px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
+        className="flex-1 min-w-[180px]"
+        inputClassName="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
       />
       <button
         type="submit"
@@ -473,6 +537,52 @@ export default function AdminPage() {
     }
   }
 
+  // Admin: rename a login. Display-only elsewhere, but it IS the credential
+  // people type at login, so the prompt spells that out.
+  async function handleRenameUser(u) {
+    const username = window.prompt(
+      `New username for "${u.username}":\n\nThey'll use this to log in from now on.`,
+      u.username
+    );
+    if (username === null || username.trim() === '' || username.trim() === u.username) return;
+    setError('');
+    setNotice('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: u.id, username }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to rename login');
+      setNotice(`Renamed "${u.username}" to "${data.username}".`);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  // Admin: rename a workspace (its display name).
+  async function handleRenameWorkspace(ws) {
+    const name = window.prompt(`New name for workspace "${ws.name}":`, ws.name);
+    if (name === null || name.trim() === '' || name.trim() === ws.name) return;
+    setError('');
+    setNotice('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: ws.id, name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to rename workspace');
+      setNotice(`Renamed workspace "${ws.name}" to "${data.name}".`);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   // Admin: promote a login to workspace owner, or demote an owner to member.
   async function handleSetRole(u) {
     const promote = u.role !== 'owner';
@@ -540,6 +650,7 @@ export default function AdminPage() {
     onToggleActive: toggleActive,
     onDelete: handleDelete,
     onSetRole: isAdmin ? handleSetRole : null,
+    onRename: isAdmin ? handleRenameUser : null,
   };
 
   const CREATE_ROLE_HINTS = {
@@ -552,15 +663,17 @@ export default function AdminPage() {
   // accents to mark it as the admin tier, and can never be deleted.
   const renderWorkspaceCard = (ws) => {
     const shared = ws.users.length > 1;
+    // No overflow-hidden on the card — the row action menus must be able to
+    // escape it; corners are rounded explicitly instead.
     return (
       <div
         key={ws.id}
-        className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
+        className={`bg-white rounded-2xl border shadow-sm ${
           ws.builtin ? 'border-violet-200' : 'border-gray-200/80'
         }`}
       >
         <div
-          className={`flex items-center justify-between px-5 py-3 border-b ${
+          className={`flex items-center justify-between px-5 py-3 border-b rounded-t-2xl ${
             ws.builtin ? 'bg-violet-50/60 border-violet-100' : 'bg-gray-50/70 border-gray-100'
           }`}
         >
@@ -580,6 +693,14 @@ export default function AdminPage() {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
+              onClick={() => handleRenameWorkspace(ws)}
+              className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-white"
+              title="Rename workspace"
+              aria-label={`Rename workspace ${ws.name}`}
+            >
+              <Pencil size={13} />
+            </button>
+            <button
               onClick={() => setAddingTenantId(addingTenantId === ws.id ? null : ws.id)}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-gray-200 text-gray-600 hover:bg-white"
             >
@@ -589,13 +710,13 @@ export default function AdminPage() {
               <button
                 onClick={() => handleDeleteWorkspace(ws)}
                 disabled={deletingTenantId === ws.id}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-50"
-                title="Permanently delete this workspace: all data, files, and every login"
+                className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-50"
+                title="Delete workspace — erases all of its data, files, and every login"
+                aria-label={`Delete workspace ${ws.name}`}
               >
                 {deletingTenantId === ws.id
-                  ? <Loader2 className="animate-spin" size={12} />
-                  : <Trash2 size={12} />}
-                Delete workspace
+                  ? <Loader2 className="animate-spin" size={13} />
+                  : <Trash2 size={13} />}
               </button>
             )}
           </div>
@@ -670,13 +791,13 @@ export default function AdminPage() {
             required
             className="sm:col-span-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
           />
-          <input
-            type="password"
+          <PasswordInput
             value={form.password}
             onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
             placeholder="Password (min 6 chars)"
             required
-            className="sm:col-span-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
+            className="sm:col-span-2"
+            inputClassName="px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
           />
           {isAdmin && (
             <select
@@ -741,7 +862,7 @@ export default function AdminPage() {
               <div className="flex items-center gap-2 mb-3 text-[11px] font-bold uppercase tracking-wide text-gray-400">
                 <ShieldCheck size={13} /> Administrators
               </div>
-              <div className="bg-white rounded-2xl border border-gray-200/80 shadow-sm overflow-hidden divide-y divide-gray-50">
+              <div className="bg-white rounded-2xl border border-gray-200/80 shadow-sm divide-y divide-gray-50">
                 {admins.map((u) => (
                   <UserRow
                     key={u.id}
@@ -758,8 +879,8 @@ export default function AdminPage() {
         </>
       ) : (
         /* ── Owner view: just their team ── */
-        <div className="bg-white rounded-2xl border border-gray-200/80 shadow-sm overflow-hidden">
-          <div className="flex items-center gap-2 px-5 py-3 bg-gray-50/70 border-b border-gray-100">
+        <div className="bg-white rounded-2xl border border-gray-200/80 shadow-sm">
+          <div className="flex items-center gap-2 px-5 py-3 bg-gray-50/70 border-b border-gray-100 rounded-t-2xl">
             <Users size={15} className="text-gray-400" />
             <span className="font-semibold text-gray-800">Your team</span>
             <span className="text-[11px] text-gray-400">

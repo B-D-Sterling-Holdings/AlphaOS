@@ -10,6 +10,8 @@ import {
   setUserFeatures,
   setUserPassword,
   setUserRole,
+  setUsername,
+  renameWorkspace,
   deleteUser,
   deleteWorkspace,
   getBuiltinCioUser,
@@ -108,7 +110,17 @@ export async function PATCH(request) {
   if (gate.error) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   try {
-    const { id, isActive, disabledFeatures, password, role } = await request.json();
+    const { id, isActive, disabledFeatures, password, role, username, tenantId, name } = await request.json();
+
+    // Workspace rename (display name only). Admin-only.
+    if (tenantId !== undefined) {
+      if (!gate.isGlobalAdmin) {
+        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      }
+      const stored = await renameWorkspace(tenantId, name);
+      return NextResponse.json({ ok: true, name: stored });
+    }
+
     if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
     if (id === 'cio-admin') {
       return NextResponse.json(
@@ -130,6 +142,15 @@ export async function PATCH(request) {
       }
       await setUserRole(id, role);
       return NextResponse.json({ ok: true });
+    }
+
+    // Login rename. Admin-only.
+    if (username !== undefined) {
+      if (!gate.isGlobalAdmin) {
+        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      }
+      const stored = await setUsername(id, username);
+      return NextResponse.json({ ok: true, username: stored });
     }
 
     // Password reset. Owners are already scoped above; admins may reset anyone.
