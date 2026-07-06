@@ -1,5 +1,13 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getMacroPlotSignedUrl } from '@/lib/storage';
+
+// A stored plot value is either a storage PATH ("<tenant>/<runId>/<file>.png",
+// the current shape) or a legacy base64 PNG blob. Paths contain "/" and are
+// short; base64 blobs are long and have no "/".
+function looksLikePath(v) {
+  return typeof v === 'string' && v.includes('/') && v.length < 512;
+}
 
 export async function GET(req) {
   const supabase = await getDb();
@@ -21,26 +29,33 @@ export async function GET(req) {
     }
 
     if (!name) {
-      // Return list of available plots
+      // Return list of available plot filenames
       return NextResponse.json({ plots: Object.keys(data.plots) });
     }
 
     // Get specific plot
     const safeName = name.endsWith('.png') ? name : `${name}.png`;
-    const base64 = data.plots[safeName];
-
-    if (!base64) {
+    const value = data.plots[safeName];
+    if (!value) {
       return NextResponse.json({ error: 'Plot not found' }, { status: 404 });
     }
 
-    const buffer = Buffer.from(base64, 'base64');
+    // Current shape: a storage path -> 302 to a short-lived signed URL.
+    if (looksLikePath(value)) {
+      const signedUrl = await getMacroPlotSignedUrl(value);
+      return NextResponse.redirect(signedUrl, {
+        status: 302,
+        headers: { 'Cache-Control': 'private, max-age=240' },
+      });
+    }
+
+    // Legacy shape: base64 PNG inlined in the row -> decode and stream.
+    const buffer = Buffer.from(value, 'base64');
     return new NextResponse(buffer, {
-      headers: {
-        'Content-Type': 'image/png',
-        'Cache-Control': 'no-cache',
-      },
+      headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache' },
     });
   } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    const status = err?.status || 500;
+    return NextResponse.json({ error: err.message }, { status });
   }
 }

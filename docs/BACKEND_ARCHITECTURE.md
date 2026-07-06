@@ -209,7 +209,7 @@ exempt from the feature gate.
 | `/api/macro-regime/run` | POST/GET | S | POST: locally spawns `make <run|fast|validate|predict|clean>` in `macro_regime_allocator/` (config synced from Supabase to `config.yaml` first, YAML-injection-safe); on Vercel, dispatches the `macro-regime.yml` GitHub workflow instead. GET: status (global single-runner lockfile in `/tmp`, foreign-tenant runs masked, stale-PID recovery) + per-tenant log + last-5 history |
 | `/api/macro-regime/results` | GET | S | latest parsed backtest/metrics/report/validation + derived current signal |
 | `/api/macro-regime/predict` | GET/POST | S | current allocation signal from the latest results row (prefers the final-model `live_prediction`) |
-| `/api/macro-regime/plots` | GET | S | list plot names or stream one PNG (decoded from base64 JSONB) |
+| `/api/macro-regime/plots` | GET | S | list plot names, or 302-redirect one to a signed URL from the private `macro-plots` bucket (legacy base64 rows still stream inline) |
 | `/api/macro-regime/config`, `/api/macro-regime/weights` | GET/PUT | S | allocator hyper-parameters (merged over defaults) and saved weights |
 
 ### Cron

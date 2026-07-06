@@ -65,6 +65,8 @@ re-seeded on every `demo`/`demo` login (see `docs/DATABASE_ARCHITECTURE.md` §8)
 | `022_drop_legacy_prism_rag_demo.sql` | Drop the retired Prism AI tables (`prism_recommendations`, `prism_ticker_data`, `prism_ticker_documents`), the RAG/chat pipeline tables + `rag_coverage` view (`scraped_content`, `content_chunks`, `chat_conversations`, `chat_messages`, `rag_traces`), and all pre-multitenancy `demo_*` clones. None are read/written by live app code. |
 | `023_app_settings_jsonb.sql` | Convert `app_settings.value` from TEXT to **JSONB** (native per-tenant config; no more stringify/parse). Tolerates bare non-JSON string values (e.g. `activeWatchlistId = 'default'`). |
 | `024_config_into_app_settings.sql` | Collapse the six single-row config tables (`allocation_config`, `sector_config`, `factor_config`, `macro_regime_config`, `macro_regime_weights`, `portfolio_cash`) into `app_settings` keyed rows, then drop the tables. Copies data before dropping. |
+| `025_tenant_composite_indexes.sql` | Replace pre-multitenancy single-column secondary indexes with `(tenant_id, …)` composites so the RLS tenant filter + the secondary filter/sort share one index. |
+| `026_macro_plots_bucket.sql` | Create the private `macro-plots` storage bucket. Plot PNGs move out of `macro_regime_results.plots` base64 JSONB into storage; the row keeps path strings. Backfill existing rows with `scripts/migrate-macro-plots.mjs`. |
 
 All of 001–021 are applied to the live database (001–020 verified by probe
 2026-07-06; 021 applied and verified live in prod the same day, after the
@@ -73,3 +75,8 @@ written but not yet applied — run them by hand in the Supabase SQL editor, in
 order.** 023 and 024 each carry a deploy-order note in their header (ship the
 app code first); the two are otherwise independent-but-ordered (024 assumes 023
 has made `value` JSONB).
+
+025 is a plain index swap (no app dependency). 026 creates the `macro-plots`
+bucket; after applying it and deploying, run `scripts/migrate-macro-plots.mjs`
+to backfill existing base64 plot rows into storage (the reader route handles
+un-migrated base64 rows in the meantime, so there's no hard cutover).

@@ -355,7 +355,7 @@ const TENANT_DATA_TABLES = [
 // Storage buckets whose objects are namespaced by a `<tenant_id>/` path prefix
 // (see src/lib/db.js `storagePrefix`). Storage bypasses RLS, so isolation here is
 // purely by path — which is exactly why the purge below is so tightly guarded.
-const STORAGE_BUCKETS = ['research-images', 'documents'];
+const STORAGE_BUCKETS = ['research-images', 'documents', 'macro-plots'];
 
 // A tenant id MUST be a canonical UUID before it is ever used as a delete prefix.
 const TENANT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
