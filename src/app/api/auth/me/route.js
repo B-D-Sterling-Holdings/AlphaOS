@@ -1,5 +1,11 @@
 import { NextResponse } from 'next/server';
-import { SESSION_COOKIE_NAME, createSession, verifySession } from '@/lib/auth';
+import {
+  SESSION_COOKIE_NAME,
+  createSession,
+  verifySession,
+  setSessionCookie,
+  clearSessionCookie,
+} from '@/lib/auth';
 import { getUserAuthState, getSessionNotBefore } from '@/lib/users';
 import { sanitizeFeatureKeys } from '@/lib/features';
 import { normalizeRole, isUnrestrictedRole } from '@/lib/roles';
@@ -24,15 +30,7 @@ export async function GET(request) {
   try {
     const notBefore = await getSessionNotBefore(session.userId);
     if (notBefore && typeof session.iat === 'number' && session.iat < Math.floor(notBefore.getTime() / 1000)) {
-      const denied = NextResponse.json({ authenticated: false }, { status: 401 });
-      denied.cookies.set(SESSION_COOKIE_NAME, '', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 0,
-      });
-      return denied;
+      return clearSessionCookie(NextResponse.json({ authenticated: false }, { status: 401 }));
     }
   } catch {
     // transient — don't fail closed on the client's auth probe
@@ -52,15 +50,7 @@ export async function GET(request) {
     try {
       const state = await getUserAuthState(session.userId);
       if (!state || !state.isActive) {
-        const denied = NextResponse.json({ authenticated: false }, { status: 401 });
-        denied.cookies.set(SESSION_COOKIE_NAME, '', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
-          path: '/',
-          maxAge: 0,
-        });
-        return denied;
+        return clearSessionCookie(NextResponse.json({ authenticated: false }, { status: 401 }));
       }
       role = state.role;
       const live = state.disabledFeatures;
@@ -93,13 +83,7 @@ export async function GET(request) {
         role,
         disabledFeatures,
       });
-      response.cookies.set(SESSION_COOKIE_NAME, fresh, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 60 * 60 * 24 * 7, // matches JWT expiry
-      });
+      setSessionCookie(response, fresh);
     } catch {
       // Couldn't mint a replacement — keep the existing cookie.
     }

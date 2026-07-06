@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { SESSION_COOKIE_NAME, verifySession } from '@/lib/auth';
+import { SESSION_COOKIE_NAME, verifySession, clearSessionCookie } from '@/lib/auth';
 import { revokeSessionsBefore } from '@/lib/users';
 
 export async function POST(request) {
@@ -17,13 +17,5 @@ export async function POST(request) {
     // ignore — clearing the cookie below is the guaranteed part
   }
 
-  const response = NextResponse.json({ ok: true });
-  response.cookies.set(SESSION_COOKIE_NAME, '', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 0,
-  });
-  return response;
+  return clearSessionCookie(NextResponse.json({ ok: true }));
 }

@@ -170,21 +170,42 @@ Enforced in **four layers**:
 1. Edge proxy, pages (`src/proxy.js`) — blocks navigation/deep-links
    server-side, reading the denylist from the *signed JWT* (no DB call at the
    edge).
-2. Edge proxy, data APIs (`isApiAllowed` + `API_FEATURES` in `features.js`) —
-   a restricted user's direct `fetch('/api/holdings')` is refused with 403,
-   not just the page. An API owned by several features is blocked only when
-   **all** of them are off (e.g. `/api/thesis` serves Equity Research *and*
-   Strategic Hub); routes used by ungated surfaces (dashboard home, command
-   palette, issues, uploads) are intentionally never gated. *(fixed F2)*
+2. Edge proxy, data APIs (`isApiAllowed` in `features.js`) — **DEFAULT DENY**.
+   Every non-admin `/api/*` request is classified into exactly one bucket:
+   feature-owned (`API_FEATURES`), role-gated (`ROLE_GATED_API_ROUTES`), or
+   common (`COMMON_API_ROUTES`). A feature route is refused (403) when **all**
+   its owning features are off (e.g. `/api/thesis` serves Equity Research *and*
+   Strategic Hub — losing one must not break the other). Anything
+   **unclassified fails closed** — so a new route that someone forgets to
+   register denies access instead of leaking a hidden feature's data.
+   - `/api/admin/*` is **role-gated at the edge**: the proxy checks
+     `canManageUsers(role)` and 403s a plain `user` *before* the request
+     reaches the handler, mirroring the `/admin` page gate. The handler
+     re-checks (`requireManager`) and additionally scopes owners to their own
+     workspace — defense-in-depth, and there is no *feature* key for user
+     management so role is the correct axis.
+   - The short `COMMON_API_ROUTES` list is the only always-open escape hatch,
+     each entry justified inline (`/api/quotes` public market data,
+     `/api/upload`/`/api/storage`/`/api/issues` app-wide surfaces,
+     `/api/auth`+`/api/cron` short-circuited earlier). Note "common" means only
+     "skipped by the feature gate" — a valid session is still required, and RLS
+     still scopes every read to the caller's tenant.
+   *(F2; hardened to default-deny — closed the macro-regime/allocation/tasks
+   leaks — plus an edge role gate for `/api/admin`)*
 3. `/api/auth/me` — refreshes the list live and re-issues the cookie on drift.
-4. Client (navbar, command palette, in-page guard) — cosmetic hiding.
+4. Client (navbar, command palette, in-page guard, **home dashboard**) — the
+   ungated home page and the app-wide command palette call the *same*
+   `isApiAllowed` before fetching feature data, so they never even request an
+   area the edge would 403. Cosmetic + no-console-error, not a security layer.
 
 **To add a feature**: add `{ key, label, hrefs }` to `FEATURES`, the page
-prefix to `config.matcher` in `src/proxy.js`, and — if the feature has data
-routes — an entry in `API_FEATURES` mapping its `/api/...` prefixes to the
-key(s). All three must stay in sync (a `matcher` miss means the edge gate
-never runs for that path). Unknown keys in the DB are dropped by
-`sanitizeFeatureKeys`, so stale data can't break anything.
+prefix to `config.matcher` in `src/proxy.js`, and map every one of its
+`/api/...` prefixes in `API_FEATURES`. Because the API gate is default-deny,
+forgetting the `API_FEATURES` entry now **fails closed** (403) instead of
+leaking — and `tests/apiAccess.test.mjs` (run via `npm test`) walks the whole
+`src/app/api` tree and fails CI until the route is classified as feature-owned
+or common. A `matcher` miss still silently skips the *page* gate, so keep that
+in sync too. Unknown keys in the DB are dropped by `sanitizeFeatureKeys`.
 
 ### Roles
 
@@ -204,7 +225,11 @@ and the users-API guards.
 
 ### Tunables in code
 
-- Session lifetime: `7d` in `createSession` + cookie `maxAge` (two places).
+- Session lifetime: `SESSION_TTL_SECONDS` (7 d) in `src/lib/auth.js` — the
+  single source for both the JWT `exp` and the cookie `maxAge`. The cookie
+  itself is written only through `setSessionCookie` / `clearSessionCookie`
+  there, so attributes (`httpOnly`/`secure`/`sameSite`/`path`) live in one
+  place too.
 - Tenant-JWT TTL: `ttlSeconds = 3600` in `mintTenantJwt`.
 - Revocation lag: `ACTIVE_CACHE_TTL_MS = 30_000` in `db.js` (covers both the
   `is_active` check and the logout/`not_before` revocation floor).
@@ -309,16 +334,32 @@ surface no longer exists. The standing rule remains for any view added later:
 revoke anon/authenticated and set `security_invoker = true`, so a view only
 ever shows what the caller's own RLS allows. Closed.
 
-### ✅ F2 — feature toggles now gate data APIs (was: medium)
+### ✅ F2 — feature toggles gate data APIs, default-deny (was: medium)
 
-The proxy's `/api/*` branch now calls `isApiAllowed()` against the same signed
-JWT denylist, returning **403** for a disabled area's data routes — a
-restricted user can no longer `fetch('/api/holdings')` around the page gate.
-The mapping (`API_FEATURES` in `src/lib/features.js`) blocks a shared route
-only when *all* owning features are off (`/api/thesis`, `/api/watchlist`,
-`/api/realized-vol` are multi-owner) and deliberately leaves ungated surfaces'
-routes (dashboard home, command palette, issues, uploads) open. Admins remain
-exempt. Verified with unit tests across single/multi-owner and sub-path cases.
+The proxy's `/api/*` branch calls `isApiAllowed()` against the same signed JWT
+denylist, returning **403** for a disabled area's data routes — a restricted
+user can no longer `fetch('/api/holdings')` around the page gate. Admins remain
+exempt.
+
+**Hardened to default-deny.** The original allowlist-of-denials had drifted:
+`/api/allocation`, all `/api/macro-regime/*`, `/api/tasks`, `/api/task-boards`,
+and `/api/strategic-candidates` were absent from the map, so a user with those
+features disabled could still pull the data directly while the page was
+blocked. Root cause was structural — an *unlisted* route defaulted to
+**allowed**. `isApiAllowed` now **fails closed**: a route must be classified
+feature-owned (`API_FEATURES`) or common (`COMMON_API_ROUTES`) or it is
+refused. The map was completed (multi-owner where shared: `/api/portfolio`
+feeds four holdings-derived pages; `/api/thesis`/`/api/watchlist`/
+`/api/realized-vol` span two features). The ungated home dashboard and the
+command palette now consult `isApiAllowed` before fetching, so they don't 403
+on the newly-gated routes. `/api/admin/*` was additionally given an **edge
+role gate** in the proxy (`canManageUsers`) so a plain user is bounced before
+the handler, and moved out of `COMMON_API_ROUTES` into its own
+`ROLE_GATED_API_ROUTES` bucket so the classification is honest about *why*
+it's exempt from feature toggles. Enforced by `tests/apiAccess.test.mjs`
+(`npm test`), which walks the real route tree and fails if any route is
+unclassified, plus unit cases for the historical leaks, default-deny,
+multi-owner, role-gated, and common routes.
 
 ### ✅ F3 — storage moved to private buckets + short-lived signed URLs (was: known tradeoff)
 
@@ -395,8 +436,6 @@ button can call the same `revokeSessionsBefore(subject)` helper.
 ### Housekeeping (info)
 
 - `task_comments` exists in the DB but nothing in `src/` references it.
-- Session lifetime (7 d) and cookie `maxAge` are defined in two places in
-  `auth.js`/route handlers — keep them in sync if you change one.
 
 ---
 

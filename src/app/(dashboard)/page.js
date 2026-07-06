@@ -8,6 +8,8 @@ import { Chart as ChartJS, ArcElement, Tooltip as ChartTooltip, Legend } from 'c
 import {
   Circle, ArrowUpRight, ArrowDownRight, RefreshCw, X, AlertTriangle, CheckCircle,
 } from 'lucide-react';
+import { isApiAllowed } from '@/lib/features';
+import { useAuth } from '@/lib/AuthContext';
 
 ChartJS.register(ArcElement, ChartTooltip, Legend);
 
@@ -34,6 +36,7 @@ const fmtBig = (v) => {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { disabledFeatures } = useAuth();
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const dragState = useRef({ dragging: false, startIdx: null, endIdx: null });
@@ -125,53 +128,73 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    // Fetch all dashboard data in parallel
-    fetch('/api/fund-nav')
-      .then(r => r.json())
-      .then(d => { if (Array.isArray(d)) setNavData(d); })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    // Fetch dashboard data in parallel, but only for areas this user may reach.
+    // The home page is ungated, yet several of its tiles read feature-gated
+    // data (NAV, portfolio, allocation, macro, tasks). Consulting the SAME
+    // isApiAllowed the edge enforces means a restricted user's browser never
+    // even requests data it would be 403'd for — no leak, no console errors,
+    // and the tile simply stays empty. Common routes (quotes) are always ok.
+    const allowed = (path) => isApiAllowed(path, disabledFeatures);
 
-    fetch('/api/portfolio')
-      .then(r => r.json())
-      .then(d => {
-        setPortfolio(d);
-        // Fetch quotes for holdings
-        const tickers = d?.holdings?.map(h => h.ticker).join(',');
-        if (tickers) {
-          fetch(`/api/quotes?tickers=${tickers}`)
-            .then(r => r.json())
-            .then(q => setQuotes(q.quotes || q))
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
+    // NAV chart. setLoading resolves whether or not we fetch it.
+    if (allowed('/api/fund-nav')) {
+      fetch('/api/fund-nav')
+        .then(r => r.json())
+        .then(d => { if (Array.isArray(d)) setNavData(d); })
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    } else {
+      setLoading(false);
+    }
+
+    if (allowed('/api/portfolio')) {
+      fetch('/api/portfolio')
+        .then(r => r.json())
+        .then(d => {
+          setPortfolio(d);
+          // Fetch quotes for holdings (quotes is a common, ungated route)
+          const tickers = d?.holdings?.map(h => h.ticker).join(',');
+          if (tickers) {
+            fetch(`/api/quotes?tickers=${tickers}`)
+              .then(r => r.json())
+              .then(q => setQuotes(q.quotes || q))
+              .catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
 
     // Fetch risk-free rate from allocation settings
-    fetch('/api/allocation')
-      .then(r => r.json())
-      .then(({ config }) => {
-        if (config?.riskFreeRate !== undefined) setRiskFreeRate(Number(config.riskFreeRate));
-      })
-      .catch(() => {});
+    if (allowed('/api/allocation')) {
+      fetch('/api/allocation')
+        .then(r => r.json())
+        .then(({ config }) => {
+          if (config?.riskFreeRate !== undefined) setRiskFreeRate(Number(config.riskFreeRate));
+        })
+        .catch(() => {});
+    }
 
     // Fetch macro regime signal
-    fetch('/api/macro-regime/predict')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d && !d.error) setMacroSignal(d); })
-      .catch(() => {});
+    if (allowed('/api/macro-regime/predict')) {
+      fetch('/api/macro-regime/predict')
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d && !d.error) setMacroSignal(d); })
+        .catch(() => {});
+    }
 
     // Fetch first board's tasks
-    fetch('/api/task-boards')
-      .then(r => r.json())
-      .then(({ boards }) => {
-        const firstId = boards?.[0]?.id || 'default';
-        return fetch(`/api/tasks?board_id=${firstId}`);
-      })
-      .then(r => r.json())
-      .then(d => { if (Array.isArray(d)) setTasks(d); })
-      .catch(() => {});
-  }, []);
+    if (allowed('/api/task-boards')) {
+      fetch('/api/task-boards')
+        .then(r => r.json())
+        .then(({ boards }) => {
+          const firstId = boards?.[0]?.id || 'default';
+          return fetch(`/api/tasks?board_id=${firstId}`);
+        })
+        .then(r => r.json())
+        .then(d => { if (Array.isArray(d)) setTasks(d); })
+        .catch(() => {});
+    }
+  }, [disabledFeatures]);
 
   // Derived portfolio data
   const holdingsData = (() => {

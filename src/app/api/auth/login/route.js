@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import {
   createSession,
-  SESSION_COOKIE_NAME,
+  setSessionCookie,
   CIO_TENANT_ID,
 } from '@/lib/auth';
 import { findUserByUsername } from '@/lib/users';
@@ -18,15 +18,7 @@ import {
 
 // Attach the session cookie to a JSON response.
 function withSession(body, token) {
-  const response = NextResponse.json(body);
-  response.cookies.set(SESSION_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 60 * 60 * 24 * 7, // 7 days, matches JWT expiry
-  });
-  return response;
+  return setSessionCookie(NextResponse.json(body), token);
 }
 
 export async function POST(request) {
