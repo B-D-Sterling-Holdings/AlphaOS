@@ -34,6 +34,30 @@ const CONFIG_YAML = path.join(MACRO_DIR, 'config.yaml');
 const CIO_TENANT_ID = '11111111-1111-1111-1111-111111111111';
 const TENANT_ID = process.env.APP_TENANT_ID || CIO_TENANT_ID;
 
+// Plot PNGs live in the private macro-plots bucket (mirrors src/lib/storage.js).
+// This script can't import that module (it's `server-only`), so the small
+// upload/purge helpers are inlined here.
+const MACRO_PLOT_BUCKET = 'macro-plots';
+const plotSeg = (v, fb) => (String(v ?? '').replace(/[/\\]/g, '_').replace(/\.{2,}/g, '.').trim() || fb);
+
+async function uploadPlot(supabase, runId, filename, buffer) {
+  const path_ = `${TENANT_ID}/${plotSeg(runId, 'run')}/${plotSeg(filename, 'plot.png')}`;
+  const { error } = await supabase.storage
+    .from(MACRO_PLOT_BUCKET)
+    .upload(path_, buffer, { contentType: 'image/png', upsert: true });
+  if (error) throw new Error(`plot upload ${filename}: ${error.message}`);
+  return path_;
+}
+
+async function deleteRunPlots(supabase, runId) {
+  if (!runId) return;
+  const dir = `${TENANT_ID}/${plotSeg(runId, 'run')}`;
+  const { data: list } = await supabase.storage.from(MACRO_PLOT_BUCKET).list(dir, { limit: 1000 });
+  if (list?.length) {
+    await supabase.storage.from(MACRO_PLOT_BUCKET).remove(list.map((f) => `${dir}/${f.name}`));
+  }
+}
+
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -165,7 +189,8 @@ async function pushResults(args) {
   const plotDir = path.join(OUTPUT_DIR, 'plots');
   if (fs.existsSync(plotDir)) {
     for (const file of fs.readdirSync(plotDir).filter((f) => f.endsWith('.png'))) {
-      result.plots[file] = fs.readFileSync(path.join(plotDir, file)).toString('base64');
+      const buf = fs.readFileSync(path.join(plotDir, file));
+      result.plots[file] = await uploadPlot(supabase, runId, file, buf);
     }
   }
 
@@ -218,12 +243,17 @@ async function pruneRuns(supabase) {
 async function pruneResults(supabase) {
   try {
     const { data } = await supabase.from('macro_regime_results')
-      .select('id').eq('tenant_id', TENANT_ID)
-      .order('created_at', { ascending: false }).limit(3);
-    if (data && data.length === 3) {
-      await supabase.from('macro_regime_results').delete()
-        .eq('tenant_id', TENANT_ID)
-        .not('id', 'in', `(${data.map((r) => r.id).join(',')})`);
+      .select('id, run_id').eq('tenant_id', TENANT_ID)
+      .order('created_at', { ascending: false });
+    if (!data || data.length <= 3) return;
+    const keepIds = data.slice(0, 3).map((r) => r.id);
+    const dropped = data.slice(3);
+    await supabase.from('macro_regime_results').delete()
+      .eq('tenant_id', TENANT_ID)
+      .not('id', 'in', `(${keepIds.join(',')})`);
+    // Purge the plot folders of dropped results so the bucket doesn't orphan.
+    for (const r of dropped) {
+      try { await deleteRunPlots(supabase, r.run_id); } catch (e) { console.error('prune plots:', e.message); }
     }
   } catch (e) { console.error('pruneResults:', e.message); }
 }

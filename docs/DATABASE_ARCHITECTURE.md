@@ -242,7 +242,7 @@ via `lib/appSettings.js`:
 | Table | Purpose |
 |---|---|
 | `macro_regime_runs` | job history: `run_type` (run/fast/validate/predict/clean), status, timestamps, `log_output` (last 10 kB). **Retention: newest 5 per tenant** (pruned by the run route and `scripts/macro-sync.mjs`). |
-| `macro_regime_results` | parsed outputs of a completed run: `backtest JSONB` (row array from CSV), `live_prediction JSONB` (final-model signal — preferred over the last backtest row), `metrics`, `report` (markdown), **`plots JSONB` (`{filename: base64 png}`)**, validation report/data. ⚠️ The schema file calls `run_id` a soft reference, but the **live DB has a hard FK to `macro_regime_runs.id`** (no cascade) — so results must always be deleted *before* runs (demo wipe and workspace purge are ordered accordingly), and pruning runs before their results can fail quietly. **Retention: newest 3 per tenant.** |
+| `macro_regime_results` | parsed outputs of a completed run: `backtest JSONB` (row array from CSV), `live_prediction JSONB` (final-model signal — preferred over the last backtest row), `metrics`, `report` (markdown), **`plots JSONB` (`{filename: storage_path}`)** — the PNGs live in the `macro-plots` bucket (see §7), not inline; the row stores only paths. Validation report/data. ⚠️ The schema file calls `run_id` a soft reference, but the **live DB has a hard FK to `macro_regime_runs.id`** (no cascade) — so results must always be deleted *before* runs (demo wipe and workspace purge are ordered accordingly), and pruning runs before their results can fail quietly. **Retention: newest 3 per tenant** (pruning a result also purges its plot folder). |
 | `macro_regime_signal` | legacy pipeline-era signal cache; no `tenant_id`, service-role only, unread by current app code. |
 
 ---
@@ -281,28 +281,32 @@ whole, rather than normalized across many tables. Conventions to preserve:
   helpers still tolerate a legacy stringified value so a mid-deploy row can't
   break a read. (One exception: `/api/accounting-state` keeps a string-based
   wire contract with its client, parsing/serializing at the route boundary.)
-- **`macro_regime_results.plots`** stores whole PNGs as base64 in JSONB —
-  results rows are megabytes; that's why retention is 3 and reads select only
-  the columns they need.
+- **`macro_regime_results.plots`** is `{ filename: storage_path }` — the PNGs
+  live in the `macro-plots` bucket (§7), not inline, so results rows stay small.
+  (Legacy rows may still hold base64; the reader route handles both until
+  `scripts/migrate-macro-plots.mjs` backfills them.)
 
 ---
 
 ## 7. Storage (private buckets + signed URLs)
 
-Two **private** buckets; table RLS does not apply to objects, so isolation is
+Three **private** buckets; table RLS does not apply to objects, so isolation is
 enforced in the app's storage layer instead:
 
 | Bucket | Contents | Path convention |
 |---|---|---|
 | `research-images` | inline images from rich-text editors | `<tenant_id>/<TICKER>/<timestamp>_<filename>` |
 | `documents` | uploaded files behind `/documents` | `<tenant_id>/<category>/<timestamp>_<filename>` |
+| `macro-plots` | macro-regime backtest plot PNGs | `<tenant_id>/<run_id>/<filename>.png` |
 
 - **All access is centralized in `src/lib/storage.js`** (pure primitives in
   `storageShared.js`): `uploadTenantImage`/`uploadTenantDocument` build the
   tenant-prefixed path server-side from sanitized segments;
   `getTenantSignedUrl` and `deleteTenantImage`/`deleteTenantDocument`
-  re-validate every path against the session tenant. `getDb()` exposes no
-  storage handle at all.
+  re-validate every path against the session tenant. Macro plots use the
+  parallel `uploadMacroPlotForTenant` (explicit tenant — the writer is a
+  background run/CI callback) + `getMacroPlotSignedUrl` (session-checked, behind
+  `/api/macro-regime/plots`). `getDb()` exposes no storage handle at all.
 - **What content stores is the session-gated app URL**
   `/api/storage/object?bucket=…&path=…`. That route validates the session +
   tenant prefix and 302-redirects to a **signed URL** (5 min TTL; the
@@ -320,8 +324,9 @@ enforced in the app's storage layer instead:
 - Stored URLs are never trusted: `/api/documents` re-derives `url` from
   `storage_path` on every read, so a row always resolves to the current
   session-gated app URL.
-- Workspace deletion purges `<tenant_id>/` in both buckets via the non-exported
-  `purgeTenantStorage()` (UUID-shape check + per-path prefix re-check).
+- Workspace deletion purges `<tenant_id>/` in all three buckets via the
+  non-exported `purgeTenantStorage()` (UUID-shape check + per-path prefix
+  re-check).
 - Demo resets do **not** purge storage (rows are wiped so objects become
   unreachable; deterministic seed paths overwrite in place).
 

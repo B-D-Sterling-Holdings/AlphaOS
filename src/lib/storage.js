@@ -4,6 +4,7 @@ import { getSession } from './db';
 import {
   IMAGE_BUCKET,
   DOCUMENT_BUCKET,
+  MACRO_PLOT_BUCKET,
   SIGNED_URL_TTL_SECONDS,
   EMAIL_SIGNED_URL_TTL_SECONDS,
   safeSegment,
@@ -46,6 +47,7 @@ import {
 export {
   IMAGE_BUCKET,
   DOCUMENT_BUCKET,
+  MACRO_PLOT_BUCKET,
   SIGNED_URL_TTL_SECONDS,
   EMAIL_SIGNED_URL_TTL_SECONDS,
   safeSegment,
@@ -150,6 +152,60 @@ export async function deleteTenantImage(path) {
 /** Delete one document-library object the session tenant owns. */
 export async function deleteTenantDocument(path) {
   return deleteTenantObject(DOCUMENT_BUCKET, path);
+}
+
+/*
+  ── Macro-regime backtest plots ─────────────────────────────────────────────
+  The allocator writes a handful of PNGs per run. They used to be base64-inlined
+  into macro_regime_results.plots (rows were megabytes). They now live in the
+  private `macro-plots` bucket under `<tenant_id>/<runId>/<file>`, and the row
+  stores `{ filename: storage_path }`.
+*/
+
+/**
+ * Upload one plot PNG for an EXPLICIT tenant (no session needed — the writer is
+ * a background run callback / CI script that already knows its tenant). Returns
+ * the stored object path. `upsert` so a re-run overwrites deterministically.
+ */
+export async function uploadMacroPlotForTenant({ tenantId, runId, filename, buffer, contentType = 'image/png' }) {
+  const runSeg = safeSegment(String(runId ?? 'run'), 'run');
+  const nameSeg = safeSegment(filename, 'plot.png');
+  const path = `${tenantId}/${runSeg}/${nameSeg}`;
+  if (!isPathAllowedForTenant(tenantId, path)) throw forbidden();
+  const { data, error } = await supabaseAdmin.storage
+    .from(MACRO_PLOT_BUCKET)
+    .upload(path, buffer, { contentType, upsert: true });
+  if (error) throw new Error(error.message);
+  return data.path;
+}
+
+/** A short-lived signed URL for a plot the session tenant owns (for the reader route). */
+export async function getMacroPlotSignedUrl(path) {
+  const session = await requireSession();
+  if (!isPathAllowedForTenant(session.tenantId, path)) throw forbidden();
+  return signPathForTenant({ bucket: MACRO_PLOT_BUCKET, path, ttlSeconds: SIGNED_URL_TTL_SECONDS });
+}
+
+/** Delete every plot object under a tenant's `<tenant_id>/` prefix in the macro-plots bucket. */
+export async function deleteTenantMacroPlots(tenantId, runId = null) {
+  const prefix = runId ? `${tenantId}/${safeSegment(String(runId), 'run')}` : `${tenantId}`;
+  const { data: list, error: listErr } = await supabaseAdmin.storage
+    .from(MACRO_PLOT_BUCKET)
+    .list(prefix, { limit: 1000 });
+  if (listErr || !list?.length) return;
+  const paths = [];
+  for (const entry of list) {
+    // one level of run-folders under the tenant prefix
+    if (entry.id === null) {
+      const { data: sub } = await supabaseAdmin.storage
+        .from(MACRO_PLOT_BUCKET)
+        .list(`${prefix}/${entry.name}`, { limit: 1000 });
+      for (const f of sub || []) paths.push(`${prefix}/${entry.name}/${f.name}`);
+    } else {
+      paths.push(`${prefix}/${entry.name}`);
+    }
+  }
+  if (paths.length) await supabaseAdmin.storage.from(MACRO_PLOT_BUCKET).remove(paths);
 }
 
 /*

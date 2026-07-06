@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { getDb } from '@/lib/db';
 import { readSetting } from '@/lib/appSettings';
+import { uploadMacroPlotForTenant, deleteTenantMacroPlots } from '@/lib/storage';
 import { getLatestResultSignal } from '@/lib/macroRegimeSignal';
 
 const MACRO_DIR = path.resolve(process.cwd(), 'macro_regime_allocator');
@@ -112,13 +113,15 @@ async function syncToSupabase(runId) {
       result.report = fs.readFileSync(reportPath, 'utf8');
     }
 
-    // Read plots as base64
+    // Upload plots to the private macro-plots bucket; store paths (not bytes).
     const plotDir = path.join(OUTPUT_DIR, 'plots');
     if (fs.existsSync(plotDir)) {
       const pngFiles = fs.readdirSync(plotDir).filter((f) => f.endsWith('.png'));
       for (const file of pngFiles) {
         const buf = fs.readFileSync(path.join(plotDir, file));
-        result.plots[file] = buf.toString('base64');
+        result.plots[file] = await uploadMacroPlotForTenant({
+          tenantId: supabase.tenantId, runId, filename: file, buffer: buf,
+        });
       }
     }
 
@@ -207,14 +210,20 @@ async function pruneRuns() {
 async function pruneResults() {
   const supabase = await getDb();
   try {
-    const { data: recentResults } = await supabase
+    const { data: all } = await supabase
       .from('macro_regime_results')
-      .select('id')
-      .order('created_at', { ascending: false })
-      .limit(3);
-    if (recentResults && recentResults.length === 3) {
-      const keepIds = recentResults.map((r) => r.id);
-      await supabase.from('macro_regime_results').delete().not('id', 'in', `(${keepIds.join(',')})`);
+      .select('id, run_id')
+      .order('created_at', { ascending: false });
+    if (!all || all.length <= 3) return;
+    const keepIds = all.slice(0, 3).map((r) => r.id);
+    const dropped = all.slice(3);
+    await supabase.from('macro_regime_results').delete().not('id', 'in', `(${keepIds.join(',')})`);
+    // Purge the plot folders that belonged to the dropped result rows so the
+    // macro-plots bucket doesn't accumulate orphans.
+    for (const r of dropped) {
+      if (r.run_id) {
+        try { await deleteTenantMacroPlots(supabase.tenantId, r.run_id); } catch {}
+      }
     }
   } catch {}
 }

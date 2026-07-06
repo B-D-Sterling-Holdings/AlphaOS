@@ -9,7 +9,12 @@ import { CIO_TENANT_ID } from './auth';
 
 export const IMAGE_BUCKET = 'research-images';
 export const DOCUMENT_BUCKET = 'documents';
-const BUCKETS = new Set([IMAGE_BUCKET, DOCUMENT_BUCKET]);
+// Macro-regime backtest plot PNGs. Same private + tenant-prefixed model as the
+// other buckets; paths are `<tenant_id>/<runId>/<filename>.png`. Kept out of the
+// generic upload helpers (only the allocator writes here) but included in the
+// known-bucket set so /api/storage/object and the purge treat it uniformly.
+export const MACRO_PLOT_BUCKET = 'macro-plots';
+const BUCKETS = new Set([IMAGE_BUCKET, DOCUMENT_BUCKET, MACRO_PLOT_BUCKET]);
 
 // Signed-URL lifetimes. Browser/UI links are minted per request, so they can
 // be short; emails are read hours or days later, so their inline images get a
