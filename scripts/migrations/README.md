@@ -67,6 +67,9 @@ re-seeded on every `demo`/`demo` login (see `docs/DATABASE_ARCHITECTURE.md` §8)
 | `024_config_into_app_settings.sql` | Collapse the six single-row config tables (`allocation_config`, `sector_config`, `factor_config`, `macro_regime_config`, `macro_regime_weights`, `portfolio_cash`) into `app_settings` keyed rows, then drop the tables. Copies data before dropping. |
 | `025_tenant_composite_indexes.sql` | Replace pre-multitenancy single-column secondary indexes with `(tenant_id, …)` composites so the RLS tenant filter + the secondary filter/sort share one index. |
 | `026_macro_plots_bucket.sql` | Create the private `macro-plots` storage bucket. Plot PNGs move out of `macro_regime_results.plots` base64 JSONB into storage; the row keeps path strings. Backfill existing rows with `scripts/migrate-macro-plots.mjs`. |
+| `027_enum_check_constraints.sql` | CHECK constraints on the settled enum-like columns (`strategic_notes` + `candidate_positions` sentiment/action/status/priority/conviction, `tasks.priority`). |
+| `028_results_run_fk.sql` | Make `macro_regime_results.run_id → macro_regime_runs(id)` a hard FK with **ON DELETE SET NULL**, removing the delete-order fragility. |
+| `029_theses_assumptions_jsonb.sql` | Convert `theses.assumptions` TEXT → JSONB (rich-text block array or bare string, stored natively; drops the route's serialize/deserialize dance). |
 
 All of 001–021 are applied to the live database (001–020 verified by probe
 2026-07-06; 021 applied and verified live in prod the same day, after the
@@ -80,3 +83,8 @@ has made `value` JSONB).
 bucket; after applying it and deploying, run `scripts/migrate-macro-plots.mjs`
 to backfill existing base64 plot rows into storage (the reader route handles
 un-migrated base64 rows in the meantime, so there's no hard cutover).
+
+027 (CHECK constraints) and 028 (FK) have no app dependency — run anytime; live
+data was verified to conform before writing them. 029 (assumptions → JSONB)
+carries a deploy-order note in its header (ship the app code first); the reader
+tolerates both shapes so ordering is low-risk.

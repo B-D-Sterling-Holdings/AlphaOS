@@ -34,19 +34,11 @@ const DEFAULT_THESIS = {
   notes: { links: [], tabs: [{ id: '1', title: 'General', content: [] }] },
 };
 
-// assumptions can be a plain string (legacy) or a JSON array of blocks (new rich text)
-// Store as JSON string in TEXT column for backwards compat
-function serializeAssumptions(val) {
-  if (Array.isArray(val)) return JSON.stringify(val);
-  return val || '';
-}
-
-function deserializeAssumptions(val) {
-  if (!val) return '';
-  if (typeof val === 'string' && val.startsWith('[')) {
-    try { return JSON.parse(val); } catch { return val; }
-  }
-  return val;
+// assumptions is JSONB (migration 029): a rich-text block array (new) or a bare
+// string (legacy/empty). It round-trips natively — no serialize/parse needed.
+// `??` guards a NULL row into the empty-string default the editor expects.
+function normalizeAssumptions(val) {
+  return val ?? '';
 }
 
 export async function GET(request, { params }) {
@@ -68,7 +60,7 @@ export async function GET(request, { params }) {
     ticker: upper,
     ...DEFAULT_THESIS,
     coreReasons: data.core_reasons || DEFAULT_THESIS.coreReasons,
-    assumptions: deserializeAssumptions(data.assumptions),
+    assumptions: normalizeAssumptions(data.assumptions),
     valuation: data.valuation || '',
     underwriting: { ...DEFAULT_THESIS.underwriting, ...(data.underwriting || {}) },
     newsUpdates: data.news_updates || [],
@@ -87,7 +79,7 @@ export async function POST(request, { params }) {
     const row = {
       ticker: upper,
       core_reasons: body.coreReasons || DEFAULT_THESIS.coreReasons,
-      assumptions: serializeAssumptions(body.assumptions),
+      assumptions: normalizeAssumptions(body.assumptions),
       valuation: body.valuation || '',
       underwriting: { ...DEFAULT_THESIS.underwriting, ...(body.underwriting || {}) },
       news_updates: body.newsUpdates || [],
@@ -103,7 +95,7 @@ export async function POST(request, { params }) {
       success: true,
       ticker: upper,
       coreReasons: row.core_reasons,
-      assumptions: deserializeAssumptions(row.assumptions),
+      assumptions: normalizeAssumptions(row.assumptions),
       valuation: row.valuation,
       underwriting: row.underwriting,
       newsUpdates: row.news_updates,
