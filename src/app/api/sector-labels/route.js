@@ -1,26 +1,17 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { readSetting, writeSetting } from '@/lib/appSettings';
+
+const KEY = 'sector_config';
 
 async function readConfig() {
   const supabase = await getDb();
-  const { data, error } = await supabase
-    .from('sector_config')
-    .select('config')
-    .eq('id', 1)
-    .single();
-
-  if (error || !data) return {};
-  return data.config || {};
+  return (await readSetting(supabase, KEY, {})) || {};
 }
 
 async function writeConfig(config) {
   const supabase = await getDb();
-  const { error } = await supabase
-    .from('sector_config')
-    .update({ config })
-    .eq('id', 1);
-
-  if (error) throw new Error(error.message);
+  await writeSetting(supabase, KEY, config);
 }
 
 export async function GET() {

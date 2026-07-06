@@ -160,13 +160,13 @@ exempt from the feature gate.
 | `/api/risk` | POST | S | underwritten factor-risk engine over the holdings (`lib/fetchRisk.js` + `lib/riskEngine.js`: exposure × crowding × importance, plus observed vol/drawdown/VaR/correlation) |
 | `/api/realized-vol` | GET | S | annualized realized vol per ticker (feeds the allocation page's auto vol score) |
 | `/api/return-covariance` | GET | S | annualized sample covariance matrix over aligned daily returns (the Markowitz side of the allocation blend) |
-| `/api/factor-config`, `/api/sector-labels`, `/api/allocation` | GET/PUT | S | the three config singletons behind risk/treemap/optimizer |
+| `/api/factor-config`, `/api/sector-labels`, `/api/allocation` | GET/PUT | S | risk/treemap/optimizer config — `app_settings` keys via `lib/appSettings.js` |
 
 ### Financials (fund accounting)
 
 | Route | Methods | Auth | What it does |
 |---|---|---|---|
-| `/api/accounting-state` | GET/PUT | S | the entire fund-accounting engine state as one JSON string in `app_settings` (`fund-accounting-state`); all NAV/share/IRR math is computed from it in `lib/accounting.js` (client-side) |
+| `/api/accounting-state` | GET/PUT | S | the entire fund-accounting engine state as one JSONB blob in `app_settings` (`fund-accounting-state`); the route keeps a string-based client contract; all NAV/share/IRR math is computed from it in `lib/accounting.js` (client-side) |
 | `/api/fund-nav` | GET/POST | S | GET: daily `{date, fund_nav, sp500_nav}` series. POST: turns `{date, aum}` entries into NAV/share using the accounting share ladder, fetches ^GSPC closes, normalizes the S&P leg to inception, replaces the rows |
 
 ### Research pipeline

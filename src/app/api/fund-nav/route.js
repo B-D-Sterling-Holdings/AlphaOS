@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import YahooFinance from 'yahoo-finance2';
 import { computeFullTimeline } from '@/lib/accounting';
+import { readSetting } from '@/lib/appSettings';
 
 const yahooFinance = new YahooFinance({ suppressNotices: ['ripHistorical'] });
 
@@ -43,18 +44,13 @@ export async function POST(request) {
       return NextResponse.json({ error: 'entries array is required' }, { status: 400 });
     }
 
-    // 1. Load accounting state from Supabase
-    const { data: settingsRow, error: settingsErr } = await supabase
-      .from('app_settings')
-      .select('value')
-      .eq('key', 'fund-accounting-state')
-      .single();
-
-    if (settingsErr || !settingsRow?.value) {
+    // 1. Load accounting state from app_settings (JSONB; the helper also
+    //    tolerates a legacy stringified value).
+    const accountingState = await readSetting(supabase, 'fund-accounting-state', null);
+    if (!accountingState) {
       return NextResponse.json({ error: 'Could not load accounting state' }, { status: 500 });
     }
 
-    const accountingState = JSON.parse(settingsRow.value);
     const computedTimeline = computeFullTimeline(accountingState);
 
     // Build a "share ladder": outstanding shares effective from each period start.

@@ -1,37 +1,28 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { readSetting, writeSetting } from '@/lib/appSettings';
 
+const KEY = 'factor_config';
+
+// Stored shape: { factors, importance_weights, exposures }.
+// The API speaks camelCase (importanceWeights) to the client.
 async function readConfig() {
   const supabase = await getDb();
-  const { data, error } = await supabase
-    .from('factor_config')
-    .select('factors, importance_weights, exposures')
-    .eq('id', 1)
-    .single();
-
-  if (error || !data) {
-    return { factors: [], importanceWeights: { Volatility: 0.9 }, exposures: {} };
-  }
-
+  const data = await readSetting(supabase, KEY, null);
   return {
-    factors: data.factors || [],
-    importanceWeights: data.importance_weights || { Volatility: 0.9 },
-    exposures: data.exposures || {},
+    factors: data?.factors || [],
+    importanceWeights: data?.importance_weights || { Volatility: 0.9 },
+    exposures: data?.exposures || {},
   };
 }
 
 async function writeConfig(config) {
   const supabase = await getDb();
-  const { error } = await supabase
-    .from('factor_config')
-    .update({
-      factors: config.factors,
-      importance_weights: config.importanceWeights,
-      exposures: config.exposures,
-    })
-    .eq('id', 1);
-
-  if (error) throw new Error(error.message);
+  await writeSetting(supabase, KEY, {
+    factors: config.factors,
+    importance_weights: config.importanceWeights,
+    exposures: config.exposures,
+  });
 }
 
 export async function GET() {

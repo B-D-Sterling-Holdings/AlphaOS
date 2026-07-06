@@ -52,7 +52,7 @@ export async function PUT(req) {
 
     const row = {
       key,
-      value: JSON.stringify(assignees),
+      value: assignees, // app_settings.value is JSONB — store natively
     };
 
     const { data, error } = await supabase

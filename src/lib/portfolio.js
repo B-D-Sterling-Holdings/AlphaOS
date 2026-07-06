@@ -1,10 +1,14 @@
 import { getDb } from './db';
+import { readSetting, writeSetting } from './appSettings';
+
+// Per-tenant cash lives in app_settings under this key: { cash: <number> }.
+const CASH_KEY = 'portfolio_cash';
 
 export async function loadPortfolio() {
   const supabase = await getDb();
-  const [{ data: holdings, error: hErr }, { data: cashRow, error: cErr }] = await Promise.all([
+  const [{ data: holdings, error: hErr }, cashCfg] = await Promise.all([
     supabase.from('holdings').select('*').order('added_at'),
-    supabase.from('portfolio_cash').select('cash').eq('id', 1).single(),
+    readSetting(supabase, CASH_KEY, { cash: 0 }),
   ]);
 
   if (hErr) throw new Error(hErr.message);
@@ -17,7 +21,7 @@ export async function loadPortfolio() {
       added_at: h.added_at,
       updated_at: h.updated_at,
     })),
-    cash: Number(cashRow?.cash) || 0,
+    cash: Number(cashCfg?.cash) || 0,
   };
 }
 
@@ -54,11 +58,6 @@ export async function removeHolding(ticker) {
 
 export async function updateCash(cash) {
   const supabase = await getDb();
-  const { error } = await supabase
-    .from('portfolio_cash')
-    .update({ cash: Number(cash) || 0 })
-    .eq('id', 1);
-
-  if (error) throw new Error(error.message);
+  await writeSetting(supabase, CASH_KEY, { cash: Number(cash) || 0 });
   return loadPortfolio();
 }

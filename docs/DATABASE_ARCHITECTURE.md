@@ -34,9 +34,10 @@ facts shape everything else:
    | Tenant JWT (minted per request by `src/lib/supabaseTenant.js`, 1 h TTL, `tenant_id` claim) | server only | its own tenant's rows, via the `tenant_isolation` policies |
    | Service-role key (`SUPABASE_SERVICE_ROLE_KEY`) | server + CI only | everything (BYPASSRLS) — used for identity tables, cron, demo reset, and pipeline sync, always stamping `tenant_id` explicitly |
 
-The live database exposes **33 relations** through PostgREST: 28 tenant-scoped
+The live database exposes **27 relations** through PostgREST: 22 tenant-scoped
 data tables, `users` + `tenants` + `auth_revocations` (service-role-only), and
-2 no-tenant pipeline tables (`macro_regime_signal`, `task_comments`).
+2 no-tenant pipeline tables (`macro_regime_signal`, `task_comments`). (The six
+former single-row config tables were folded into `app_settings` — see §2.)
 
 ---
 
@@ -83,15 +84,18 @@ Tenant isolation is enforced entirely in the database (RLS), not by application
 | CIO Alpha | `11111111-1111-1111-1111-111111111111` | holds the original production data; cannot be deleted through any code path |
 | Demo | `22222222-2222-2222-2222-222222222222` | `tenants.is_demo = true`; wiped + re-seeded on every `demo`/`demo` login (§8) |
 
-### The singleton pattern
+### Per-tenant config
 
-Config tables that used to be single-row (`portfolio_cash`,
-`allocation_config`, `sector_config`, `factor_config`, `macro_regime_config`,
-`macro_regime_weights`) are keyed by **`PRIMARY KEY (tenant_id)`** — one row
-per tenant — while keeping an `id` column defaulted to `1` so legacy
-`.eq('id', 1)` reads and `{ id: 1 }` upserts still resolve under RLS. New
-tenants get these rows from `seedTenantDefaults()` (`src/lib/users.js`) at
-creation; the two reserved tenants already have them.
+All per-tenant configuration lives in **`app_settings`** — one row per
+`(tenant_id, key)` with a JSONB `value` (see §6). This includes what used to be
+six standalone single-row config tables (`allocation_config`, `sector_config`,
+`factor_config`, `macro_regime_config`, `macro_regime_weights`,
+`portfolio_cash`), collapsed into keyed rows by migration 024. All access goes
+through the tiny `readSetting`/`writeSetting` helpers in `src/lib/appSettings.js`.
+
+Every config reader has a **built-in default** and the first save creates the
+row, so a new tenant needs nothing seeded — `seedTenantDefaults()`
+(`src/lib/users.js`) is a no-op kept only as a hook for future defaults.
 
 ### Per-tenant business keys
 
@@ -102,7 +106,7 @@ ticker/date/key:
 |---|---|
 | `theses`, `valuation_models`, `holdings`, `strategic_notes` | `UNIQUE (tenant_id, ticker)` |
 | `ticker_prices`, `ticker_fundamentals` | `PRIMARY KEY (tenant_id, ticker, data_type)` |
-| `app_settings` | `UNIQUE (tenant_id, key)` |
+| `app_settings` | `PRIMARY KEY (tenant_id, key)`, `value JSONB` |
 | `watchlists` | `PRIMARY KEY (tenant_id, id)` (`id` is text, e.g. `'default'`) |
 | `fund_nav_data` | `UNIQUE (tenant_id, date)` |
 
@@ -115,17 +119,26 @@ Upsert call sites pass the matching `onConflict` (e.g.
 
 There is **no programmatic DDL path** (the app holds only PostgREST keys, no
 connection string), so every schema change is applied **by hand, once, in the
-Supabase SQL editor**. Two artifacts, complementary:
+Supabase SQL editor**.
 
-- **`scripts/supabase-schema.sql`** — the idempotent *from-scratch* schema
-  (base tables, buckets, storage policies, `updated_at` triggers, the
-  auto-notify RPC). Safe to re-run; used only for brand-new projects.
-- **`scripts/migrations/`** — the ordered, append-only SQL change history, one
-  numbered file per change. Each is idempotent where practical; never edit an
-  applied one — add a new file. After writing one, mirror the end-state into
-  `supabase-schema.sql`. The catalog of what each file did lives in
-  `scripts/migrations/README.md`; **this document describes only the resulting
-  current state.**
+**The single source of truth is `scripts/migrations/`, replayed in numeric
+order.** There is no separate hand-maintained "from-scratch schema" file — that
+approach drifted and was retired.
+
+- **`scripts/migrations/000_initial_schema.sql`** — the frozen single-tenant
+  baseline (migration zero): the original base tables, buckets, `updated_at`
+  triggers, and auto-notify RPC. It does **not** reflect the current schema and
+  is **never edited** — it is history.
+- **`scripts/migrations/001+`** — the ordered, append-only change history, one
+  numbered file per change (RLS, multitenancy, per-tenant keys, feature
+  tables…). Each is idempotent where practical; never edit an applied one — add
+  a new file. The catalog of what each did lives in
+  `scripts/migrations/README.md`.
+
+Building a database from zero (disaster recovery / a fresh clone) means running
+every migration `000 → 001 → … → newest` in order. **This document is the
+human-readable description of the resulting current state** — read it, not any
+one SQL file, to know what the schema looks like today.
 
 **Drift discipline:** anything created outside the repo (dashboard quick-adds,
 pipeline `CREATE TABLE`) starts unlocked. The RLS/view-lock migrations are
@@ -158,9 +171,8 @@ table must be added to that list** or workspace deletion will orphan its rows.
 | Table | Purpose |
 |---|---|
 | `holdings` | the actual book: `ticker`, `shares`, `cost_basis`, `added_at`. `UNIQUE (tenant_id, ticker)`. Writers: `/api/holdings` via `lib/portfolio.js`. |
-| `portfolio_cash` | singleton — one `cash` number per tenant. |
 | `fund_nav_data` | daily `date`, `fund_nav`, `sp500_nav` series. NAV/share is computed by `/api/fund-nav` POST from the accounting state's share ladder; the S&P leg is normalized to inception (2024-09-17, ^GSPC 5634.58 → NAV 100). Read by the Financials charts and the investor-IRR engine. |
-| `app_settings` | per-tenant key/value store (`UNIQUE (tenant_id, key)`, `value` is TEXT, usually JSON-stringified). Known keys: `fund-accounting-state` (the entire fund accounting engine state — quarters, periods, contributions), `activeWatchlistId`, `task_boards`, `activeTaskBoardId`, `assignees` / `assignees_<boardId>`, `saved_emails`. |
+| `app_settings` | per-tenant key/value store (`PRIMARY KEY (tenant_id, key)`, `value` is **JSONB**). The single home for per-tenant config; all access via `readSetting`/`writeSetting` in `lib/appSettings.js`. Known keys: `fund-accounting-state` (the entire fund accounting engine state — quarters, periods, contributions), `activeWatchlistId`, `task_boards`, `activeTaskBoardId`, `assignees` / `assignees_<boardId>`, `saved_emails`, and the former config tables `portfolio_cash` (`{cash}`), `allocation_config`, `sector_config`, `factor_config`, `macro_regime_config`, `macro_regime_weights`. |
 
 ### Research pipeline (Watchlist → Draft & Review → Research → Position Review)
 
@@ -210,14 +222,20 @@ table must be added to that list** or workspace deletion will orphan its rows.
 |---|---|
 | `issues` | GitHub-style tickets: `title`, `body JSONB` (rich-text blocks), `status open|resolved`, `author` (server-set from the session; non-admins only ever see their own), `comments JSONB`, per-tenant `number`, `labels JSONB`, and the admin-only triage columns `priority` (1–4), `complexity` (1–5), `dev_notes`, `sort_order`. `number` is assigned by a read-max+1 under RLS (races acceptable, no uniqueness constraint). |
 
-### Config singletons (one row per tenant, `id = 1`)
+### Per-tenant config (keys in `app_settings`)
 
-`allocation_config` (optimizer settings JSONB), `sector_config`
-(`{ sector: { label, color } }`), `factor_config` (`factors[]`,
-`importance_weights`, `exposures` — feeds both the allocation optimizer and
-the risk engine), `macro_regime_config` (allocator hyper-parameters, synced to
-`config.yaml` before every pipeline run), `macro_regime_weights` (saved
-portfolio weights), `portfolio_cash`.
+These were once six single-row config tables; migration 024 folded them into
+`app_settings` as one JSONB row each (key = the old table name), read/written
+via `lib/appSettings.js`:
+
+- `allocation_config` — optimizer settings.
+- `sector_config` — `{ sector: { label, color } }`.
+- `factor_config` — `{ factors[], importance_weights, exposures }`, feeds both
+  the allocation optimizer and the risk engine.
+- `macro_regime_config` — allocator hyper-parameters, synced to `config.yaml`
+  before every pipeline run.
+- `macro_regime_weights` — saved portfolio weights.
+- `portfolio_cash` — `{ cash }`, one number per tenant.
 
 ### Macro-regime allocator
 
@@ -258,8 +276,11 @@ whole, rather than normalized across many tables. Conventions to preserve:
 - **`watchlists.stocks[*].stage`** is the pipeline enum
   (`watching → draft → research → position`); every other ticker-keyed store
   survives stage moves untouched (the "no data loss" rule).
-- **`app_settings.value`** is always TEXT; JSON is stringified in and parsed
-  out by each route.
+- **`app_settings.value`** is **JSONB** — stored and read natively via
+  `readSetting`/`writeSetting` (`lib/appSettings.js`), no stringify/parse. The
+  helpers still tolerate a legacy stringified value so a mid-deploy row can't
+  break a read. (One exception: `/api/accounting-state` keeps a string-based
+  wire contract with its client, parsing/serializing at the route boundary.)
 - **`macro_regime_results.plots`** stores whole PNGs as base64 in JSONB —
   results rows are megabytes; that's why retention is 3 and reads select only
   the columns they need.
@@ -351,9 +372,11 @@ Everything else is kept indefinitely; there are no other TTLs.
 3. Add the table to `TENANT_DATA_TABLES` in `src/lib/users.js` (workspace
    purge) and, if the demo should showcase it, to `DEMO_TABLES` +
    `lib/demoData.js`.
-4. If it has `updated_at`, the trigger loop in `supabase-schema.sql` covers it
-   on fresh installs; live DBs get it by re-running that DO block.
-5. Mirror the end-state into `scripts/supabase-schema.sql` and record the
-   change in `scripts/migrations/README.md`.
+4. If it has `updated_at`, include the `set_updated_at` trigger in your
+   migration (copy an existing table's block, or re-run `003`'s DO loop, which
+   attaches it to any table that has the column).
+5. Record the change in `scripts/migrations/README.md`. (There is no
+   separate schema file to mirror into — the migrations are the source of
+   truth; see §3.)
 6. If the table's API should be feature-gated, map its route prefix in
    `API_FEATURES` (`src/lib/features.js`) — see `AUTH_ARCHITECTURE.md` §5.

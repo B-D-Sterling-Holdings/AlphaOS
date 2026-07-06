@@ -3,6 +3,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { getDb } from '@/lib/db';
+import { readSetting } from '@/lib/appSettings';
 import { getLatestResultSignal } from '@/lib/macroRegimeSignal';
 
 const MACRO_DIR = path.resolve(process.cwd(), 'macro_regime_allocator');
@@ -21,13 +22,8 @@ const VALID_COMMANDS = ['run', 'predict', 'fast', 'validate', 'clean'];
 async function syncConfigToYaml() {
   const supabase = await getDb();
   try {
-    const { data } = await supabase
-      .from('macro_regime_config')
-      .select('config')
-      .eq('id', 1)
-      .single();
-    if (!data?.config) return;
-    const cfg = data.config;
+    const cfg = await readSetting(supabase, 'macro_regime_config', null);
+    if (!cfg) return;
     // Build YAML manually to keep it readable (no js-yaml dependency)
     const lines = [
       '# Auto-synced from UI config before run',

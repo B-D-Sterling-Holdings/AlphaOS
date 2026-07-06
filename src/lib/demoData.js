@@ -122,7 +122,7 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
 
   /* ── Portfolio ───────────────────────────────────────────────── */
   T.holdings = HOLDINGS.map((h, i) => ({ ...h, added_at: ago(560 - i * 45) }));
-  T.portfolio_cash = [{ id: 1, cash: 6180.42 }];
+  // Per-tenant cash lives in app_settings now (see the app_settings block below).
   T.fund_nav_data = navSeries(now);
 
   /* ── Watchlist pipeline (all four stages populated) ──────────── */
@@ -500,19 +500,23 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
     task('o4', 'Set up the quarterly LP report template so letters stop being ad-hoc', { board_id: 'board_demo_ops', priority: 'medium', assignee: 'Both', done: true, position: 3 }, 45),
   ];
 
-  /* ── App settings (boards, assignees, saved emails, accounting) ──
-     Explicit high ids: app_settings.id is a serial shared across tenants and
-     its sequence can sit inside another tenant's id range — fixed ids far
-     above it keep the demo insert collision-free and deterministic. */
+  /* ── App settings (boards, assignees, saved emails, accounting, and all
+     per-tenant config) ──
+     app_settings.value is JSONB — store native objects/arrays/strings, not
+     stringified JSON. The single-row config tables were folded in here by
+     migration 024; the macro/allocation/sector/factor blocks below push their
+     keys onto this array. */
+  const assigneeList = [{ name: 'Alex', color: '#2563eb' }, { name: 'Jordan', color: '#dc2626' }, { name: 'Both', color: '#16a34a' }];
   T.app_settings = [
     { key: 'activeWatchlistId', value: 'default' },
     { key: 'activeTaskBoardId', value: 'default' },
-    { key: 'task_boards', value: JSON.stringify([{ id: 'default', name: 'Blue Harbor Tasks' }, { id: 'board_demo_ops', name: 'Fund Operations' }]) },
-    { key: 'assignees', value: JSON.stringify([{ name: 'Alex', color: '#2563eb' }, { name: 'Jordan', color: '#dc2626' }, { name: 'Both', color: '#16a34a' }]) },
-    { key: 'assignees_board_demo_ops', value: JSON.stringify([{ name: 'Alex', color: '#2563eb' }, { name: 'Jordan', color: '#dc2626' }, { name: 'Both', color: '#16a34a' }]) },
-    { key: 'saved_emails', value: JSON.stringify([{ name: 'Alex', email: 'alex@blueharbor.demo' }, { name: 'Jordan', email: 'jordan@blueharbor.demo' }]) },
-    { key: 'fund-accounting-state', value: JSON.stringify(accountingState(now)) },
-  ].map((row, i) => ({ id: 910001 + i, ...row }));
+    { key: 'task_boards', value: [{ id: 'default', name: 'Blue Harbor Tasks' }, { id: 'board_demo_ops', name: 'Fund Operations' }] },
+    { key: 'assignees', value: assigneeList },
+    { key: 'assignees_board_demo_ops', value: assigneeList },
+    { key: 'saved_emails', value: [{ name: 'Alex', email: 'alex@blueharbor.demo' }, { name: 'Jordan', email: 'jordan@blueharbor.demo' }] },
+    { key: 'fund-accounting-state', value: accountingState(now) },
+    { key: 'portfolio_cash', value: { cash: 6180.42 } },
+  ];
 
   /* ── Research links (mix of read/unread, summarized/pending) ─── */
   const link = (label, fields, daysAgo) => ({
@@ -655,25 +659,21 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
   ];
 
   /* ── Macro regime allocator ──────────────────────────────────── */
-  T.macro_regime_config = [{
-    id: 1,
-    config: {
-      start_date: '2015-01-01', end_date: dstr(addDays(now, -15)).slice(0, 8) + '01',
-      holdout_start: '2021-01-01', window_type: 'expanding', max_iter: 1000,
-      max_weight: 0.97, min_weight: 0.1, class_weight: null, crash_overlay: true,
-      deriskOverlay: { alpha: 0.5, cash_max: 0.02, cash_min: 0.002, max_trim: 0.2, max_boost: 0.1, derisk_start: 0.7 },
-      equity_ticker: 'SPY', baseline_equity: 0.95, baseline_tbills: 0.05,
-      momentum_window: 3, macro_lag_months: 1, min_train_months: 48, regularization_C: 0.5,
-      volatility_window: 3, vix_spike_threshold: 7, weight_smoothing_up: 0.98, weight_smoothing_down: 0.97,
-      allocation_steepness: 13, rolling_window_months: 120, credit_spike_threshold: 1.5,
-      forecast_horizon_months: 1, recency_halflife_months: 12, drawdown_defense_threshold: -10,
-    },
-    updated_at: ago(2),
-  }];
+  T.app_settings.push({ key: 'macro_regime_config', value: {
+    start_date: '2015-01-01', end_date: dstr(addDays(now, -15)).slice(0, 8) + '01',
+    holdout_start: '2021-01-01', window_type: 'expanding', max_iter: 1000,
+    max_weight: 0.97, min_weight: 0.1, class_weight: null, crash_overlay: true,
+    deriskOverlay: { alpha: 0.5, cash_max: 0.02, cash_min: 0.002, max_trim: 0.2, max_boost: 0.1, derisk_start: 0.7 },
+    equity_ticker: 'SPY', baseline_equity: 0.95, baseline_tbills: 0.05,
+    momentum_window: 3, macro_lag_months: 1, min_train_months: 48, regularization_C: 0.5,
+    volatility_window: 3, vix_spike_threshold: 7, weight_smoothing_up: 0.98, weight_smoothing_down: 0.97,
+    allocation_steepness: 13, rolling_window_months: 120, credit_spike_threshold: 1.5,
+    forecast_horizon_months: 1, recency_halflife_months: 12, drawdown_defense_threshold: -10,
+  } });
 
   const backtest = macroBacktest(now);
   const live = macroLivePrediction(now, backtest);
-  T.macro_regime_weights = [{ id: 1, weights: { AAPL: 12.8, MSFT: 12.1, AVGO: 9.9, TSM: 8.4, V: 9.8, SPOT: 8.6, DASH: 8.1, COST: 6.3, LLY: 4.9, ISRG: 8.1, CASH: 11.0 }, updated_at: ago(1) }];
+  T.app_settings.push({ key: 'macro_regime_weights', value: { AAPL: 12.8, MSFT: 12.1, AVGO: 9.9, TSM: 8.4, V: 9.8, SPOT: 8.6, DASH: 8.1, COST: 6.3, LLY: 4.9, ISRG: 8.1, CASH: 11.0 } });
   T.macro_regime_runs = [
     { run_type: 'run', status: 'completed', started_at: ago(16), completed_at: ago(16, 14.99), log_output: `── Macro Regime Allocator ─────────────────────────────\nLoaded ${backtest.length - 1} months of macro + market features\nWalk-forward training: expanding window, min 48 months\nPredictions made: ${backtest.length - 1}\nBacktest results saved to outputs/\nModel saved to outputs/model.joblib\n\n── Step 5: Live Prediction ───────────────────────────\nEngineering features for latest month...\nP(equity beats T-bills): ${live.prob_equity}\nAllocation for ${live.allocation_month.slice(0, 7)}: equity ${(live.weight_equity * 100).toFixed(1)}% / t-bills ${(live.weight_tbills * 100).toFixed(1)}%\nOverlay: none\nDone in 26.4s`, created_at: ago(16) },
     { run_type: 'predict', status: 'completed', started_at: ago(1), completed_at: ago(1, 14.99), log_output: `Starting: make predict\nLoaded latest prediction inputs from Supabase.\nCURRENT ALLOCATION SIGNAL\n  Data as of:              ${live.rebalance_date.slice(0, 7)}\n  Allocation for:          ${live.allocation_month.slice(0, 7)}\n  P(equity beats T-bills): ${live.prob_equity}\n  Equity weight:           ${(live.weight_equity * 100).toFixed(1)}%\n  T-bills weight:          ${(live.weight_tbills * 100).toFixed(1)}%\n  Overlay:                 none\nDone in 0.8s`, created_at: ago(1) },
@@ -686,43 +686,35 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
     plots: {}, validation_report: null, validation_data: {}, created_at: ago(1),
   }];
 
-  /* ── Allocation / risk configs ───────────────────────────────── */
+  /* ── Allocation / risk configs (app_settings keys) ───────────── */
   const alloc = (ticker, userWeight, expectedReturn, exposures) => ({ id: demoId(`alloc:${ticker}`), ticker, userWeight, expectedReturn, factorExposures: exposures });
-  T.allocation_config = [{
-    id: 1,
-    config: {
-      covLambda: '0.5', maxWeight: '15', minWeight: '3', riskFreeRate: '4',
-      cashMaxWeight: '3', cashMinWeight: '0.5', numPortfolios: '50000', rbTargetCashPercent: '2',
-      allocations: [
-        alloc('AAPL', '12.80', '10', ['0.30', '0.20', '0.15', '0.10', '0.35']),
-        alloc('MSFT', '12.10', '9', ['0.45', '0.15', '0.15', '0.10', '0.35']),
-        alloc('AVGO', '9.90', '13', ['0.35', '0.20', '0.20', '0.20', '0.6']),
-        alloc('TSM', '8.40', '15', ['0.20', '0.10', '0.55', '0.15', '0.7']),
-        alloc('V', '9.80', '9', ['0.30', '0.30', '0.45', '0.10', '0.3']),
-        alloc('SPOT', '8.60', '13', ['0.50', '0.25', '0.10', '0.20', '0.6']),
-        alloc('DASH', '8.10', '13', ['0.45', '0.50', '0.25', '0.30', '0.65']),
-        alloc('COST', '6.30', '7', ['0.55', '0.10', '0.10', '0.05', '0.25']),
-        alloc('LLY', '4.90', '11', ['0.50', '0.20', '0.60', '0.15', '0.55']),
-        alloc('ISRG', '8.10', '11', ['0.50', '0.15', '0.25', '0.10', '0.4']),
-      ],
-      rbTargetWeights: { AAPL: '13', MSFT: '12', AVGO: '10', TSM: '8.5', V: '10', SPOT: '9', DASH: '8', COST: '6.5', LLY: '5', ISRG: '8' },
-      riskFactorWeights: [0.6, 0.5, 0.4, 0.8, 0.9],
-    },
-    updated_at: ago(3),
-  }];
-  T.sector_config = [{
-    id: 1,
-    config: {
-      'Technology': { color: '#10b981' },
-      'Communication Services': { color: '#06b6d4' },
-      'Consumer Cyclical': { color: '#f59e0b' },
-      'Financial Services': { color: '#059669' },
-      'Healthcare': { color: '#8b5cf6' },
-      'Consumer Defensive': { color: '#6366f1' },
-    },
-  }];
-  T.factor_config = [{
-    id: 1,
+  T.app_settings.push({ key: 'allocation_config', value: {
+    covLambda: '0.5', maxWeight: '15', minWeight: '3', riskFreeRate: '4',
+    cashMaxWeight: '3', cashMinWeight: '0.5', numPortfolios: '50000', rbTargetCashPercent: '2',
+    allocations: [
+      alloc('AAPL', '12.80', '10', ['0.30', '0.20', '0.15', '0.10', '0.35']),
+      alloc('MSFT', '12.10', '9', ['0.45', '0.15', '0.15', '0.10', '0.35']),
+      alloc('AVGO', '9.90', '13', ['0.35', '0.20', '0.20', '0.20', '0.6']),
+      alloc('TSM', '8.40', '15', ['0.20', '0.10', '0.55', '0.15', '0.7']),
+      alloc('V', '9.80', '9', ['0.30', '0.30', '0.45', '0.10', '0.3']),
+      alloc('SPOT', '8.60', '13', ['0.50', '0.25', '0.10', '0.20', '0.6']),
+      alloc('DASH', '8.10', '13', ['0.45', '0.50', '0.25', '0.30', '0.65']),
+      alloc('COST', '6.30', '7', ['0.55', '0.10', '0.10', '0.05', '0.25']),
+      alloc('LLY', '4.90', '11', ['0.50', '0.20', '0.60', '0.15', '0.55']),
+      alloc('ISRG', '8.10', '11', ['0.50', '0.15', '0.25', '0.10', '0.4']),
+    ],
+    rbTargetWeights: { AAPL: '13', MSFT: '12', AVGO: '10', TSM: '8.5', V: '10', SPOT: '9', DASH: '8', COST: '6.5', LLY: '5', ISRG: '8' },
+    riskFactorWeights: [0.6, 0.5, 0.4, 0.8, 0.9],
+  } });
+  T.app_settings.push({ key: 'sector_config', value: {
+    'Technology': { color: '#10b981' },
+    'Communication Services': { color: '#06b6d4' },
+    'Consumer Cyclical': { color: '#f59e0b' },
+    'Financial Services': { color: '#059669' },
+    'Healthcare': { color: '#8b5cf6' },
+    'Consumer Defensive': { color: '#6366f1' },
+  } });
+  T.app_settings.push({ key: 'factor_config', value: {
     factors: ['Valuation', 'Disruption', 'Regulatory', 'Earnings Quality', 'Volatility'],
     importance_weights: { 'Valuation': 0.6, 'Disruption': 0.5, 'Regulatory': 0.4, 'Earnings Quality': 0.8, 'Volatility': 0.9 },
     exposures: {
@@ -737,7 +729,7 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
       LLY: { Valuation: 0.50, Disruption: 0.20, Regulatory: 0.60, 'Earnings Quality': 0.15 },
       ISRG: { Valuation: 0.50, Disruption: 0.15, Regulatory: 0.25, 'Earnings Quality': 0.10 },
     },
-  }];
+  } });
 
   /* ── Documents (rows reference PDFs the seeder uploads) ──────── */
   const letterBody = (quarter, perf, sp) => [
