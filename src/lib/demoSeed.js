@@ -24,14 +24,16 @@ import { appStorageUrl, DOCUMENT_BUCKET } from './storageShared.js';
 export const DEMO_TENANT_ID = '22222222-2222-2222-2222-222222222222';
 
 // Every tenant-scoped table, children before parents (delete order).
+// Per-tenant config (allocation/sector/factor/macro configs, macro weights,
+// portfolio cash) is app_settings rows now (migration 024), covered by wiping
+// app_settings below.
 const DEMO_TABLES = [
   'interactions', 'contact_files', 'contacts',
   'tasks', 'app_settings', 'research_links', 'documents',
-  'theses', 'valuation_models', 'holdings', 'portfolio_cash', 'watchlists',
-  'ticker_fundamentals', 'ticker_prices',
-  'allocation_config', 'sector_config', 'factor_config', 'fund_nav_data',
+  'theses', 'valuation_models', 'holdings', 'watchlists',
+  'ticker_fundamentals', 'ticker_prices', 'fund_nav_data',
   'strategic_notes', 'candidate_positions', 'ideas',
-  'macro_regime_results', 'macro_regime_runs', 'macro_regime_config', 'macro_regime_weights',
+  'macro_regime_results', 'macro_regime_runs',
   'lessons', 'lesson_patterns',
 ];
 

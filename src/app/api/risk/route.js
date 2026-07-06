@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { fetchRisk } from '@/lib/fetchRisk';
+import { readSetting } from '@/lib/appSettings';
 
 export async function POST(request) {
   const supabase = await getDb();
@@ -11,12 +12,8 @@ export async function POST(request) {
       return NextResponse.json({ error: 'holdings required' }, { status: 400 });
     }
 
-    // Read factor config from Supabase
-    const { data: configRow } = await supabase
-      .from('factor_config')
-      .select('factors, importance_weights, exposures')
-      .eq('id', 1)
-      .single();
+    // Read factor config from app_settings
+    const configRow = await readSetting(supabase, 'factor_config', null);
 
     const factorConfig = configRow
       ? {

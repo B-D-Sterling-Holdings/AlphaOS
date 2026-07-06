@@ -3,28 +3,34 @@
 Ordered, append-only SQL migrations for the Supabase database. Run each new file
 **once**, in numeric order, in the Supabase SQL Editor (Dashboard → SQL Editor).
 
-## Why this exists
+## Single source of truth
 
-`scripts/supabase-schema.sql` is the *from-scratch* schema (idempotent, safe to
-re-run). It does **not** track incremental changes to an already-deployed database
-— which is how the live DB drifted ahead of the schema (e.g. the `macro_regime_*`
-tables existed in prod but were never in the schema file).
-
-Migrations close that gap: every change to a live database goes in a numbered file
-here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
+**The current database schema is these migrations, replayed in numeric order.**
+There is no separate hand-maintained "from-scratch schema" file — that approach
+drifted (the file fell behind prod) and has been retired. `000_initial_schema.sql`
+is the frozen single-tenant baseline (migration zero); everything after it is an
+incremental change. For a human-readable description of the *current* state, read
+`docs/DATABASE_ARCHITECTURE.md`, not any one SQL file.
 
 ## Convention
 
 - Files are `NNN_short_description.sql`, numbered sequentially.
 - Each migration is idempotent where practical (`IF NOT EXISTS`, `DROP ... IF EXISTS`,
   guarded `DO` blocks) so an accidental re-run is harmless.
-- Never edit a migration after it's been applied to prod — add a new one.
-- After writing a migration, mirror the end-state into `supabase-schema.sql`.
+- **Never edit a migration after it's been applied to prod** — add a new one. This
+  includes `000`: it is frozen history, not a living document.
 
 ## Order of operations for a fresh database
 
-1. `supabase-schema.sql`     — base tables, buckets, storage policies
-2. `migrations/*.sql`        — in numeric order
+Run **every** file in this directory in numeric order, once each:
+
+```
+000_initial_schema.sql   → 001 → 002 → … → newest
+```
+
+`000` creates the base tables, buckets, and triggers; the rest layer on RLS,
+multitenancy, and every feature table. (Provisioning a new *customer* never
+touches SQL — it adds a **tenant** row + seeded config; see `src/lib/users.js`.)
 
 The demo environment is no longer a set of `demo_*` clone tables — it is the
 reserved **Demo tenant**, provisioned by `scripts/provision-demo.mjs` and
@@ -34,6 +40,7 @@ re-seeded on every `demo`/`demo` login (see `docs/DATABASE_ARCHITECTURE.md` §8)
 
 | File | Purpose |
 |------|---------|
+| `000_initial_schema.sql` | Frozen baseline: the original single-tenant base tables, buckets, `updated_at` triggers, auto-notify RPC. **Do not edit.** |
 | `001_enable_rls.sql` | Enable RLS on all public tables; lock the anon key out of the DB. |
 | `002_drop_prism_runs.sql` | Drop the orphaned `prism_runs` / `demo_prism_runs` tables. |
 | `003_add_updated_at_triggers.sql` | Auto-maintain `updated_at` on every table that has the column. |
@@ -56,8 +63,13 @@ re-seeded on every `demo`/`demo` login (see `docs/DATABASE_ARCHITECTURE.md` §8)
 | `020_session_revocation.sql` | `auth_revocations(subject, not_before)` — session-revocation floor behind logout / "sign out everywhere"; also makes the bootstrap `cio-admin` revocable. Service-role-only (RLS forced, no grants). |
 | `021_private_storage.sql` | Flip the `documents` / `research-images` buckets to **private** + drop the public-read policies (closes audit finding F3). Reads now go through `/api/storage/object` → short-lived signed URLs. ⚠️ Deploy order: ship the app code and run `scripts/migrate-storage-urls.mjs` first — see the header of the migration file. |
 | `022_drop_legacy_prism_rag_demo.sql` | Drop the retired Prism AI tables (`prism_recommendations`, `prism_ticker_data`, `prism_ticker_documents`), the RAG/chat pipeline tables + `rag_coverage` view (`scraped_content`, `content_chunks`, `chat_conversations`, `chat_messages`, `rag_traces`), and all pre-multitenancy `demo_*` clones. None are read/written by live app code. |
+| `023_app_settings_jsonb.sql` | Convert `app_settings.value` from TEXT to **JSONB** (native per-tenant config; no more stringify/parse). Tolerates bare non-JSON string values (e.g. `activeWatchlistId = 'default'`). |
+| `024_config_into_app_settings.sql` | Collapse the six single-row config tables (`allocation_config`, `sector_config`, `factor_config`, `macro_regime_config`, `macro_regime_weights`, `portfolio_cash`) into `app_settings` keyed rows, then drop the tables. Copies data before dropping. |
 
 All of 001–021 are applied to the live database (001–020 verified by probe
 2026-07-06; 021 applied and verified live in prod the same day, after the
-code deploy and `scripts/migrate-storage-urls.mjs`). **022 is written but not
-yet applied — run it by hand in the Supabase SQL editor.**
+code deploy and `scripts/migrate-storage-urls.mjs`). **022, 023 and 024 are
+written but not yet applied — run them by hand in the Supabase SQL editor, in
+order.** 023 and 024 each carry a deploy-order note in their header (ship the
+app code first); the two are otherwise independent-but-ordered (024 assumes 023
+has made `value` JSONB).

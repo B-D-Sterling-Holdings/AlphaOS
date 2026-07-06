@@ -340,14 +340,16 @@ export async function setUserFeatures(id, disabledFeatures) {
 // Deletion runs IN THIS ORDER: FK children must precede their parents
 // (interactions/contact_files -> contacts; macro_regime_results.run_id ->
 // macro_regime_runs), or the purge aborts on an FK violation.
+// Per-tenant config (allocation/sector/factor/macro configs, macro weights,
+// portfolio cash) lives in app_settings now — deleting app_settings rows below
+// covers it (migration 024 dropped the standalone config tables).
 const TENANT_DATA_TABLES = [
   'interactions', 'contact_files', 'contacts', 'tasks', 'app_settings',
   'research_links', 'documents', 'theses', 'valuation_models', 'holdings',
-  'portfolio_cash', 'watchlists', 'ticker_fundamentals', 'ticker_prices',
-  'allocation_config', 'sector_config', 'factor_config', 'fund_nav_data',
+  'watchlists', 'ticker_fundamentals', 'ticker_prices', 'fund_nav_data',
   'strategic_notes', 'candidate_positions', 'ideas',
-  'macro_regime_config', 'macro_regime_results', 'macro_regime_runs',
-  'macro_regime_weights', 'lessons', 'lesson_patterns', 'issues',
+  'macro_regime_results', 'macro_regime_runs',
+  'lessons', 'lesson_patterns', 'issues',
 ];
 
 // Storage buckets whose objects are namespaced by a `<tenant_id>/` path prefix
@@ -514,19 +516,15 @@ export async function deleteWorkspace(tenantId) {
   if (tErr) throw new Error(tErr.message);
 }
 
-/** Insert the singleton config rows a fresh tenant needs (service role). */
-export async function seedTenantDefaults(tenantId) {
-  const singletons = [
-    ['portfolio_cash', { tenant_id: tenantId, id: 1, cash: 0 }],
-    ['allocation_config', { tenant_id: tenantId, id: 1, config: {} }],
-    ['sector_config', { tenant_id: tenantId, id: 1, config: {} }],
-    ['factor_config', { tenant_id: tenantId, id: 1, factors: [], importance_weights: { Volatility: 0.9 }, exposures: {} }],
-    ['macro_regime_config', { tenant_id: tenantId, id: 1, config: {} }],
-  ];
-  for (const [table, row] of singletons) {
-    const { error } = await supabaseAdmin
-      .from(table)
-      .upsert(row, { onConflict: 'tenant_id', ignoreDuplicates: true });
-    if (error) throw new Error(`seed ${table}: ${error.message}`);
-  }
+/**
+ * Seed the defaults a fresh tenant needs (service role).
+ *
+ * As of migration 024, per-tenant config (allocation/sector/factor/macro
+ * configs, macro weights, portfolio cash) lives in app_settings, and every
+ * reader has a built-in default with the first save creating the row (see
+ * src/lib/appSettings.js). So a new tenant needs nothing seeded — this is a
+ * no-op kept as the hook for any future per-tenant defaults.
+ */
+export async function seedTenantDefaults(_tenantId) {
+  // intentionally empty — config defaults are resolved at read time.
 }

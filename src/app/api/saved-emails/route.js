@@ -70,7 +70,7 @@ export async function PUT(req) {
     }
 
     const clean = dedupe(people);
-    const row = { key: KEY, value: JSON.stringify(clean) };
+    const row = { key: KEY, value: clean }; // app_settings.value is JSONB — store natively
 
     const { data, error } = await supabase
       .from(TABLE)

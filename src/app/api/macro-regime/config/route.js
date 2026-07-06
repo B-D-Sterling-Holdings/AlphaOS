@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { readSetting, writeSetting } from '@/lib/appSettings';
 
-const TABLE = 'macro_regime_config';
+const KEY = 'macro_regime_config';
 
 const DEFAULT_CONFIG = {
   start_date: '2000-01-01',
@@ -33,43 +34,27 @@ const DEFAULT_CONFIG = {
 };
 
 export async function GET() {
-  const supabase = await getDb();
   try {
-    const { data, error } = await supabase
-      .from(TABLE)
-      .select('*')
-      .eq('id', 1)
-      .single();
-
-    if (data?.config) {
-      return NextResponse.json({ config: { ...DEFAULT_CONFIG, ...data.config } });
-    }
-
-    return NextResponse.json({ config: DEFAULT_CONFIG });
+    const supabase = await getDb();
+    const stored = await readSetting(supabase, KEY, null);
+    const config = stored ? { ...DEFAULT_CONFIG, ...stored } : DEFAULT_CONFIG;
+    return NextResponse.json({ config });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
 export async function PUT(req) {
-  const supabase = await getDb();
   try {
     const { config } = await req.json();
     if (!config) return NextResponse.json({ error: 'config is required' }, { status: 400 });
 
     const merged = { ...DEFAULT_CONFIG, ...config };
 
-    const { error } = await supabase
-      .from(TABLE)
-      .upsert({ id: 1, config: merged, updated_at: new Date().toISOString() }, { onConflict: 'tenant_id' });
-
-    if (error) {
-      console.error('Supabase save error:', error.message);
-      return NextResponse.json({ error: 'Failed to save config: ' + error.message }, { status: 500 });
-    }
-
+    const supabase = await getDb();
+    await writeSetting(supabase, KEY, merged);
     return NextResponse.json({ config: merged, saved: true });
   } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to save config: ' + err.message }, { status: 500 });
   }
 }

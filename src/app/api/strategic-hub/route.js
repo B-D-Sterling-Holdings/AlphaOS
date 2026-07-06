@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getValuationExpectedReturn } from '@/lib/valuationModel';
+import { readSetting } from '@/lib/appSettings';
 
 // Aggregates portfolio, thesis, research, task, and strategic note data
 // into a single payload for the Strategic Hub view
@@ -9,31 +10,30 @@ export async function GET() {
   try {
     const [
       holdingsRes,
-      cashRes,
+      cashCfg,
       thesesRes,
       linksRes,
       tasksRes,
       notesRes,
-      allocRes,
+      allocConfig,
       valuationModelsRes,
     ] = await Promise.all([
       supabase.from('holdings').select('*'),
-      supabase.from('portfolio_cash').select('cash').eq('id', 1).single(),
+      readSetting(supabase, 'portfolio_cash', { cash: 0 }),
       supabase.from('theses').select('ticker, core_reasons, assumptions, valuation, underwriting, news_updates, todos, updated_at'),
       supabase.from('research_links').select('ticker, title, is_read, summary_status, created_at'),
       supabase.from('tasks').select('id, title, priority, done, status, notes, board_id, created_at'),
       supabase.from('strategic_notes').select('*'),
-      supabase.from('allocation_config').select('config').eq('id', 1).single(),
+      readSetting(supabase, 'allocation_config', {}),
       supabase.from('valuation_models').select('ticker, inputs'),
     ]);
 
     const holdings = holdingsRes.data || [];
-    const cash = cashRes.data?.cash || 0;
+    const cash = Number(cashCfg?.cash) || 0;
     const theses = thesesRes.data || [];
     const links = linksRes.data || [];
     const tasks = tasksRes.data || [];
     const strategicNotes = notesRes.data || [];
-    const allocConfig = allocRes.data?.config || {};
     const valuationModels = valuationModelsRes.data || [];
 
     // Build thesis map

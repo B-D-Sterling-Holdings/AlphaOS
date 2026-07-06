@@ -25,10 +25,11 @@ async function getSetting(key) {
 
 async function setSetting(key, value) {
   const supabase = await getDb();
-  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  // app_settings.value is JSONB — store natively (objects, arrays, or a bare
+  // string like 'default' all round-trip correctly).
   await supabase
     .from(TABLE)
-    .upsert({ key, value: serialized }, { onConflict: 'tenant_id,key' });
+    .upsert({ key, value }, { onConflict: 'tenant_id,key' });
 }
 
 // GET — return { boards: [...], activeBoardId: '...' }

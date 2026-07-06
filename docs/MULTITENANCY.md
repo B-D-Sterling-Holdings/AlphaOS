@@ -27,8 +27,9 @@ database**, so a query that forgets to filter by tenant still cannot leak.
 
 Multitenancy is live. To add an isolated workspace, log in as the CIO admin (or
 a workspace owner), open **User Management** (shield icon in the navbar), and
-create a user — each gets a fresh, isolated, empty workspace. Its config
-singletons are seeded by `seedTenantDefaults()` at creation.
+create a user — each gets a fresh, isolated, empty workspace. Per-tenant config
+lives in `app_settings` with read-time defaults, so nothing needs seeding
+(`seedTenantDefaults()` is a no-op hook).
 
 For CI macro-regime runs, pass the tenant via the workflow input `tenant_id`
 (blank = CIO). The route forwards it automatically when dispatching.

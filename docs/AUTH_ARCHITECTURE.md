@@ -264,8 +264,9 @@ and the users-API guards.
   `private, max-age=240`, kept just under it), and
   `EMAIL_SIGNED_URL_TTL_SECONDS = 7 d` for image links minted into reminder
   emails at send time.
-- New-workspace seed rows: `seedTenantDefaults` in `users.js` (singleton
-  config tables every tenant must have).
+- New-workspace defaults: per-tenant config lives in `app_settings` with
+  read-time defaults, so nothing is seeded (`seedTenantDefaults` in `users.js`
+  is a no-op hook).
 
 ---
 
@@ -288,8 +289,8 @@ and the users-API guards.
   owner can't sneak past.
 - Tables **without** `tenant_id` (`macro_regime_signal`, `task_comments`) are
   RLS-on with **no policies**: service-role/pipeline only.
-- Singleton config tables are keyed on `tenant_id` (one row per tenant) while
-  keeping `id = 1` so legacy `.eq('id', 1)` reads still work under RLS.
+- Per-tenant config lives in `app_settings` (`(tenant_id, key)` → JSONB), not in
+  separate singleton tables — one row per tenant per key, RLS-isolated.
 - Business uniques are per-tenant (`(tenant_id, ticker)` etc.) so two tenants
   can both hold AAPL.
 - `getDb()` **fails closed**: no valid session ⇒ throw, never a fallback
@@ -327,7 +328,7 @@ read of the schema — against every PostgREST-exposed relation:
 | Demo-tenant JWT, every tenant-scoped table | only demo rows; **0 foreign-tenant rows** everywhere |
 | Demo-tenant JWT, `users` / `tenants` | denied (42501) |
 | Cross-tenant INSERT (demo JWT, CIO `tenant_id`, `tasks`) | rejected: *"new row violates row-level security policy"* |
-| `macro_regime_config` / `macro_regime_runs` | tenant-isolated; no cross-tenant leakage |
+| `app_settings` / `macro_regime_runs` | tenant-isolated; no cross-tenant leakage |
 | `auth_revocations` | service-role-only (anon → 42501), and holds a live `cio-admin` `not_before` stamped by an actual logout |
 | `issues.complexity = 5` | accepted — the 1–5 CHECK is live |
 
