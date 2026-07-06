@@ -105,8 +105,21 @@ export async function generateTickerData(ticker, apiKey) {
   const supabase = await getDb();
   const upper = ticker.toUpperCase();
 
-  // Fetch prices from yahoo-finance2
-  const chartResult = await yahooFinance.chart(upper, { period1: '1990-01-01', period2: new Date().toISOString().split('T')[0] });
+  // Fetch prices from yahoo-finance2. A symbol Yahoo doesn't carry throws
+  // "No data found, symbol may be delisted" here — usually not a delisting
+  // but a listing mismatch (foreign names need an exchange suffix, e.g. UMG
+  // trades as UMG.AS / UMGNF). Say that instead of parroting Yahoo.
+  let chartResult;
+  try {
+    chartResult = await yahooFinance.chart(upper, { period1: '1990-01-01', period2: new Date().toISOString().split('T')[0] });
+  } catch (e) {
+    if (/no data found/i.test(e?.message || '')) {
+      throw new Error(
+        `Yahoo Finance has no data for "${upper}" — the symbol is likely wrong for its listing (foreign names need an exchange suffix, e.g. UMG.AS, or use the US OTC symbol). Re-add the ticker on the Watchlist page to get symbol suggestions.`
+      );
+    }
+    throw e;
+  }
   const hist = chartResult.quotes || [];
   if (!hist || hist.length === 0) throw new Error(`No price data for ${upper}`);
 

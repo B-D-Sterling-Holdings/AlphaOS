@@ -60,6 +60,46 @@ function buildQuote(quote, summary) {
   };
 }
 
+// Yahoo answers a symbol it doesn't carry from quote() with an empty object
+// rather than an error (only chart() throws "No data found"), so a bogus
+// ticker sails through the watchlist and every quote fetch, and the first
+// loud failure is Generate Data ~30s in. "Exists" therefore means a real
+// symbol came back. On a miss, Yahoo search supplies the listings the user
+// probably meant (e.g. UMG → UMGNF / UMG.AS); search results are taken
+// unvalidated because yahoo-finance2's schema rejects some live payloads
+// (typeDisp casing) that are perfectly usable here.
+export async function validateTicker(ticker) {
+  const upper = (ticker || '').trim().toUpperCase();
+  if (!upper) return { valid: false, suggestions: [] };
+
+  let quote = null;
+  try {
+    quote = await yahooFinance.quote(upper);
+  } catch {}
+  if (quote?.symbol) {
+    return {
+      valid: true,
+      symbol: quote.symbol,
+      name: quote.shortName || quote.longName || '',
+      exchange: quote.fullExchangeName || quote.exchange || '',
+    };
+  }
+
+  let suggestions = [];
+  try {
+    const res = await yahooFinance.search(upper, {}, { validateResult: false });
+    suggestions = (res.quotes || [])
+      .filter(q => q.symbol && !['OPTION', 'FUTURE'].includes(q.quoteType))
+      .slice(0, 4)
+      .map(q => ({
+        symbol: q.symbol,
+        name: q.shortname || q.longname || '',
+        exchange: q.exchDisp || q.exchange || '',
+      }));
+  } catch {}
+  return { valid: false, suggestions };
+}
+
 export async function fetchQuotes(tickers) {
   const result = {};
   if (!tickers?.length) return result;

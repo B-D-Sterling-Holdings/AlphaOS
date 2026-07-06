@@ -4,7 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { LogOut, ChevronDown, Menu, X, Search, ShieldCheck, CircleDot } from 'lucide-react';
+import { LogOut, ChevronDown, Menu, X, Search, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import {
   NAV_GROUPS, isGroupActive, isItemActive,
@@ -25,11 +25,6 @@ function visibleGroups(disabledFeatures) {
 // Open the global command palette (handled by CommandPalette.jsx).
 function openCommandPalette() {
   window.dispatchEvent(new CustomEvent('open-command-palette'));
-}
-
-// Open the issues drawer (handled by IssuesWidget.jsx).
-function openIssues() {
-  window.dispatchEvent(new CustomEvent('open-issues'));
 }
 
 // Shared classes for a top-level nav pill (dropdown trigger).
@@ -301,15 +296,6 @@ export default function Navbar() {
 
           <SearchTrigger />
 
-          <button
-            onClick={openIssues}
-            className="flex items-center justify-center w-9 h-9 rounded-xl text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 transition-all duration-200"
-            title="Issues"
-            aria-label="Open issues"
-          >
-            <CircleDot size={17} />
-          </button>
-
           {canManageUsers && (
             <Link
               href="/admin"
@@ -343,13 +329,6 @@ export default function Navbar() {
             aria-label="Search"
           >
             <Search size={18} />
-          </button>
-          <button
-            onClick={openIssues}
-            className="w-9 h-9 flex items-center justify-center rounded-xl text-gray-500 hover:bg-white/70 transition-colors"
-            aria-label="Open issues"
-          >
-            <CircleDot size={18} />
           </button>
           <button
             onClick={() => setMobileOpen(true)}

@@ -579,6 +579,11 @@ export default function WatchlistPage() {
   const [movingTicker, setMovingTicker] = useState(null);
   const [quotes, setQuotes] = useState({});
   const [tickerInput, setTickerInput] = useState('');
+  // Symbol validation for the add form: true while the existence check is in
+  // flight, and { ticker, suggestions } after a miss so the user can pick the
+  // listing they meant (e.g. UMG → UMGNF / UMG.AS).
+  const [addChecking, setAddChecking] = useState(false);
+  const [addError, setAddError] = useState(null);
   const [loading, setLoading] = useState(true);
   const stockAreaRef = useRef(null);
   const prevPositionsRef = useRef(new Map());
@@ -736,12 +741,34 @@ export default function WatchlistPage() {
 
   // ── Stock operations (scoped to active watchlist) ──
 
-  const addStock = async () => {
-    const ticker = tickerInput.trim().toUpperCase();
+  const addStock = async (symbolOverride) => {
+    const ticker = (symbolOverride || tickerInput).trim().toUpperCase();
+    setAddError(null);
     if (!ticker || stocks.some(s => s.ticker === ticker)) {
       setTickerInput('');
       return;
     }
+
+    // Failsafe: Yahoo returns an empty quote (not an error) for symbols it
+    // doesn't carry, so without this gate a dead ticker joins the list and
+    // only fails ~30s into Generate Data. Suggestion clicks skip the check —
+    // the suggestion came from Yahoo, so it's known-good.
+    if (!symbolOverride) {
+      setAddChecking(true);
+      let check = null;
+      try {
+        const res = await fetch(`/api/validate-ticker?ticker=${encodeURIComponent(ticker)}`);
+        if (res.ok) check = await res.json();
+      } catch {}
+      setAddChecking(false);
+      if (check?.valid === false) {
+        setAddError({ ticker, suggestions: check.suggestions || [] });
+        return;
+      }
+      // Validator unreachable (network/Yahoo hiccup): add unchecked rather
+      // than block the workflow on it.
+    }
+
     const newStock = {
       ticker,
       stage: 'watching',
@@ -976,19 +1003,45 @@ export default function WatchlistPage() {
           >
             <input
               value={tickerInput}
-              onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
+              onChange={(e) => { setTickerInput(e.target.value.toUpperCase()); setAddError(null); }}
               placeholder="TICKER"
               className="w-28 text-sm font-semibold text-gray-800 bg-white border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 uppercase placeholder:text-gray-400 placeholder:font-normal"
             />
             <button
               type="submit"
-              className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded-lg transition-colors shadow-sm"
+              disabled={addChecking}
+              className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-wait px-4 py-2 rounded-lg transition-colors shadow-sm"
             >
               <Plus size={15} />
-              Add
+              {addChecking ? 'Checking...' : 'Add'}
             </button>
           </form>
         </div>
+
+        {addError && (
+          <div className="flex flex-wrap items-center gap-2 -mt-4 mb-6 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm animate-fade-in-up">
+            <span className="font-medium text-red-700">
+              {addError.ticker} isn&apos;t a symbol Yahoo Finance recognizes
+              {addError.suggestions.length > 0 ? ' — did you mean:' : '.'}
+            </span>
+            {addError.suggestions.map((s) => (
+              <button
+                key={s.symbol}
+                onClick={() => { setTickerInput(''); addStock(s.symbol); }}
+                className="flex items-center gap-1.5 px-3 py-1 bg-white border border-gray-300 rounded-lg font-semibold text-gray-800 hover:border-emerald-400 hover:text-emerald-700 transition-colors"
+              >
+                {s.symbol}
+                <span className="font-normal text-gray-500">{[s.name, s.exchange].filter(Boolean).join(' · ')}</span>
+              </button>
+            ))}
+            <button
+              onClick={() => setAddError(null)}
+              className="ml-auto text-gray-400 hover:text-gray-600 font-medium"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {watching.length === 0 && (
           <div className="text-center py-24">
