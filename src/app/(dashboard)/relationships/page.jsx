@@ -29,8 +29,9 @@ const cleanNote = (note) => note.trim().replace(/^[-*]\s+/, '').trim();
 const parseNotes = (notes = '') => notes.split(/\r?\n/).map(cleanNote).filter(Boolean);
 const serializeNotes = (notes = []) => notes.map(cleanNote).filter(Boolean).join('\n');
 
-const updatedTime = (contact) => new Date(contact.updated_at || contact.created_at || 0).getTime();
-const sortRecent = (items) => [...items].sort((a, b) => updatedTime(b) - updatedTime(a));
+const lastName = (contact) => (contact.name || '').trim().split(/\s+/).at(-1)?.toLowerCase() || '';
+const sortByLastName = (items) =>
+  [...items].sort((a, b) => lastName(a).localeCompare(lastName(b)) || (a.name || '').localeCompare(b.name || ''));
 
 const looksLikePhone = (value = '') => {
   if (!value || value.includes('@')) return false;
@@ -270,7 +271,7 @@ export default function RelationshipsPage() {
         const response = await fetch('/api/contacts');
         if (!response.ok) throw new Error('Failed to load contacts');
         const data = await response.json();
-        if (mounted && Array.isArray(data)) setContacts(sortRecent(data));
+        if (mounted && Array.isArray(data)) setContacts(sortByLastName(data));
       } catch {
         if (mounted) setToast({ message: 'Failed to load contacts', type: 'error' });
       } finally {
@@ -289,10 +290,10 @@ export default function RelationshipsPage() {
 
   const filteredContacts = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const recent = sortRecent(contacts);
-    if (!query) return recent;
+    const sorted = sortByLastName(contacts);
+    if (!query) return sorted;
 
-    return recent.filter((contact) => {
+    return sorted.filter((contact) => {
       const notes = parseNotes(contact.notes).join(' ');
       return [
         contact.name,
@@ -320,7 +321,7 @@ export default function RelationshipsPage() {
   };
 
   const applySavedContact = (saved) => {
-    setContacts((previous) => sortRecent([saved, ...previous.filter((contact) => contact.id !== saved.id)]));
+    setContacts((previous) => sortByLastName([saved, ...previous.filter((contact) => contact.id !== saved.id)]));
     setDrawer({ mode: 'edit', id: saved.id });
     setForm(toForm(saved));
   };
