@@ -10,12 +10,34 @@ import Treemap from '@/components/Treemap';
 import Toast from '@/components/Toast';
 import { formatMoney, formatMoneyPrecise, formatPct, formatLargeNumber } from '@/lib/formatters';
 import { useCache } from '@/lib/CacheContext';
+import {
+  deleteHolding,
+  fetchFactorConfig,
+  fetchFundamentalsForHoldings,
+  fetchPortfolioData,
+  fetchQuotesForHoldings,
+  fetchRiskForHoldings,
+  fetchSectorLabels,
+  saveCashBalance,
+  saveFactorConfigData,
+  saveHolding,
+  saveSectorConfig,
+} from '@/lib/holdingsClient';
+import {
+  BENCHMARK_TICKER,
+  filterPositions,
+  portfolioTotals,
+  quoteErrorMessage,
+  treemapPositions as buildTreemapPositions,
+  withAddedFactor,
+  withFactorExposure,
+  withImportanceWeight,
+  withoutFactor,
+} from '@/lib/holdingsPortfolio';
 import { Doughnut, Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from 'chart.js';
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
-
-const BENCHMARK_TICKER = 'SPY';
 
 export default function HoldingsPage() {
   const cache = useCache();
@@ -70,8 +92,7 @@ export default function HoldingsPage() {
 
   const loadPortfolio = useCallback(async () => {
     try {
-      const res = await fetch('/api/portfolio');
-      const data = await res.json();
+      const data = await fetchPortfolioData();
       setPortfolio(data);
       cache.set('holdings_portfolio', data);
       setCash(String(data.cash || 0));
@@ -91,28 +112,10 @@ export default function HoldingsPage() {
     setQuotesLoading(true);
     setQuotesError(null);
     try {
-      const tickers = Array.from(new Set([...holdings.map(h => h.ticker), BENCHMARK_TICKER])).join(',');
-      const res = await fetch(`/api/quotes?tickers=${tickers}`);
-      const data = await res.json();
+      const data = await fetchQuotesForHoldings(holdings);
       if (data.quotes) {
-        // Check which holding tickers failed to get a real price
-        const failedTickers = holdings
-          .map(h => h.ticker)
-          .filter(t => !data.quotes[t]?.price);
-        if (failedTickers.length > 0) {
-          // Distinguish a provider rate-limit / outage (the upstream fetch itself
-          // failed) from a few genuinely bad tickers. When Yahoo throttles our IP,
-          // every quote comes back with a "fetch failed"-style error — telling the
-          // user to reload is misleading, since the next request is throttled too.
-          const providerThrottled =
-            failedTickers.length === holdings.length ||
-            failedTickers.some(t => /fetch failed|too many requests|429|rate.?limit|timed? ?out/i.test(data.quotes[t]?.error || ''));
-          if (providerThrottled) {
-            setQuotesError('Live prices are temporarily rate-limited by the market-data provider (Yahoo Finance). Wait a minute, then hit Reload — refreshing immediately will stay throttled.');
-          } else {
-            setQuotesError(`Failed to load live prices for: ${failedTickers.join(', ')}. Try Reload.`);
-          }
-        }
+        const quoteError = quoteErrorMessage(holdings, data.quotes);
+        if (quoteError) setQuotesError(quoteError);
         setQuotes(data.quotes);
         cache.set('holdings_quotes', data.quotes);
       } else {
@@ -129,18 +132,7 @@ export default function HoldingsPage() {
     if (!holdings?.length) return;
     setRiskLoading(true);
     try {
-      const holdingsWithPrices = holdings.map(h => ({
-        ticker: h.ticker,
-        shares: h.shares,
-        cost_basis: h.cost_basis,
-        price: quotes[h.ticker]?.price || h.cost_basis,
-      }));
-      const res = await fetch('/api/risk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ holdings: holdingsWithPrices }),
-      });
-      const data = await res.json();
+      const data = await fetchRiskForHoldings(holdings, quotes);
       setRiskData(data);
     } catch (e) {
       setToast({ message: 'Failed to load risk data', type: 'error' });
@@ -153,9 +145,7 @@ export default function HoldingsPage() {
     if (!holdings?.length) return;
     setFundamentalsLoading(true);
     try {
-      const tickers = holdings.map(h => h.ticker).join(',');
-      const res = await fetch(`/api/fundamentals?tickers=${tickers}`);
-      const data = await res.json();
+      const data = await fetchFundamentalsForHoldings(holdings);
       if (data.fundamentals) setFundamentalsData(data.fundamentals);
     } catch (e) {
       setToast({ message: 'Failed to load fundamentals', type: 'error' });
@@ -212,22 +202,17 @@ export default function HoldingsPage() {
 
   // Load sector config (labels + colors)
   useEffect(() => {
-    fetch('/api/sector-labels').then(r => r.json()).then(setSectorConfig).catch(() => {});
+    fetchSectorLabels().then(setSectorConfig).catch(() => {});
   }, []);
 
   // Load factor config
   useEffect(() => {
-    fetch('/api/factor-config').then(r => r.json()).then(setFactorConfig).catch(() => {});
+    fetchFactorConfig().then(setFactorConfig).catch(() => {});
   }, []);
 
   const saveFactorConfig = async (updates) => {
     try {
-      const res = await fetch('/api/factor-config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      const data = await res.json();
+      const data = await saveFactorConfigData(updates);
       setFactorConfig(data);
       return data;
     } catch {
@@ -236,39 +221,22 @@ export default function HoldingsPage() {
   };
 
   const saveExposure = async (ticker, factor, value) => {
-    const val = Math.max(0, Math.min(1, parseFloat(value) || 0));
-    const current = factorConfig?.exposures || {};
-    const tickerExposures = { ...(current[ticker] || {}), [factor]: val };
-    await saveFactorConfig({ exposures: { [ticker]: tickerExposures } });
+    await saveFactorConfig(withFactorExposure(factorConfig, ticker, factor, value));
   };
 
   const addFactor = async (name) => {
-    if (!name.trim()) return;
-    const factors = [...(factorConfig?.factors || []), name.trim()];
-    const iw = { ...(factorConfig?.importanceWeights || {}), [name.trim()]: 0.5 };
-    await saveFactorConfig({ factors, importanceWeights: iw });
+    const updates = withAddedFactor(factorConfig, name);
+    if (!updates) return;
+    await saveFactorConfig(updates);
     setNewFactorName('');
   };
 
   const removeFactor = async (name) => {
-    const factors = (factorConfig?.factors || []).filter(f => f !== name);
-    const iw = { ...(factorConfig?.importanceWeights || {}) };
-    delete iw[name];
-    // Remove from all exposures
-    const exposures = { ...(factorConfig?.exposures || {}) };
-    for (const t of Object.keys(exposures)) {
-      if (exposures[t][name] !== undefined) {
-        exposures[t] = { ...exposures[t] };
-        delete exposures[t][name];
-      }
-    }
-    await saveFactorConfig({ factors, importanceWeights: iw, exposures });
+    await saveFactorConfig(withoutFactor(factorConfig, name));
   };
 
   const saveImportanceWeight = async (factor, value) => {
-    const val = Math.max(0, Math.min(1, parseFloat(value) || 0));
-    const iw = { ...(factorConfig?.importanceWeights || {}), [factor]: val };
-    await saveFactorConfig({ importanceWeights: iw });
+    await saveFactorConfig(withImportanceWeight(factorConfig, factor, value));
   };
 
   const getSectorLabel = (sector) => sectorConfig[sector]?.label || sector;
@@ -276,24 +244,14 @@ export default function HoldingsPage() {
 
   const saveSectorLabel = async (sector, label) => {
     try {
-      const res = await fetch('/api/sector-labels', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sector, label }),
-      });
-      setSectorConfig(await res.json());
+      setSectorConfig(await saveSectorConfig({ sector, label }));
     } catch {}
     setEditingSector(null);
   };
 
   const saveSectorColor = async (sector, color) => {
     try {
-      const res = await fetch('/api/sector-labels', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sector, color }),
-      });
-      setSectorConfig(await res.json());
+      setSectorConfig(await saveSectorConfig({ sector, color }));
     } catch {}
     setColorPickSector(null);
   };
@@ -314,12 +272,7 @@ export default function HoldingsPage() {
     if (!shares || Number(shares) <= 0) { setToast({ message: 'Please enter a valid number of shares', type: 'error' }); return; }
     if (!costBasis) return;
     try {
-      const res = await fetch('/api/holdings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker, shares: Number(shares), cost_basis: Number(costBasis) }),
-      });
-      const data = await res.json();
+      const data = await saveHolding({ ticker, shares, costBasis });
       if (data.success) {
         setPortfolio(data.portfolio);
         setTicker(''); setShares(''); setCostBasis('');
@@ -335,8 +288,7 @@ export default function HoldingsPage() {
 
   const removeHolding = async (t) => {
     try {
-      const res = await fetch(`/api/holdings?ticker=${t}`, { method: 'DELETE' });
-      const data = await res.json();
+      const data = await deleteHolding(t);
       if (data.success) {
         setPortfolio(data.portfolio);
         setToast({ message: `${t} removed from portfolio`, type: 'success' });
@@ -363,12 +315,7 @@ export default function HoldingsPage() {
     if (!editShares || Number(editShares) <= 0) { setToast({ message: 'Enter valid shares', type: 'error' }); return; }
     if (!editCostBasis || Number(editCostBasis) <= 0) { setToast({ message: 'Enter valid cost basis', type: 'error' }); return; }
     try {
-      const res = await fetch('/api/holdings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: editingTicker, shares: Number(editShares), cost_basis: Number(editCostBasis) }),
-      });
-      const data = await res.json();
+      const data = await saveHolding({ ticker: editingTicker, shares: editShares, costBasis: editCostBasis });
       if (data.success) {
         setPortfolio(data.portfolio);
         setToast({ message: `${editingTicker} updated`, type: 'success' });
@@ -384,12 +331,7 @@ export default function HoldingsPage() {
 
   const saveCash = async () => {
     try {
-      const res = await fetch('/api/cash', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cash: Number(cash) }),
-      });
-      const data = await res.json();
+      const data = await saveCashBalance(cash);
       if (data.success) {
         setPortfolio(data.portfolio);
         setToast({ message: 'Cash balance updated', type: 'success' });
@@ -410,45 +352,25 @@ export default function HoldingsPage() {
     );
   }
 
-  const holdings = portfolio?.holdings || [];
-  const cashVal = portfolio?.cash || 0;
-
-  const positions = holdings.map(h => {
-    const quote = quotes[h.ticker];
-    const price = quote?.price || h.cost_basis;
-    const dayChange = quote?.dayChange || 0;
-    const value = h.shares * price;
-    const cost = h.shares * h.cost_basis;
-    const unrealizedPnl = value - cost;
-    const unrealizedPnlPct = cost > 0 ? (unrealizedPnl / cost) * 100 : 0;
-    const dayChangePct = quote?.dayChangePct || 0;
-    const dailyPnl = h.shares * dayChange;
-    return { ticker: h.ticker, shares: h.shares, costBasis: h.cost_basis, price, value, cost, unrealizedPnl, unrealizedPnlPct, dayChange, dayChangePct, dailyPnl };
-  });
-
-  // With no holdings there are no quotes to fetch, so treat as "loaded" rather
-  // than showing skeleton loaders forever.
-  const quotesLoaded = !quotesLoading && (holdings.length === 0 || Object.keys(quotes).length > 0);
-
-  const nav = positions.reduce((s, p) => s + p.value, 0);
-  const totalAum = nav + cashVal;
-  const totalCost = positions.reduce((s, p) => s + p.cost, 0);
-  const totalUnrealizedPnl = nav - totalCost;
-  const totalDailyChange = positions.reduce((s, p) => s + p.dailyPnl, 0);
-  const previousTotalAum = totalAum - totalDailyChange;
-  const totalDailyChangePct = previousTotalAum > 0 ? (totalDailyChange / previousTotalAum) * 100 : 0;
-  const benchmarkDayChangePct = quotes[BENCHMARK_TICKER]?.dayChangePct;
+  const {
+    holdings,
+    cashVal,
+    positions,
+    quotesLoaded,
+    nav,
+    totalAum,
+    totalCost,
+    totalUnrealizedPnl,
+    totalDailyChange,
+    totalDailyChangePct,
+    benchmarkDayChangePct,
+  } = portfolioTotals({ portfolio, quotes, quotesLoading });
   const dailyMoveSub = quotesLoaded
     ? `${formatPct(totalDailyChangePct, 2)} vs S&P's ${benchmarkDayChangePct == null ? '—' : formatPct(benchmarkDayChangePct, 2)}`
     : undefined;
 
-  const treemapPositions = positions.map(p => ({
-    ticker: p.ticker, value: p.value, pnlPct: p.unrealizedPnlPct, dayChangePct: p.dayChangePct,
-  }));
-
-  const filtered = positions
-    .filter(p => !search || p.ticker.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => b.value - a.value);
+  const treemapPositions = buildTreemapPositions(positions);
+  const filtered = filterPositions(positions, search);
 
   const inputCls = "w-full bg-gray-50/50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-200";
 

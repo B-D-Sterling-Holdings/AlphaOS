@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiBadRequest, apiCreated, apiError, apiJson, apiOk } from '@/lib/apiResponses';
 
 /*
   Supabase tables required — run this SQL in the Supabase SQL Editor:
@@ -47,8 +47,8 @@ export async function GET() {
     .select('*')
     .order('updated_at', { ascending: false });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  if (error) return apiError(error);
+  return apiJson(data);
 }
 
 export async function POST(req) {
@@ -57,7 +57,7 @@ export async function POST(req) {
   const { name } = body;
 
   if (!name?.trim()) {
-    return NextResponse.json({ error: 'Name is required' }, { status: 400 });
+    return apiBadRequest('Name is required');
   }
 
   const record = {
@@ -84,8 +84,8 @@ export async function POST(req) {
   };
 
   const { data, error } = await supabase.from(TABLE).insert(record).select().single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data, { status: 201 });
+  if (error) return apiError(error);
+  return apiCreated(data);
 }
 
 export async function PUT(req) {
@@ -93,7 +93,7 @@ export async function PUT(req) {
   const body = await req.json();
   const { id, ...updates } = body;
 
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  if (!id) return apiBadRequest('id is required');
 
   updates.updated_at = new Date().toISOString();
 
@@ -104,8 +104,8 @@ export async function PUT(req) {
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  if (error) return apiError(error);
+  return apiJson(data);
 }
 
 export async function DELETE(req) {
@@ -113,13 +113,13 @@ export async function DELETE(req) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
 
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  if (!id) return apiBadRequest('id is required');
 
   // Delete related interactions and files first
   await supabase.from('interactions').delete().eq('contact_id', id);
   await supabase.from('contact_files').delete().eq('contact_id', id);
   const { error } = await supabase.from(TABLE).delete().eq('id', id);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  if (error) return apiError(error);
+  return apiOk();
 }

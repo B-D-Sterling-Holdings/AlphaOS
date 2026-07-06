@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiBadRequest, apiCreated, apiError, apiJson, apiOk } from '@/lib/apiResponses';
 
 /*
   Supabase table required — run this SQL in the Supabase SQL Editor:
@@ -53,8 +53,8 @@ export async function GET(req) {
 
   const { data, error } = await query;
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  if (error) return apiError(error);
+  return apiJson(data);
 }
 
 // POST — create a new task
@@ -64,7 +64,7 @@ export async function POST(req) {
   const { title, priority = 'low', board_id = 'default' } = body;
 
   if (!title?.trim()) {
-    return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    return apiBadRequest('Title is required');
   }
 
   // Get next position for this priority within this board
@@ -90,8 +90,8 @@ export async function POST(req) {
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data, { status: 201 });
+  if (error) return apiError(error);
+  return apiCreated(data);
 }
 
 // PUT — update a task (toggle done, rename, subtasks, etc.)
@@ -100,7 +100,7 @@ export async function PUT(req) {
   const body = await req.json();
   const { id, ...updates } = body;
 
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  if (!id) return apiBadRequest('id is required');
 
   updates.updated_at = new Date().toISOString();
 
@@ -111,8 +111,8 @@ export async function PUT(req) {
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  if (error) return apiError(error);
+  return apiJson(data);
 }
 
 // DELETE — remove a task
@@ -121,10 +121,10 @@ export async function DELETE(req) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
 
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  if (!id) return apiBadRequest('id is required');
 
   const { error } = await supabase.from(TABLE).delete().eq('id', id);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  if (error) return apiError(error);
+  return apiOk();
 }

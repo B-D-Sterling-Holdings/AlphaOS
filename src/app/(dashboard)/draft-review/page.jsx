@@ -15,6 +15,12 @@ import { normalizeAutoNotify } from '@/lib/autoNotify';
 import { useTickerData } from '@/lib/useTickerData';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { startGeneration, isGenerating, subscribeGeneration } from '@/lib/generateTickerJob';
+import {
+  fetchQuote,
+  fetchThesis,
+  fetchWatchlist,
+  saveThesis as saveThesisData,
+} from '@/lib/researchApi';
 
 // --- thesis.underwriting.draftReview shaping (kept local to this page) -------
 
@@ -119,8 +125,7 @@ export default function DraftReviewPage() {
     try {
       const cached = cache.get('deep_research_watchlist');
       if (cached?.watchlists) { setAllData(cached); setLoading(false); }
-      const res = await fetch('/api/watchlist');
-      const data = await res.json();
+      const data = await fetchWatchlist();
       setAllData(data);
       writeWatchlistCache(cache, data);
     } catch {} finally {
@@ -172,8 +177,7 @@ export default function DraftReviewPage() {
     setThesis(null);
     setThesisLoading(true);
     setThesisDirty(false);
-    fetch(`/api/thesis/${selectedTicker}`)
-      .then(r => r.json())
+    fetchThesis(selectedTicker)
       .then(data => { if (!cancelled) setThesis(data); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setThesisLoading(false); });
@@ -188,9 +192,8 @@ export default function DraftReviewPage() {
     let cancelled = false;
     setLiveQuote(null);
     setQuoteLoading(true);
-    fetch(`/api/quotes?tickers=${selectedTicker}`)
-      .then(r => r.json())
-      .then(data => { if (!cancelled && data.quotes?.[selectedTicker]) setLiveQuote(data.quotes[selectedTicker]); })
+    fetchQuote(selectedTicker)
+      .then(quote => { if (!cancelled && quote) setLiveQuote(quote); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setQuoteLoading(false); });
     return () => { cancelled = true; };
@@ -235,15 +238,7 @@ export default function DraftReviewPage() {
     if (!selectedTicker || (!thesisDirty && !data)) return;
     setThesisSaving(true);
     try {
-      const res = await fetch(`/api/thesis/${selectedTicker}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify((() => {
-          const { _activeNewsIdx, ...rest } = data || thesis;
-          return rest;
-        })()),
-      });
-      const result = await res.json();
+      const result = await saveThesisData(selectedTicker, data || thesis);
       if (result.success) {
         setThesisDirty(false);
         setToast({ message: 'Draft & review saved', type: 'success' });

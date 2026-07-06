@@ -14,9 +14,9 @@ import {
   addQuarter, removeQuarter, updateContribution, updatePeriodDates,
   updateContributionDate, closePeriod
 } from '@/lib/accounting';
+import { fetchAccountingStateValue, fetchLiveAUM, saveAccountingState } from '@/lib/accountingClient';
+import { ACCOUNTING_STORAGE_KEY, activeQuarterForState, backfillBenchmarkData } from '@/lib/accountingState';
 import { formatMoneyPrecise, formatPct, formatNumber } from '@/lib/formatters';
-
-const STORAGE_KEY = 'fund-accounting-state';
 
 function fmt$(v) { return formatMoneyPrecise(v); }
 function fmtPct(v) { return formatPct(v * 100); }
@@ -1225,7 +1225,7 @@ export default function AccountingTool() {
   // would trigger a cascading render. Quarter add/remove manage the tab themselves.
   const loadState = (s) => {
     setState(s);
-    setActiveQuarter(Math.max(0, (s?.quarters?.length || 1) - 1));
+    setActiveQuarter(activeQuarterForState(s));
   };
 
   // Fetch live AUM from holdings + quotes
@@ -1235,27 +1235,8 @@ export default function AccountingTool() {
     let cancelled = false;
     async function fetchAUM() {
       try {
-        const portfolioRes = await fetch('/api/portfolio');
-        const portfolio = await portfolioRes.json();
-        const holdings = portfolio?.holdings || [];
-        const cash = portfolio?.cash || 0;
-
-        if (holdings.length === 0) {
-          if (!cancelled) { setLiveAUM(cash); setAumLoading(false); }
-          return;
-        }
-
-        const tickers = holdings.map(h => h.ticker).join(',');
-        const quotesRes = await fetch(`/api/quotes?tickers=${tickers}`);
-        const data = await quotesRes.json();
-        const quotes = data.quotes || data;
-
-        const nav = holdings.reduce((sum, h) => {
-          const price = quotes[h.ticker]?.price || h.cost_basis;
-          return sum + h.shares * price;
-        }, 0);
-
-        if (!cancelled) { setLiveAUM(nav + cash); setAumLoading(false); }
+        const aum = await fetchLiveAUM();
+        if (!cancelled) { setLiveAUM(aum); setAumLoading(false); }
       } catch (err) {
         console.error('Failed to fetch live AUM:', err);
         if (!cancelled) setAumLoading(false);
@@ -1266,27 +1247,6 @@ export default function AccountingTool() {
   }, []);
   const [showAddQuarter, setShowAddQuarter] = useState(false);
 
-  // Backfill S&P benchmark data from seed onto a parsed state object
-  const backfillSP = useCallback((parsed) => {
-    const seed = createSeedState();
-    parsed.inceptionSP = seed.inceptionSP;
-    for (let qi = 0; qi < parsed.quarters.length && qi < seed.quarters.length; qi++) {
-      const savedEvents = parsed.quarters[qi].events;
-      const seedEvents = seed.quarters[qi].events;
-      let si = 0;
-      for (let ei = 0; ei < savedEvents.length; ei++) {
-        if (savedEvents[ei].type === 'period') {
-          while (si < seedEvents.length && seedEvents[si].type !== 'period') si++;
-          if (si < seedEvents.length) {
-            savedEvents[ei].spEnd = seedEvents[si].spEnd;
-          }
-          si++;
-        }
-      }
-    }
-    return parsed;
-  }, []);
-
   // Load: migrate localStorage → Supabase (one-time), then Supabase-only
   useEffect(() => {
     let cancelled = false;
@@ -1294,15 +1254,11 @@ export default function AccountingTool() {
     async function load() {
       // One-time migration: if localStorage has data, push it to the server and delete local
       try {
-        const local = localStorage.getItem(STORAGE_KEY);
+        const local = localStorage.getItem(ACCOUNTING_STORAGE_KEY);
         if (local) {
-          const parsed = backfillSP(JSON.parse(local));
-          await fetch('/api/accounting-state', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ value: JSON.stringify(parsed) }),
-          });
-          localStorage.removeItem(STORAGE_KEY);
+          const parsed = backfillBenchmarkData(JSON.parse(local));
+          await saveAccountingState(parsed);
+          localStorage.removeItem(ACCOUNTING_STORAGE_KEY);
           if (!cancelled) loadState(parsed);
           return;
         }
@@ -1310,28 +1266,23 @@ export default function AccountingTool() {
 
       // Normal load (account-aware on the server: demo sessions read demo_app_settings)
       try {
-        const res = await fetch('/api/accounting-state');
-        const { value } = await res.json();
-        if (res.ok && value) {
+        const { ok, value } = await fetchAccountingStateValue();
+        if (ok && value) {
           const parsed = JSON.parse(value);
-          if (!cancelled) loadState(backfillSP(parsed));
+          if (!cancelled) loadState(backfillBenchmarkData(parsed));
           return;
         }
       } catch {}
 
       // Nothing anywhere — use seed
       const seed = createSeedState();
-      await fetch('/api/accounting-state', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: JSON.stringify(seed) }),
-      });
+      await saveAccountingState(seed);
       if (!cancelled) loadState(seed);
     }
 
     load();
     return () => { cancelled = true; };
-  }, [backfillSP]);
+  }, []);
 
   // Persist to Supabase on every state change (skip the initial load)
   const hasLoadedOnce = useRef(false);
@@ -1348,14 +1299,9 @@ export default function AccountingTool() {
     if (state === prevStateRef.current) return;
     prevStateRef.current = state;
 
-    fetch('/api/accounting-state', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: JSON.stringify(state) }),
-    }).then(async (res) => {
+    saveAccountingState(state).then((res) => {
       if (!res.ok) {
-        const { error } = await res.json().catch(() => ({}));
-        console.error('Failed to persist accounting state:', error || res.status);
+        console.error('Failed to persist accounting state:', res.error || res.status);
       }
     });
   }, [state]);

@@ -8,6 +8,7 @@ import {
   Eye, EyeOff, Pencil,
 } from 'lucide-react';
 import { FEATURES } from '@/lib/features';
+import { createAdminUser, deleteAdminUser, fetchAdminUsers, patchAdminUser } from '@/lib/adminClient';
 
 /*
   User management, two audiences sharing one page:
@@ -328,9 +329,7 @@ export default function AdminPage() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/admin/users');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load users');
+      const data = await fetchAdminUsers();
       setUsers(data.users || []);
     } catch (e) {
       setError(e.message);
@@ -398,13 +397,7 @@ export default function AdminPage() {
     setError('');
     setNotice('');
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: u.id, disabledFeatures: draftDisabled }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update access');
+      await patchAdminUser({ id: u.id, disabledFeatures: draftDisabled }, 'Failed to update access');
       setNotice(`Updated feature access for "${u.username}".`);
       setEditingId(null);
       loadUsers();
@@ -425,13 +418,7 @@ export default function AdminPage() {
     try {
       const body = { username: form.username, password: form.password };
       if (isAdmin) body.role = form.role;
-      const res = await fetch('/api/admin/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to create user');
+      const data = await createAdminUser(body);
       setNotice(
         isAdmin
           ? `Created workspace "${data.user.username}".`
@@ -452,13 +439,7 @@ export default function AdminPage() {
     setError('');
     setNotice('');
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, role: 'user', tenantId }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to add member');
+      const data = await createAdminUser({ username, password, role: 'user', tenantId });
       setNotice(`Added "${data.user.username}" to the workspace.`);
       setAddingTenantId(null);
       loadUsers();
@@ -472,13 +453,7 @@ export default function AdminPage() {
   async function toggleActive(u) {
     setError('');
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: u.id, isActive: !u.isActive }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update user');
+      await patchAdminUser({ id: u.id, isActive: !u.isActive });
       loadUsers();
     } catch (e) {
       setError(e.message);
@@ -491,13 +466,7 @@ export default function AdminPage() {
     setError('');
     setNotice('');
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: u.id, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to reset password');
+      await patchAdminUser({ id: u.id, password }, 'Failed to reset password');
       setNotice(`Password updated for "${u.username}".`);
     } catch (e) {
       setError(e.message);
@@ -517,13 +486,7 @@ export default function AdminPage() {
     setNotice('');
     setDeletingId(u.id);
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: u.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to delete user');
+      const data = await deleteAdminUser({ id: u.id });
       setNotice(
         data.workspaceDeleted
           ? `Deleted "${u.username}" and its workspace.`
@@ -548,13 +511,7 @@ export default function AdminPage() {
     setError('');
     setNotice('');
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: u.id, username }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to rename login');
+      const data = await patchAdminUser({ id: u.id, username }, 'Failed to rename login');
       setNotice(`Renamed "${u.username}" to "${data.username}".`);
       loadUsers();
     } catch (e) {
@@ -569,13 +526,7 @@ export default function AdminPage() {
     setError('');
     setNotice('');
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenantId: ws.id, name }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to rename workspace');
+      const data = await patchAdminUser({ tenantId: ws.id, name }, 'Failed to rename workspace');
       setNotice(`Renamed workspace "${ws.name}" to "${data.name}".`);
       loadUsers();
     } catch (e) {
@@ -593,13 +544,7 @@ export default function AdminPage() {
     setError('');
     setNotice('');
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: u.id, role: promote ? 'owner' : 'user' }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to change role');
+      await patchAdminUser({ id: u.id, role: promote ? 'owner' : 'user' }, 'Failed to change role');
       setNotice(promote ? `"${u.username}" is now a workspace owner.` : `"${u.username}" is now a regular member.`);
       loadUsers();
     } catch (e) {
@@ -616,13 +561,7 @@ export default function AdminPage() {
     setNotice('');
     setDeletingTenantId(ws.id);
     try {
-      const res = await fetch('/api/admin/users', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenantId: ws.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to delete workspace');
+      await deleteAdminUser({ tenantId: ws.id }, 'Failed to delete workspace');
       setNotice(`Deleted workspace "${ws.name}" and all of its data.`);
       loadUsers();
     } catch (e) {

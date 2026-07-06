@@ -11,9 +11,25 @@ import {
   Legend,
 } from 'chart.js';
 import { Scatter } from 'react-chartjs-2';
-import { BarChart3, Settings, Target, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2 } from 'lucide-react';
+import { Settings, Target, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2 } from 'lucide-react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
+import {
+  DEFAULT_RISK_FACTOR_WEIGHTS,
+  RISK_FACTORS,
+  buildRebalancePlanFromRows,
+  calculateVolatilityScores,
+  calculateRebalanceTaxBreakdown,
+  createAllocationRow,
+  createDefaultAllocations,
+  createDefaultRebalanceHoldings,
+  createRebalanceRow,
+  createRebalanceTaxInputs,
+  formatCurrency,
+  parseNumber,
+  runAllocationSimulation,
+  updateRebalanceTaxInputValue,
+} from '@/lib/allocationEngine';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
@@ -31,260 +47,8 @@ const D = ({ children }) => (
   </div>
 );
 
-const riskFactors = ['Volatility', 'Regulatory', 'Disruption', 'Valuation', 'Earnings Quality'];
-const riskFactorShortLabels = ['Vol', 'Reg', 'Disr', 'Val', 'EQ'];
-
-const defaultRiskFactorWeights = [0.9, 0.3, 0.7, 0.6, 0.8];
-
-const createAllocationRow = (overrides = {}) => ({
-  id: crypto.randomUUID(),
-  ticker: '',
-  expectedReturn: '',
-  factorExposures: riskFactors.map(() => ''),
-  userWeight: '',
-  ...overrides,
-});
-
-// New tenants start with a blank optimizer (no seeded tickers): a few empty
-// rows plus the CASH row required for cash-weight constraints.
-const createDefaultAllocations = () => [
-  ...Array.from({ length: 6 }, () => createAllocationRow()),
-  createAllocationRow({
-    ticker: 'CASH',
-    expectedReturn: '0',
-    factorExposures: riskFactors.map(() => 0),
-    userWeight: '',
-  }),
-];
-
-const parseNumber = (value) => {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const formatCurrency = (value) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
-
-const createRebalanceRow = (overrides = {}) => ({
-  id: crypto.randomUUID(),
-  ticker: '',
-  currentValue: '',
-  targetWeight: '',
-  ...overrides,
-});
-
-// Start the rebalancer empty (one blank row) when there's nothing to load,
-// rather than seeding example tickers.
-const createDefaultRebalanceHoldings = () => [createRebalanceRow()];
-
-const rebalanceExecutionPlan = ({
-  currentValues,
-  targetWeights,
-  cash,
-  transactionCostPct = 0,
-  minInstructionThreshold = 1e-6,
-}) => {
-  const fee = Number(transactionCostPct);
-  if (fee < 0 || fee >= 1) {
-    throw new Error('transaction_cost_pct must be in [0, 1).');
-  }
-
-  const tickers = Array.from(
-    new Set([...Object.keys(currentValues), ...Object.keys(targetWeights)])
-  ).sort();
-  const effectiveCash = Number.isFinite(cash) ? cash : Number(currentValues.CASH || 0);
-
-  const current = {};
-  tickers.forEach((ticker) => {
-    if (ticker === 'CASH') return;
-    current[ticker] = Number(currentValues[ticker] || 0);
-  });
-
-  const target = {};
-  tickers.forEach((ticker) => {
-    target[ticker] = Number(targetWeights[ticker] || 0);
-  });
-
-  const targetSum = Object.values(target).reduce((sum, value) => sum + value, 0);
-  if (Math.abs(targetSum - 1) > 1e-6) {
-    throw new Error(`Target weights must sum to 1.0; got ${targetSum.toFixed(6)}`);
-  }
-
-  const startingTotal = Object.values(current).reduce((sum, value) => sum + value, 0) + effectiveCash;
-  const targetDollars = {};
-  tickers.forEach((ticker) => {
-    targetDollars[ticker] = target[ticker] * startingTotal;
-  });
-  const targetCash = targetDollars.CASH || 0;
-
-  const deltas = {};
-  tickers.forEach((ticker) => {
-    if (ticker === 'CASH') return;
-    deltas[ticker] = (targetDollars[ticker] || 0) - (current[ticker] || 0);
-  });
-
-  const toBuy = {};
-  const toSell = {};
-  Object.entries(deltas).forEach(([ticker, delta]) => {
-    if (delta > minInstructionThreshold) toBuy[ticker] = delta;
-    if (delta < -minInstructionThreshold) toSell[ticker] = -delta;
-  });
-
-  const steps = [];
-  const buyUsed = {};
-  const sellUsed = {};
-  Object.keys(deltas).forEach((ticker) => {
-    buyUsed[ticker] = 0;
-    sellUsed[ticker] = 0;
-  });
-
-  const remainingBuyTotal = () => Object.values(toBuy).reduce((sum, value) => sum + value, 0);
-
-  let cashOnHand = effectiveCash;
-
-  if (remainingBuyTotal() > minInstructionThreshold && cashOnHand > minInstructionThreshold) {
-    Object.keys(toBuy)
-      .sort((a, b) => toBuy[b] - toBuy[a])
-      .forEach((ticker) => {
-        if (toBuy[ticker] <= minInstructionThreshold || cashOnHand <= minInstructionThreshold) return;
-        const needed = toBuy[ticker] * (1 + fee);
-        const useOutlay = Math.min(needed, cashOnHand);
-        const netIncrease = useOutlay / (1 + fee);
-        if (netIncrease <= minInstructionThreshold) return;
-        toBuy[ticker] -= netIncrease;
-        buyUsed[ticker] += netIncrease;
-        cashOnHand -= useOutlay;
-        steps.push({ type: 'buy', text: `Buy ${formatCurrency(netIncrease)} of ${ticker}.` });
-      });
-  }
-
-  const deltaCash = targetCash - cashOnHand;
-  let proceedsNeededForBuys = 0;
-  if (remainingBuyTotal() > minInstructionThreshold) {
-    const totalBuyNeeded = remainingBuyTotal();
-    proceedsNeededForBuys = totalBuyNeeded * (1 + fee);
-  }
-
-  let totalCashProceedsNeeded = Math.max(0, proceedsNeededForBuys + Math.max(0, deltaCash));
-
-  if (totalCashProceedsNeeded > minInstructionThreshold) {
-    Object.keys(toSell)
-      .sort((a, b) => toSell[b] - toSell[a])
-      .forEach((ticker) => {
-        if (totalCashProceedsNeeded <= minInstructionThreshold) return;
-        if (toSell[ticker] <= minInstructionThreshold) return;
-        const maxSellNotional = toSell[ticker];
-        const maxCashFromTicker = maxSellNotional * (1 - fee);
-        const sellCash = Math.min(maxCashFromTicker, totalCashProceedsNeeded);
-        const sellNotional = sellCash / (1 - fee);
-
-        toSell[ticker] -= sellNotional;
-        sellUsed[ticker] += sellNotional;
-        cashOnHand += sellCash;
-        totalCashProceedsNeeded -= sellCash;
-        steps.push({ type: 'sell', text: `Sell ${formatCurrency(sellNotional)} of ${ticker}.` });
-
-        if (remainingBuyTotal() > minInstructionThreshold && cashOnHand > minInstructionThreshold) {
-          Object.keys(toBuy)
-            .sort((a, b) => toBuy[b] - toBuy[a])
-            .forEach((buyTicker) => {
-              if (toBuy[buyTicker] <= minInstructionThreshold || cashOnHand <= minInstructionThreshold) return;
-              const neededOutlay = toBuy[buyTicker] * (1 + fee);
-              const useOutlay = Math.min(neededOutlay, cashOnHand);
-              const netIncrease = useOutlay / (1 + fee);
-              if (netIncrease <= minInstructionThreshold) return;
-              toBuy[buyTicker] -= netIncrease;
-              buyUsed[buyTicker] += netIncrease;
-              cashOnHand -= useOutlay;
-              steps.push({ type: 'buy', text: `Buy ${formatCurrency(netIncrease)} of ${buyTicker}.` });
-            });
-        }
-      });
-  }
-
-  if (remainingBuyTotal() > minInstructionThreshold) {
-    steps.push({ type: 'note', text: 'Warning: Not enough funding from overweights or CASH to complete all buys.' });
-  }
-
-  const deltaCashFinal = targetCash - cashOnHand;
-  if (deltaCashFinal < -minInstructionThreshold && remainingBuyTotal() <= minInstructionThreshold) {
-    steps.push({
-      type: 'note',
-      text: `Note: Ending CASH ${formatCurrency(cashOnHand)} exceeds target by ${formatCurrency(-deltaCashFinal)}. (Small drift retained.)`,
-    });
-  }
-
-  const finalValues = {};
-  Object.keys(deltas).forEach((ticker) => {
-    finalValues[ticker] = (current[ticker] || 0) + (buyUsed[ticker] || 0) - (sellUsed[ticker] || 0);
-  });
-  finalValues.CASH = cashOnHand;
-
-  const finalTotal = Object.values(finalValues).reduce((sum, value) => sum + value, 0);
-  const finalWeights = {};
-  Object.entries(finalValues).forEach(([ticker, value]) => {
-    finalWeights[ticker] = finalTotal > 0 ? value / finalTotal : 0;
-  });
-
-  const buySummary = {};
-  const sellSummary = {};
-  Object.entries(buyUsed).forEach(([ticker, value]) => {
-    if (value > minInstructionThreshold) buySummary[ticker] = value;
-  });
-  Object.entries(sellUsed).forEach(([ticker, value]) => {
-    if (value > minInstructionThreshold) sellSummary[ticker] = value;
-  });
-
-  const consolidatedSteps = [
-    ...Object.entries(sellSummary)
-      .sort(([, a], [, b]) => b - a)
-      .map(([ticker, value]) => ({ type: 'sell', text: `Sell ${formatCurrency(value)} of ${ticker}.` })),
-    ...Object.entries(buySummary)
-      .sort(([, a], [, b]) => b - a)
-      .map(([ticker, value]) => ({ type: 'buy', text: `Buy ${formatCurrency(value)} of ${ticker}.` })),
-    ...steps.filter((step) => step.type === 'note'),
-  ];
-
-  return {
-    steps: consolidatedSteps,
-    buyDollars: buySummary,
-    sellDollars: sellSummary,
-    currentValues: current,
-    startingTotal,
-    finalValues,
-    finalWeights,
-  };
-};
-
-const colorScale = [
-  [215, 25, 28],
-  [253, 174, 97],
-  [255, 255, 191],
-  [171, 221, 164],
-  [43, 131, 186],
-];
-
-const lerp = (start, end, t) => start + (end - start) * t;
-
-const getColorFromScale = (value) => {
-  const clamped = Math.min(1, Math.max(0, value));
-  const segment = (colorScale.length - 1) * clamped;
-  const index = Math.floor(segment);
-  const ratio = segment - index;
-  const [r1, g1, b1] = colorScale[index];
-  const [r2, g2, b2] = colorScale[Math.min(index + 1, colorScale.length - 1)];
-  return `rgb(${Math.round(lerp(r1, r2, ratio))}, ${Math.round(lerp(g1, g2, ratio))}, ${Math.round(lerp(b1, b2, ratio))})`;
-};
-
-// Standard normal CDF via Abramowitz & Stegun rational approximation (|error| < 1.5e-7)
-const normalCDF = (x) => {
-  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429;
-  const p = 0.3275911;
-  const sign = x < 0 ? -1 : 1;
-  const t = 1.0 / (1.0 + p * Math.abs(x));
-  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
-  return 0.5 * (1.0 + sign * y);
-};
+const riskFactors = RISK_FACTORS;
+const defaultRiskFactorWeights = DEFAULT_RISK_FACTOR_WEIGHTS;
 
 export default function AllocationPage() {
   const [allocations, setAllocations] = useState(createDefaultAllocations);
@@ -352,44 +116,7 @@ export default function AllocationPage() {
           return;
         }
 
-        // Compute cross-sectional statistics of realized vols
-        const volValues = Object.values(vols);
-        const n = volValues.length;
-        if (n < 2) {
-          // With < 2 tickers, assign 0.5 to all (no distribution to compare against)
-          setAllocations(prev => prev.map(row => {
-            const t = row.ticker.trim().toUpperCase();
-            if (t === 'CASH' || !vols[t]) return row;
-            const exposures = [...row.factorExposures];
-            exposures[0] = '0.50';
-            return { ...row, factorExposures: exposures };
-          }));
-          setVolScoresLoading({});
-          return;
-        }
-
-        const mean = volValues.reduce((s, v) => s + v, 0) / n;
-        const variance = volValues.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1); // sample variance (Bessel-corrected)
-        const rawStd = Math.sqrt(variance);
-
-        // Floor the std at 5% (annualized) so that when all tickers have similar
-        // vol, trivial differences don't get amplified into extreme scores.
-        // 5% is roughly the boundary where vol differences start being meaningful.
-        const STD_FLOOR = 0.05;
-        const std = Math.max(rawStd, STD_FLOOR);
-
-        // For each ticker, compute z-score and map through standard normal CDF
-        // with a compression factor κ = 0.5 applied to the z-score:
-        //   score = Φ(κ · (vol_i − μ) / max(σ, 5%))
-        //
-        // The std floor ensures tightly-clustered vols all score near 0.5.
-        // The compression prevents extreme scores for outlier tickers.
-        const VOL_COMPRESSION = 0.5;
-        const scores = {};
-        for (const [ticker, vol] of Object.entries(vols)) {
-          const z = std > 0 ? (vol - mean) / std : 0;
-          scores[ticker] = normalCDF(z * VOL_COMPRESSION);
-        }
+        const scores = calculateVolatilityScores(vols);
 
         setAllocations(prev => prev.map(row => {
           const t = row.ticker.trim().toUpperCase();
@@ -661,22 +388,7 @@ export default function AllocationPage() {
   const rbAumValue = rbPlan?.startingTotal || 0;
 
   const rbTaxBreakdown = useMemo(() => {
-    if (!rbPlan) return { rows: [], totalTax: 0, totalGains: 0 };
-    const rows = Object.entries(rbPlan.sellDollars).map(([ticker, plannedSold]) => {
-      const inputs = rbTaxInputs[ticker] || {};
-      const initialValue = parseNumber(inputs.initialValue);
-      const finalValue = parseNumber(inputs.finalValue);
-      const amountSoldInput = inputs.amountSold === '' || inputs.amountSold === undefined ? plannedSold : inputs.amountSold;
-      const amountSold = parseNumber(amountSoldInput);
-      const taxRate = parseNumber(inputs.taxRate);
-      const gainFraction = finalValue ? (finalValue - initialValue) / finalValue : 0;
-      const gainRealized = amountSold * gainFraction;
-      const taxOwed = gainRealized * (taxRate / 100);
-      return { ticker, initialValue, finalValue, amountSold, taxRate, gainRealized, taxOwed };
-    });
-    const totalTax = rows.reduce((sum, row) => sum + row.taxOwed, 0);
-    const totalGains = rows.reduce((sum, row) => sum + row.gainRealized, 0);
-    return { rows, totalTax, totalGains };
+    return calculateRebalanceTaxBreakdown(rbPlan, rbTaxInputs);
   }, [rbPlan, rbTaxInputs]);
 
   const rbTaxOwedPctOfAum = rbAumValue ? (rbTaxBreakdown.totalTax / rbAumValue) * 100 : 0;
@@ -689,31 +401,12 @@ export default function AllocationPage() {
   useEffect(() => {
     if (!rbPlan) { setRbTaxInputs({}); return; }
     setRbTaxInputs((prev) => {
-      const next = {};
-      Object.entries(rbPlan.sellDollars).forEach(([ticker, value]) => {
-        const existing = prev[ticker] || {};
-        const currentValue = rbPlan.currentValues?.[ticker];
-        const costBasis = rbCostBasisRef.current[ticker];
-        next[ticker] = {
-          initialValue: existing.initialValue ?? (Number.isFinite(costBasis) ? costBasis.toFixed(2) : ''),
-          finalValue: existing.finalValue ?? (Number.isFinite(currentValue) ? currentValue.toFixed(2) : ''),
-          amountSold: existing.amountSold ?? value.toFixed(2),
-          taxRate: existing.taxRate ?? '20',
-        };
-      });
-      return next;
+      return createRebalanceTaxInputs(rbPlan, prev, rbCostBasisRef.current);
     });
   }, [rbPlan]);
 
   const updateRbTaxInput = (ticker, field, value) => {
-    setRbTaxInputs((prev) => {
-      const current = prev[ticker] || {};
-      const updated = { ...current, [field]: value };
-      const finalValue = parseNumber(field === 'finalValue' ? value : updated.finalValue);
-      const amountSold = parseNumber(field === 'amountSold' ? value : updated.amountSold);
-      if (finalValue > 0 && amountSold > finalValue) updated.amountSold = `${finalValue}`;
-      return { ...prev, [ticker]: updated };
-    });
+    setRbTaxInputs((prev) => updateRebalanceTaxInputValue(prev, ticker, field, value));
   };
 
   const updateRbHolding = (id, field, value) => {
@@ -731,45 +424,15 @@ export default function AllocationPage() {
   const handleGenerateRbPlan = () => {
     setRbError('');
     setRbPlan(null);
-    const filtered = rbHoldings.filter((row) => row.ticker.trim() || row.currentValue || row.targetWeight);
-    if (filtered.length === 0) { setRbError('Add at least one holding to generate a plan.'); return; }
-    const currentValues = {};
-    const targetWeights = {};
-    const problems = [];
-    filtered.forEach((row, index) => {
-      const ticker = row.ticker.trim().toUpperCase();
-      const currentValue = parseNumber(row.currentValue);
-      const targetPercent = parseNumber(row.targetWeight);
-      if (!ticker) problems.push(`Row ${index + 1}: add a ticker.`);
-      if (currentValue < 0) problems.push(`Row ${index + 1}: current value must be positive.`);
-      if (targetPercent < 0) problems.push(`Row ${index + 1}: target percent must be positive.`);
-      if (ticker) {
-        currentValues[ticker] = (currentValues[ticker] || 0) + currentValue;
-        targetWeights[ticker] = (targetWeights[ticker] || 0) + targetPercent / 100;
-      }
+    const { error, plan } = buildRebalancePlanFromRows({
+      holdings: rbHoldings,
+      cash: rbCash,
+      targetCashPercent: rbTargetCashPercent,
+      transactionCostPct: rbTransactionCostPct,
+      totalTargetPercent: rbTotalTargetPercent,
     });
-    const cashValue = parseNumber(rbCash);
-    const cashTarget = parseNumber(rbTargetCashPercent) / 100;
-    if (cashValue < 0) problems.push('Cash balance must be positive.');
-    if (cashTarget < 0) problems.push('Target cash percent must be positive.');
-    if (cashTarget > 0) targetWeights.CASH = cashTarget;
-    if (problems.length > 0) { setRbError(problems.join(' ')); return; }
-    const totalPercent = rbTotalTargetPercent;
-    if (Math.abs(totalPercent - 100) > 0.01) {
-      setRbError(`Target percentages must sum to 100%. Current total: ${totalPercent.toFixed(2)}%.`);
-      return;
-    }
-    try {
-      const result = rebalanceExecutionPlan({
-        currentValues,
-        targetWeights,
-        cash: cashValue,
-        transactionCostPct: parseNumber(rbTransactionCostPct) / 100,
-      });
-      setRbPlan(result);
-    } catch (err) {
-      setRbError(err.message);
-    }
+    if (error) { setRbError(error); return; }
+    setRbPlan(plan);
   };
 
   const runMonteCarloSimulation = () => {
@@ -782,535 +445,32 @@ export default function AllocationPage() {
   };
 
   const _runSimulation = async () => {
-
-    const filtered = allocations.filter(
-      (row) =>
-        row.ticker.trim() ||
-        row.expectedReturn ||
-        row.userWeight ||
-        row.factorExposures.some((value) => value)
-    );
-
-    if (filtered.length === 0) {
-      setSimulationError('Add at least one asset to run the simulation.');
-      setSimulating(false);
-      return;
-    }
-
-    const assets = [];
-    const expectedReturns = [];
-    const factorMatrix = [];
-    const userWeights = [];
-    const problems = [];
-
-    filtered.forEach((row, index) => {
-      const ticker = row.ticker.trim().toUpperCase();
-      const expectedReturn = parseNumber(row.expectedReturn) / 100;
-      const exposures = row.factorExposures.map((entry) => parseNumber(entry));
-      const userWeight = parseNumber(row.userWeight) / 100;
-
-      if (!ticker) problems.push(`Row ${index + 1}: add a ticker.`);
-      if (expectedReturn < 0) problems.push(`Row ${index + 1}: expected return must be positive.`);
-      if (exposures.some((value) => value < 0)) problems.push(`Row ${index + 1}: factor exposures must be positive.`);
-      if (userWeight < 0) problems.push(`Row ${index + 1}: user weight must be positive.`);
-
-      if (ticker) {
-        assets.push(ticker);
-        expectedReturns.push(expectedReturn);
-        factorMatrix.push(exposures);
-        userWeights.push(userWeight);
-      }
-    });
-
-    const riskFree = parseNumber(riskFreeRate) / 100;
-    const minW = parseNumber(minWeight) / 100;
-    const maxW = parseNumber(maxWeight) / 100;
-    const cashMinW = parseNumber(cashMinWeight) / 100;
-    const cashMaxW = parseNumber(cashMaxWeight) / 100;
-    const portfoliosTarget = Math.max(100, Math.round(parseNumber(numPortfolios)));
-
-    if (!assets.includes('CASH')) problems.push('Include a CASH row to apply cash weight constraints.');
-    if (minW < 0 || maxW <= 0 || minW > maxW) problems.push('Stock weight limits are invalid.');
-    if (cashMinW < 0 || cashMaxW < 0 || cashMinW > cashMaxW) problems.push('Cash weight limits are invalid.');
-
-    const factorWeights = riskFactorWeights.map((value) => parseNumber(value));
-    if (factorWeights.length !== riskFactors.length || factorWeights.some((value) => value < 0)) {
-      problems.push('Risk factor weights must be non-negative for each factor.');
-    }
-
-    const userWeightTotal = userWeights.reduce((sum, value) => sum + value, 0);
-    if (userWeightTotal > 0 && Math.abs(userWeightTotal - 1) > 0.001) {
-      problems.push(`User-defined weights must sum to 100%. Current total: ${(userWeightTotal * 100).toFixed(2)}%.`);
-    }
-
-    if (problems.length > 0) {
-      setSimulationError(problems.join(' '));
-      setSimulating(false);
-      return;
-    }
-
-    const cashIndex = assets.indexOf('CASH');
-    if (cashIndex === -1) {
-      setSimulationError('Include a CASH row to apply cash weight constraints.');
-      setSimulating(false);
-      return;
-    }
-
-    const factorCount = riskFactors.length;
-    // Use raw exposures directly (CASH zeroed out), no column normalization
-    const exposureMatrix = factorMatrix.map((row, rowIndex) => {
-      if (assets[rowIndex] === 'CASH') return Array.from({ length: factorCount }, () => 0);
-      return [...row];
-    });
-
-    const factorMeans = Array.from({ length: factorCount }, (_, idx) =>
-      exposureMatrix.reduce((sum, row) => sum + row[idx], 0) / exposureMatrix.length
-    );
-
-    const centeredFactors = exposureMatrix.map((row) =>
-      row.map((value, idx) => value - factorMeans[idx])
-    );
-
-    const covarianceFactors = Array.from({ length: factorCount }, () =>
-      Array.from({ length: factorCount }, () => 0)
-    );
-
-    const denominator = Math.max(exposureMatrix.length - 1, 1);
-    for (let i = 0; i < factorCount; i += 1) {
-      for (let j = 0; j < factorCount; j += 1) {
-        covarianceFactors[i][j] =
-          centeredFactors.reduce((sum, row) => sum + row[i] * row[j], 0) / denominator;
-      }
-    }
-
-    const weightedFactors = covarianceFactors.map((row, i) =>
-      row.map((value, j) => value * factorWeights[i] * factorWeights[j])
-    );
-
-    // Sigma_composite: synthetic factor-based covariance matrix.
-    // Computed as E * (D * C * D) * E^T where:
-    //   E = exposureMatrix (n_assets x m_factors), raw factor exposures (CASH zeroed)
-    //   C = covarianceFactors (m_factors x m_factors), cross-sectional factor covariance
-    //   D = diag(factorWeights), user-specified factor importance weights
-    // This encodes structural risk relationships without requiring return history.
-    // It will later be trace-normalized and blended with empirical return covariance.
-    const compositeOnlyMatrix = Array.from({ length: assets.length }, () =>
-      Array.from({ length: assets.length }, () => 0)
-    );
-    for (let i = 0; i < assets.length; i += 1) {
-      for (let j = 0; j < assets.length; j += 1) {
-        let sum = 0;
-        for (let k = 0; k < factorCount; k += 1) {
-          for (let l = 0; l < factorCount; l += 1) {
-            sum += exposureMatrix[i][k] * weightedFactors[k][l] * exposureMatrix[j][l];
-          }
-        }
-        compositeOnlyMatrix[i][j] = sum;
-      }
-    }
-
-    // ==================================================================================
-    // HYBRID COVARIANCE MATRIX CONSTRUCTION
-    // ==================================================================================
-    //
-    // This allocator uses a hybrid covariance matrix composed of two components:
-    //
-    //   Sigma_hybrid = lambda * Sigma_return_tilde + (1 - lambda) * Sigma_composite_tilde
-    //
-    // where:
-    //   Sigma_return   = classical Markowitz empirical return covariance (from historical
-    //                    asset price co-movement). This is the standard sample covariance
-    //                    of realized asset returns, annualized.
-    //   Sigma_composite = synthetic factor-based covariance (B * D*C*D * B^T). This
-    //                     encodes structural risk relationships via user-defined factor
-    //                     exposures and importance weights, without requiring return history.
-    //   _tilde suffix  = trace-normalized version. Each matrix is divided by its trace
-    //                    (sum of diagonal variances) before blending, so lambda controls
-    //                    structural weighting rather than being dominated by whichever
-    //                    matrix has larger raw magnitude.
-    //
-    // The resulting Sigma_hybrid is NOT a pure empirical return covariance matrix.
-    // Portfolio risk computed from it should be called "hybrid risk" or
-    // "hybrid covariance risk", not "historical volatility".
-    // ==================================================================================
-
-    // --- A. Empirical return covariance (Sigma_return) ---
-    // Fetched from /api/return-covariance which computes the annualized sample covariance
-    // of daily simple returns from Yahoo Finance data. This is the classical Markowitz
-    // covariance: Sigma_return = (1/(T-1)) * (R - R_bar)^T (R - R_bar) * 252,
-    // where R is the (T x n) return matrix and R_bar is the column-mean matrix.
-    // CASH rows/cols are zero (no return co-movement with risky assets).
-    const nonCashIndices = assets.map((t, i) => ({ t, i })).filter(x => x.t !== 'CASH');
-    const nonCashTickers = nonCashIndices.map(x => x.t);
-
-    let sigmaReturn = Array.from({ length: assets.length }, () =>
-      Array.from({ length: assets.length }, () => 0)
-    );
-
-    if (nonCashTickers.length >= 2) {
-      try {
-        const covRes = await fetch(`/api/return-covariance?tickers=${nonCashTickers.join(',')}&days=252`);
-        const covData = await covRes.json();
-        if (covData.matrix && covData.tickers) {
-          const retTickers = covData.tickers;
-          const retMatrix = covData.matrix;
-          const retIdx = {};
-          retTickers.forEach((t, i) => { retIdx[t] = i; });
-
-          // Log which tickers Yahoo actually returned vs what we requested
-          const missing = nonCashTickers.filter(t => retIdx[t] === undefined);
-          if (missing.length > 0) {
-            console.warn('Return covariance: Yahoo did not return data for:', missing.join(', '));
-          }
-          console.log('Return covariance: received data for', retTickers.length, 'of', nonCashTickers.length, 'tickers:', retTickers.join(', '));
-
-          // Map the API's return covariance into our asset-order matrix.
-          // Assets not found in the API response (including CASH) remain zero.
-          for (let i = 0; i < assets.length; i++) {
-            for (let j = 0; j < assets.length; j++) {
-              const ri = retIdx[assets[i]];
-              const rj = retIdx[assets[j]];
-              if (ri !== undefined && rj !== undefined) {
-                sigmaReturn[i][j] = retMatrix[ri][rj];
-              }
-            }
-          }
-
-          // Symmetrize to guard against floating-point asymmetry
-          for (let i = 0; i < assets.length; i++) {
-            for (let j = i + 1; j < assets.length; j++) {
-              const avg = 0.5 * (sigmaReturn[i][j] + sigmaReturn[j][i]);
-              sigmaReturn[i][j] = avg;
-              sigmaReturn[j][i] = avg;
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Failed to fetch return covariance; Sigma_return will be zero:', err);
-      }
-    }
-
-    // --- B. Sigma_composite is compositeOnlyMatrix computed above (B * D*C*D * B^T) ---
-    // It encodes synthetic risk structure from factor exposures and importance weights.
-
-    // --- C. Trace normalization ---
-    // Before blending, divide each covariance matrix by its trace (sum of diagonal
-    // entries = total standalone variance mass). This removes arbitrary scale differences
-    // so that lambda reflects true structural weighting.
-    //
-    // For a covariance matrix, trace = sum of asset variances. Normalizing by trace
-    // preserves the internal correlation/covariance structure while making both matrices
-    // unit-trace, so a 50/50 blend truly means equal structural contribution.
-    //
-    // Edge case: if trace <= epsilon, the matrix is near-zero (e.g. all assets have
-    // negligible variance). In that case we skip normalization and leave it as-is,
-    // logging a warning. This prevents division by near-zero.
-    const TRACE_EPSILON = 1e-12;
-
-    const traceOf = (mat) => {
-      let tr = 0;
-      for (let i = 0; i < mat.length; i++) tr += mat[i][i];
-      return tr;
+    const fetchReturnCovariance = async (tickers) => {
+      const covRes = await fetch(`/api/return-covariance?tickers=${tickers.join(',')}&days=252`);
+      return covRes.json();
     };
 
-    const traceNormalize = (mat, label) => {
-      const tr = traceOf(mat);
-      if (tr <= TRACE_EPSILON) {
-        console.warn(`Trace of ${label} is near-zero (${tr}); skipping normalization.`);
-        // Return a copy (not mutated) — the matrix is effectively zero anyway
-        return mat.map(row => [...row]);
-      }
-      return mat.map(row => row.map(v => v / tr));
-    };
-
-    const sigmaReturnTilde = traceNormalize(sigmaReturn, 'Sigma_return');
-    const sigmaCompositeTilde = traceNormalize(compositeOnlyMatrix, 'Sigma_composite');
-
-    // --- D. Hybrid covariance blend ---
-    // Sigma_hybrid = lambda * Sigma_return_tilde + (1 - lambda) * Sigma_composite_tilde
-    //
-    // lambda near 1 => more weight on empirical return co-movement (Markowitz-style)
-    // lambda near 0 => more weight on synthetic factor-based risk structure
-    const lam = Math.min(1, Math.max(0, parseNumber(covLambda)));
-    const compositeMatrix = Array.from({ length: assets.length }, () =>
-      Array.from({ length: assets.length }, () => 0)
-    );
-    for (let i = 0; i < assets.length; i += 1) {
-      for (let j = 0; j < assets.length; j += 1) {
-        compositeMatrix[i][j] = lam * sigmaReturnTilde[i][j] + (1 - lam) * sigmaCompositeTilde[i][j];
-      }
-    }
-
-    // Final symmetrization to ensure numerical symmetry after blending
-    for (let i = 0; i < assets.length; i++) {
-      for (let j = i + 1; j < assets.length; j++) {
-        const avg = 0.5 * (compositeMatrix[i][j] + compositeMatrix[j][i]);
-        compositeMatrix[i][j] = avg;
-        compositeMatrix[j][i] = avg;
-      }
-    }
-
-    // Per-stock standalone risk: weighted average of factor exposures
-    const standaloneRisk = {};
-    const fwSum = factorWeights.reduce((s, w) => s + w, 0);
-    assets.forEach((ticker, idx) => {
-      const exposures = factorMatrix[idx];
-      let score = 0;
-      for (let k = 0; k < factorCount; k += 1) {
-        score += exposures[k] * factorWeights[k];
-      }
-      standaloneRisk[ticker] = fwSum > 0 ? score / fwSum : 0;
+    const { error, result, chartData } = await runAllocationSimulation({
+      allocations,
+      riskFactorWeights,
+      riskFreeRate,
+      minWeight,
+      maxWeight,
+      cashMinWeight,
+      cashMaxWeight,
+      numPortfolios,
+      covLambda,
+      fetchReturnCovariance,
     });
 
-    // --- E. Monte Carlo portfolio search ---
-    // Generate random feasible portfolios and evaluate each using:
-    //   ExpectedReturn(w) = w^T * r_expected
-    //   HybridVariance(w)  = w^T * Sigma_hybrid * w
-    //   HybridRisk(w)      = sqrt(max(HybridVariance, 0))
-    //   Sharpe-like(w)     = (ExpectedReturn - r_f) / HybridRisk
-    //
-    // The denominator is "hybrid risk" — a blend of empirical return volatility and
-    // synthetic factor risk — NOT pure historical volatility. The Sharpe-like score
-    // should be interpreted as expected excess return per unit of hybrid risk.
-    const simulations = [];
-    let samplesGenerated = 0;
-    let attempts = 0;
-    const maxAttempts = portfoliosTarget * 50;
-
-    while (samplesGenerated < portfoliosTarget && attempts < maxAttempts) {
-      attempts += 1;
-      const rawWeights = assets.map(() => Math.random());
-      const total = rawWeights.reduce((sum, value) => sum + value, 0);
-      const weights = rawWeights.map((value) => value / total);
-
-      const cashWeight = weights[cashIndex];
-      const otherWeights = weights.filter((_, idx) => idx !== cashIndex);
-
-      const stockConstraintsMet =
-        otherWeights.every((value) => value >= minW && value <= maxW) &&
-        cashWeight >= cashMinW &&
-        cashWeight <= cashMaxW;
-
-      if (!stockConstraintsMet) continue;
-
-      const expectedReturn = weights.reduce(
-        (sum, weight, idx) => sum + weight * expectedReturns[idx],
-        0
-      );
-      // Hybrid variance: w^T * Sigma_hybrid * w
-      let variance = 0;
-      for (let i = 0; i < weights.length; i += 1) {
-        for (let j = 0; j < weights.length; j += 1) {
-          variance += weights[i] * compositeMatrix[i][j] * weights[j];
-        }
-      }
-      // Hybrid risk (not pure historical volatility)
-      const volatility = Math.sqrt(Math.max(variance, 0));
-      const sharpe = volatility > 0 ? (expectedReturn - riskFree) / volatility : 0;
-
-      simulations.push({ weights, expectedReturn, volatility, sharpe });
-      samplesGenerated += 1;
-    }
-
-    if (simulations.length === 0) {
-      setSimulationError('Unable to generate portfolios with the provided constraints.');
+    if (error) {
+      setSimulationError(error);
       setSimulating(false);
       return;
-    }
-
-    const maxSharpe = simulations.reduce((best, current) =>
-      current.sharpe > best.sharpe ? current : best
-    );
-    const minVol = simulations.reduce((best, current) =>
-      current.volatility < best.volatility ? current : best
-    );
-
-    const formatWeights = (weights) =>
-      weights
-        .map((weight, idx) => ({ ticker: assets[idx], weight }))
-        .sort((a, b) => b.weight - a.weight);
-
-    let minSharpeValue = Infinity, maxSharpeValue = -Infinity;
-    let minVolValue = Infinity, maxVolValue = -Infinity;
-    for (let i = 0; i < simulations.length; i++) {
-      const s = simulations[i].sharpe, v = simulations[i].volatility;
-      if (s < minSharpeValue) minSharpeValue = s;
-      if (s > maxSharpeValue) maxSharpeValue = s;
-      if (v < minVolValue) minVolValue = v;
-      if (v > maxVolValue) maxVolValue = v;
-    }
-
-    const getCompositeRatio = (sharpe) =>
-      maxSharpeValue === minSharpeValue ? 0 : (sharpe - minSharpeValue) / (maxSharpeValue - minSharpeValue);
-    const getCompositeRisk = (volatility) =>
-      maxVolValue === minVolValue ? 0 : (volatility - minVolValue) / (maxVolValue - minVolValue);
-
-    const buildHoverLines = (weights, expectedReturn, volatility, sharpe) => [
-      `Composite Ratio: ${getCompositeRatio(sharpe).toFixed(3)}`,
-      `Return: ${(expectedReturn * 100).toFixed(2)}%`,
-      `Volatility: ${(volatility * 100).toFixed(2)}%`,
-      '',
-      ...weights.map((weight, idx) => `${assets[idx]}: ${(weight * 100).toFixed(2)}%`),
-    ];
-
-    const simulationPoints = simulations.map((item) => {
-      const compositeRatio = getCompositeRatio(item.sharpe);
-      return {
-        x: getCompositeRisk(item.volatility),
-        y: item.expectedReturn,
-        hoverLines: buildHoverLines(item.weights, item.expectedReturn, item.volatility, item.sharpe),
-        color: getColorFromScale(compositeRatio),
-      };
-    });
-
-    const buildStarPoint = (item, label) => ({
-      x: getCompositeRisk(item.volatility),
-      y: item.expectedReturn,
-      hoverLines: buildHoverLines(item.weights, item.expectedReturn, item.volatility, item.sharpe),
-      label,
-      compositeRatio: getCompositeRatio(item.sharpe),
-    });
-
-    const computeUserMetrics = () => {
-      if (userWeightTotal <= 0) return null;
-      let userVariance = 0;
-      for (let i = 0; i < userWeights.length; i += 1) {
-        for (let j = 0; j < userWeights.length; j += 1) {
-          userVariance += userWeights[i] * compositeMatrix[i][j] * userWeights[j];
-        }
-      }
-      const userReturn = userWeights.reduce(
-        (sum, weight, idx) => sum + weight * expectedReturns[idx],
-        0
-      );
-      const userVolatility = Math.sqrt(Math.max(userVariance, 0));
-      const userSharpe = userVolatility > 0 ? (userReturn - riskFree) / userVolatility : 0;
-      return {
-        expectedReturn: userReturn,
-        volatility: userVolatility,
-        sharpe: userSharpe,
-        weights: formatWeights(userWeights),
-        rawWeights: userWeights,
-      };
-    };
-
-    const userMetrics = computeUserMetrics();
-    if (userMetrics) {
-      userMetrics.compositeRatio = getCompositeRatio(userMetrics.sharpe);
-    }
-
-    const starRadius = 22;
-    const starBorderWidth = 4;
-    const chartData = {
-      datasets: [
-        {
-          label: 'Portfolio Simulations',
-          data: simulationPoints.map((point) => ({ x: point.x, y: point.y, hoverLines: point.hoverLines })),
-          backgroundColor: simulationPoints.map((point) => point.color),
-          pointRadius: 4,
-          order: 3,
-        },
-        {
-          label: 'Max Composite Ratio',
-          data: [buildStarPoint(maxSharpe, 'Max Composite Ratio')],
-          backgroundColor: '#dc2626',
-          pointRadius: starRadius,
-          pointStyle: 'star',
-          pointBorderWidth: starBorderWidth,
-          pointBorderColor: '#dc2626',
-          pointHoverRadius: starRadius + 4,
-          order: 1,
-        },
-        {
-          label: 'Min Volatility',
-          data: [buildStarPoint(minVol, 'Min Volatility')],
-          backgroundColor: '#2563eb',
-          pointRadius: starRadius,
-          pointStyle: 'star',
-          pointBorderWidth: starBorderWidth,
-          pointBorderColor: '#2563eb',
-          pointHoverRadius: starRadius + 4,
-          order: 1,
-        },
-      ],
-    };
-
-    if (userMetrics) {
-      chartData.datasets.push({
-        label: 'User-Defined Portfolio',
-        data: [
-          {
-            x: getCompositeRisk(userMetrics.volatility),
-            y: userMetrics.expectedReturn,
-            hoverLines: buildHoverLines(
-              userMetrics.rawWeights,
-              userMetrics.expectedReturn,
-              userMetrics.volatility,
-              userMetrics.sharpe
-            ),
-            compositeRatio: getCompositeRatio(userMetrics.sharpe),
-          },
-        ],
-        backgroundColor: '#16a34a',
-        pointRadius: starRadius,
-        pointStyle: 'star',
-        pointBorderWidth: starBorderWidth,
-        pointBorderColor: '#16a34a',
-        pointHoverRadius: starRadius + 4,
-        order: 1,
-      });
     }
 
     setSimulationChart(chartData);
-    setSimulationResult({
-      totalSamples: simulations.length,
-      maxSharpe: {
-        ...maxSharpe,
-        weights: formatWeights(maxSharpe.weights),
-        compositeRatio: getCompositeRatio(maxSharpe.sharpe),
-      },
-      minVol: {
-        ...minVol,
-        weights: formatWeights(minVol.weights),
-        compositeRatio: getCompositeRatio(minVol.sharpe),
-      },
-      userDefined: userMetrics,
-      standaloneRisk,
-      lambda: lam,
-      marketCov: {
-        assets,
-        sigmaReturn,
-        vols: assets.map((_, i) => Math.sqrt(Math.max(sigmaReturn[i][i], 0))),
-        correlations: assets.map((_, i) =>
-          assets.map((_, j) => {
-            const vi = Math.sqrt(Math.max(sigmaReturn[i][i], 0));
-            const vj = Math.sqrt(Math.max(sigmaReturn[j][j], 0));
-            return vi > 0 && vj > 0 ? sigmaReturn[i][j] / (vi * vj) : 0;
-          })
-        ),
-      },
-      mathDiagnostics: {
-        assets,
-        factorCount,
-        factorNames: riskFactors,
-        factorWeights,
-        exposureMatrix,
-        covarianceFactors,
-        weightedFactors,
-        compositeOnlyMatrix,
-        sigmaReturn,
-        traceReturn: traceOf(sigmaReturn),
-        traceComposite: traceOf(compositeOnlyMatrix),
-        sigmaReturnTilde,
-        sigmaCompositeTilde,
-        lambda: lam,
-        sigmaHybrid: compositeMatrix,
-        traceHybrid: traceOf(compositeMatrix),
-        bestPortfolio: maxSharpe,
-        expectedReturns,
-        riskFree,
-      },
-    });
+    setSimulationResult(result);
     setSimulating(false);
   };
 

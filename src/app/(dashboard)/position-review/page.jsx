@@ -13,11 +13,19 @@ import Toast from '@/components/Toast';
 import { formatMoney, formatLargeNumber, formatShareCount, formatNumber } from '@/lib/formatters';
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
-import { computeValuationModel } from '@/lib/valuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
 import { persistStageMove, writeWatchlistCache, persistHoldingsBackfill, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { startGeneration, isGenerating, subscribeGeneration } from '@/lib/generateTickerJob';
+import {
+  fetchComputedValuationModel,
+  fetchPortfolio,
+  fetchQuote,
+  fetchThesis,
+  fetchTickerFundamentals,
+  fetchWatchlist,
+  saveThesis as saveThesisData,
+} from '@/lib/researchApi';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -315,8 +323,8 @@ export default function ResearchPage() {
   useEffect(() => {
     let alive = true;
     Promise.all([
-      fetch('/api/portfolio').then(r => r.json()).catch(() => null),
-      fetch('/api/watchlist').then(r => r.json()).catch(() => null),
+      fetchPortfolio().catch(() => null),
+      fetchWatchlist().catch(() => null),
     ]).then(async ([pf, wl]) => {
       if (!alive) return;
       if (pf) { setPortfolio(pf); cache.set('research_portfolio', pf); }
@@ -387,8 +395,7 @@ export default function ResearchPage() {
     setLoadedTickerData(null);
     setTickerLoading(true);
     try {
-      const res = await fetch(`/api/ticker/${ticker}`);
-      const data = await res.json();
+      const data = await fetchTickerFundamentals(ticker);
       cache.set(`research_tickerData_${ticker}`, data);
       if (tickerDataReqRef.current === ticker) setLoadedTickerData(data);
     } catch (e) {
@@ -410,13 +417,12 @@ export default function ResearchPage() {
       } else {
         setLiveQuote(null);
         setQuoteLoading(true);
-        fetch(`/api/quotes?tickers=${selectedTicker}`)
-          .then(r => r.json())
-          .then(data => {
-            if (data.quotes?.[selectedTicker]) {
-              setLiveQuote(data.quotes[selectedTicker]);
-              cache.set('research_liveQuote', data.quotes[selectedTicker]);
-              cache.set(`research_quote_${selectedTicker}`, data.quotes[selectedTicker]);
+        fetchQuote(selectedTicker)
+          .then(quote => {
+            if (quote) {
+              setLiveQuote(quote);
+              cache.set('research_liveQuote', quote);
+              cache.set(`research_quote_${selectedTicker}`, quote);
             }
           })
           .catch(() => {})
@@ -430,8 +436,7 @@ export default function ResearchPage() {
     if (!selectedTicker) return;
     setThesisLoading(true);
     setThesisDirty(false);
-    fetch(`/api/thesis/${selectedTicker}`)
-      .then(r => r.json())
+    fetchThesis(selectedTicker)
       .then(data => setThesis(migrateNewsImages(data)))
       .catch(() => {})
       .finally(() => setThesisLoading(false));
@@ -472,12 +477,7 @@ export default function ResearchPage() {
     if (!selectedTicker || (!thesisDirty && !data)) return;
     setThesisSaving(true);
     try {
-      const res = await fetch(`/api/thesis/${selectedTicker}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify((() => { const { _activeNewsIdx, ...rest } = data || thesis; return rest; })()),
-      });
-      const result = await res.json();
+      const result = await saveThesisData(selectedTicker, data || thesis);
       if (result.success) {
         setThesisDirty(false);
         setToast({ message: 'Thesis saved', type: 'success' });
@@ -792,25 +792,14 @@ export default function ResearchPage() {
       // Fallback: if ref wasn't available (e.g. on fundamentals tab), load from API
       if (!modelData) {
         try {
-          const modelRes = await fetch(`/api/model/${selectedTicker}`);
-          const modelJson = await modelRes.json();
-          if (modelJson.exists && modelJson.inputs) {
-            const p = (v) => (v === '' || v === undefined || v === null || isNaN(Number(v))) ? 0 : Number(v);
-            const sharePrice = p(modelJson.inputs.sharePrice) || (livePrice || 0);
-            const inp = { ...modelJson.inputs, sharePrice };
-            modelData = { inputs: inp, computed: computeValuationModel(inp) };
-          }
+          modelData = await fetchComputedValuationModel(selectedTicker, livePrice);
         } catch {}
       }
 
       // Fetch a fresh quote with all extended fields for the export
       let freshQuote = liveQuote;
       try {
-        const quoteRes = await fetch(`/api/quotes?tickers=${selectedTicker}`);
-        const quoteJson = await quoteRes.json();
-        if (quoteJson.quotes?.[selectedTicker]) {
-          freshQuote = quoteJson.quotes[selectedTicker];
-        }
+        freshQuote = await fetchQuote(selectedTicker) || freshQuote;
       } catch {}
 
       const prevTab = activeResearchTab;
