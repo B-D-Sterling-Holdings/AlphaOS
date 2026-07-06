@@ -37,8 +37,19 @@ function normalizeBody(value) {
   return [];
 }
 
+// Labels are stored as an array of plain names (the palette lives in the UI).
+// Cap count/length so a hand-crafted request can't stuff junk in the column.
+function normalizeLabels(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter(l => typeof l === 'string')
+    .map(l => l.trim().slice(0, 50))
+    .filter(Boolean))].slice(0, 10);
+}
+
 // GET — every issue for the tenant (newest activity first). The client splits
-// open vs. resolved into the Open / Archived tabs.
+// open vs. resolved into the Open / Closed tabs. Priority and dev notes are the
+// admin's private triage state — stripped for everyone else.
 export async function GET() {
   try {
     const db = await getDb();
@@ -47,7 +58,10 @@ export async function GET() {
       .select('*')
       .order('updated_at', { ascending: false });
     if (error) throw new Error(error.message);
-    return NextResponse.json(data || []);
+    const rows = db.isAdmin
+      ? (data || [])
+      : (data || []).map(({ priority, dev_notes, ...rest }) => rest);
+    return NextResponse.json(rows);
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
@@ -70,6 +84,18 @@ export async function POST(req) {
       comments: [],
       updated_at: new Date().toISOString(),
     };
+    // Per-tenant sequential number (#12), GitHub-style. max(number) runs under
+    // RLS so it only ever sees this tenant's rows; numbers are not reused after
+    // deletes. Concurrent creates racing to the same number is acceptable here —
+    // it's an internal tracker, and number carries no uniqueness constraint.
+    // If the select errors, migration 013 hasn't been applied yet — insert
+    // without number/labels so issue creation keeps working.
+    const { data: top, error: topErr } = await db
+      .from(TABLE).select('number').order('number', { ascending: false }).limit(1);
+    if (!topErr) {
+      insert.number = (top?.[0]?.number || 0) + 1;
+      insert.labels = normalizeLabels(body.labels);
+    }
     const { data, error } = await db.from(TABLE).insert(insert).select().single();
     if (error) throw new Error(error.message);
     return NextResponse.json(data, { status: 201 });
@@ -80,7 +106,10 @@ export async function POST(req) {
 
 // PUT — mutate an existing issue via an explicit action:
 //   comment          (any user)  append a comment
+//   labels           (any user)  replace the label list
 //   resolve / reopen (admin only) change status / archive
+//   priority         (admin only) set triage priority (1..4 or null)
+//   dev-notes        (admin only) set the triage note
 export async function PUT(req) {
   try {
     const db = await getDb();
@@ -108,6 +137,32 @@ export async function PUT(req) {
         .from(TABLE)
         .update({ comments, updated_at: new Date().toISOString() })
         .eq('id', id).select().single();
+      if (error) throw new Error(error.message);
+      return NextResponse.json(data);
+    }
+
+    // Labels — open to every user in the tenant (only closing is admin-locked).
+    if (action === 'labels') {
+      const { data, error } = await db
+        .from(TABLE)
+        .update({ labels: normalizeLabels(body.labels), updated_at: new Date().toISOString() })
+        .eq('id', id).select().single();
+      if (error) throw new Error(error.message);
+      return NextResponse.json(data);
+    }
+
+    // Priority / dev notes — the admin's triage state for the Dev tab.
+    if (action === 'priority' || action === 'dev-notes') {
+      if (!db.isAdmin) {
+        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      }
+      const updates = action === 'priority'
+        ? { priority: [1, 2, 3, 4].includes(body.priority) ? body.priority : null }
+        : { dev_notes: typeof body.notes === 'string' ? body.notes.slice(0, 2000) : '' };
+      // Triage doesn't touch updated_at — reprioritizing shouldn't bump an issue
+      // to the top of "Recently updated" for the whole team.
+      const { data, error } = await db
+        .from(TABLE).update(updates).eq('id', id).select().single();
       if (error) throw new Error(error.message);
       return NextResponse.json(data);
     }

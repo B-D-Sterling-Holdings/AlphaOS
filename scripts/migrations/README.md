@@ -42,3 +42,8 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 | `007_lessons_learned.sql` | Lessons-learned tables. |
 | `008_feature_access.sql` | `users.disabled_features` — per-user feature suppression (admin "guard" toggles). |
 | `009_finish_tenant_keys.sql` | Re-scope the remaining GLOBAL keys per tenant (ticker_prices/fundamentals, theses, valuation_models, fund_nav_data, app_settings) so two tenants can hold the same ticker/date/setting. Also required for the demo login to seed those sections fully. |
+| `010_issues.sql` | `issues` table behind the in-app issue tracker (tenant-scoped, RichTextArea JSONB body/comments). |
+| `011_sub_users.sql` | Multiple users per tenant (sub-users). |
+| `012_promote_legacy_owners.sql` | Promote pre-011 single logins to workspace owners. |
+| `013_issue_numbers_labels.sql` | GitHub-style Issues UI: per-tenant sequential `issues.number` (#12) and `issues.labels` (label-name array). |
+| `014_issue_dev_triage.sql` | Admin "Dev" tab in Issues: `issues.priority` (1–4) and `issues.dev_notes` (admin-only triage note). |

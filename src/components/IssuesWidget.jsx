@@ -3,24 +3,58 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   CircleDot, CheckCircle2, X, Plus, ArrowLeft, Trash2, MessageSquare,
-  Archive, Send, ShieldCheck, Loader2, RotateCcw, Check, MessageSquarePlus,
+  Search, ChevronDown, ChevronRight, Check, ShieldCheck, Loader2, RotateCcw,
+  MessageSquarePlus, Tag, Wrench,
 } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import RichTextArea from '@/components/RichTextArea';
 
 /**
- * IssuesWidget — an in-app issue tracker (a small GitHub-issues clone).
+ * IssuesWidget — an in-app issue tracker modeled on GitHub Issues.
  *
  * Rendered once in the dashboard layout. Opened by the floating "Feedback" button
  * this component pins to the bottom-right corner of every page, or by dispatching
- * an `open-issues` window event (the command-palette pattern). Slides in as a
- * right-hand drawer with an Open tab and an Archived (resolved) tab.
+ * an `open-issues` window event (the command-palette pattern). Opens as a wide
+ * centered panel: a searchable Open/Closed list with label filters and sorting,
+ * and a detail view with a comment timeline.
  *
  * Permissions mirror the API (src/app/api/issues/route.js): every user can open an
- * issue and comment; only an admin (the CIO login) sees Resolve / Reopen / Delete.
+ * issue, comment, and edit labels; only an admin (the CIO login) sees
+ * Close / Reopen / Delete.
  */
 
 const EMPTY_BODY = [{ type: 'text', value: '' }];
+
+// Fixed label palette (GitHub-default-ish names, app-native light chips). Issues
+// only store label names; colors live here.
+const LABELS = [
+  { name: 'bug',           dot: 'bg-red-500',    chip: 'bg-red-50 text-red-700 ring-red-200' },
+  { name: 'enhancement',   dot: 'bg-sky-500',    chip: 'bg-sky-50 text-sky-700 ring-sky-200' },
+  { name: 'question',      dot: 'bg-violet-500', chip: 'bg-violet-50 text-violet-700 ring-violet-200' },
+  { name: 'documentation', dot: 'bg-blue-500',   chip: 'bg-blue-50 text-blue-700 ring-blue-200' },
+  { name: 'ui/ux',         dot: 'bg-pink-500',   chip: 'bg-pink-50 text-pink-700 ring-pink-200' },
+  { name: 'performance',   dot: 'bg-amber-500',  chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
+  { name: 'help wanted',   dot: 'bg-teal-500',   chip: 'bg-teal-50 text-teal-700 ring-teal-200' },
+  { name: 'wontfix',       dot: 'bg-gray-400',   chip: 'bg-gray-100 text-gray-600 ring-gray-300' },
+];
+const labelDef = (name) => LABELS.find(l => l.name === name)
+  || { name, dot: 'bg-gray-400', chip: 'bg-gray-100 text-gray-600 ring-gray-300' };
+
+// Admin triage priorities for the Dev tab (issues.priority: 1..4, null = unset).
+const PRIORITIES = [
+  { value: 1, label: 'Urgent', dot: 'bg-red-500',    chip: 'bg-red-50 text-red-700 ring-red-200' },
+  { value: 2, label: 'High',   dot: 'bg-orange-500', chip: 'bg-orange-50 text-orange-700 ring-orange-200' },
+  { value: 3, label: 'Medium', dot: 'bg-amber-400',  chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
+  { value: 4, label: 'Low',    dot: 'bg-sky-500',    chip: 'bg-sky-50 text-sky-700 ring-sky-200' },
+];
+
+const SORTS = [
+  { key: 'newest',           label: 'Newest' },
+  { key: 'oldest',           label: 'Oldest' },
+  { key: 'most-commented',   label: 'Most commented' },
+  { key: 'least-commented',  label: 'Least commented' },
+  { key: 'recently-updated', label: 'Recently updated' },
+];
 
 // Merge stored RichTextArea blocks into display HTML (same shape RichTextArea emits:
 // text blocks concatenated with <br>, legacy image blocks folded in as <img>).
@@ -42,31 +76,94 @@ function isBodyEmpty(value) {
   return !(typeof value === 'string' && value.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim());
 }
 
-function formatTimestamp(iso) {
+// GitHub-style relative timestamps: "5m ago", "3h ago", "2d ago", then "on Mar 5".
+function timeAgo(iso) {
   if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  } catch { return ''; }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const secs = Math.max(0, (Date.now() - d.getTime()) / 1000);
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  if (secs < 30 * 86400) return `${Math.floor(secs / 86400)}d ago`;
+  const opts = { month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return `on ${d.toLocaleDateString(undefined, opts)}`;
 }
 
 // Read-only render of stored rich-text (issue body / comment). The scoped styles
-// below cover images, tables and lists so content looks the same as in the editor
-// without mounting an editable RichTextArea.
+// in the component cover images, tables and lists so content looks the same as in
+// the editor without mounting an editable RichTextArea.
 function RichDisplay({ value }) {
   const html = blocksToHtml(value);
-  if (!html) return <p className="text-[13px] text-gray-400 italic">No description.</p>;
-  return <div className="issue-rt text-[13px] text-gray-700 leading-relaxed" dangerouslySetInnerHTML={{ __html: html }} />;
+  if (!html) return <p className="text-[13px] text-gray-400 italic">No description provided.</p>;
+  return <div className="issue-rt text-[13.5px] text-gray-700 leading-relaxed" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-function StatusPill({ status }) {
-  const resolved = status === 'resolved';
+function Avatar({ name, size = 'w-6 h-6 text-[10px]' }) {
+  const initials = (name || '?').trim().slice(0, 2).toUpperCase();
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
-      resolved ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700'
-    }`}>
-      {resolved ? <CheckCircle2 size={11} /> : <CircleDot size={11} />}
-      {resolved ? 'Resolved' : 'Open'}
+    <span className={`${size} rounded-full bg-emerald-100 text-emerald-700 font-bold flex items-center justify-center shrink-0`}>
+      {initials}
     </span>
+  );
+}
+
+function LabelChip({ name }) {
+  const def = labelDef(name);
+  return (
+    <span className={`inline-flex items-center px-2 py-[1px] rounded-full text-[11px] font-semibold ring-1 ring-inset ${def.chip}`}>
+      {name}
+    </span>
+  );
+}
+
+function PriorityPill({ value, onClick }) {
+  const def = PRIORITIES.find(p => p.value === value);
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold ring-1 ring-inset transition-colors ${
+        def ? def.chip : 'bg-white text-gray-400 ring-gray-300 hover:text-gray-600'
+      }`}
+    >
+      <span className={`w-2 h-2 rounded-full ${def ? def.dot : 'bg-gray-300'}`} />
+      {def ? def.label : 'Set priority'}
+      <ChevronDown size={11} />
+    </button>
+  );
+}
+
+// The big state badge on the detail view — GitHub's solid "Open"/"Closed" pill.
+function StateBadge({ status }) {
+  const closed = status === 'resolved';
+  return (
+    <span className={`inline-flex items-center gap-1.5 pl-3 pr-3.5 py-1.5 rounded-full text-[13px] font-semibold text-white shrink-0 ${
+      closed ? 'bg-purple-600' : 'bg-emerald-600'
+    }`}>
+      {closed ? <CheckCircle2 size={15} /> : <CircleDot size={15} />}
+      {closed ? 'Closed' : 'Open'}
+    </span>
+  );
+}
+
+// Shared dropdown chrome for the Labels / Sort / sidebar-label menus. Caller owns
+// open state; a transparent fixed overlay behind the menu handles click-outside.
+function Menu({ open, onClose, align = 'right', width = 'w-56', title, children }) {
+  if (!open) return null;
+  return (
+    <>
+      <div className="fixed inset-0 z-[10]" onClick={onClose} />
+      <div className={`absolute top-full mt-1.5 ${align === 'right' ? 'right-0' : 'left-0'} ${width} z-[11] rounded-xl border border-gray-200 bg-white shadow-xl overflow-hidden`}>
+        {title && (
+          <div className="px-3 py-2 text-[11.5px] font-bold text-gray-700 border-b border-gray-100 flex items-center justify-between">
+            {title}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={13} /></button>
+          </div>
+        )}
+        <div className="max-h-72 overflow-y-auto py-1">{children}</div>
+      </div>
+    </>
   );
 }
 
@@ -75,15 +172,22 @@ export default function IssuesWidget() {
 
   const [open, setOpen] = useState(false);
   const [view, setView] = useState('list');      // 'list' | 'new' | 'detail'
-  const [tab, setTab] = useState('open');          // 'open' | 'resolved'
+  const [tab, setTab] = useState('open');        // 'open' | 'closed'
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedId, setSelectedId] = useState(null);
 
+  // List controls
+  const [query, setQuery] = useState('');
+  const [labelFilter, setLabelFilter] = useState([]);   // label names
+  const [sort, setSort] = useState('newest');
+  const [menu, setMenu] = useState(null);               // 'labels' | 'sort' | 'edit-labels' | null
+
   // New-issue composer
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState(EMPTY_BODY);
+  const [newLabels, setNewLabels] = useState([]);
   const [creating, setCreating] = useState(false);
 
   // Comment composer (in detail view)
@@ -94,6 +198,12 @@ export default function IssuesWidget() {
   // Per-action busy / confirm state
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Admin triage (Dev tab): inline note editing in list rows, and the notes
+  // box in the detail sidebar.
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [detailNotes, setDetailNotes] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -116,39 +226,108 @@ export default function IssuesWidget() {
     return () => window.removeEventListener('open-issues', onOpen);
   }, []);
 
-  // Refresh the list whenever the drawer opens.
+  // Refresh the list whenever the panel opens.
   useEffect(() => { if (open) load(); }, [open, load]);
 
   // Load once on mount too, so the FAB's open-count badge is right before the
-  // drawer is ever opened.
+  // panel is ever opened.
   useEffect(() => { if (authenticated) load(); }, [authenticated, load]);
 
-  // Close on Escape.
+  // Escape steps back one layer at a time: open dropdown → back to the list
+  // (from detail / new issue) → close the panel.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      if (menu) setMenu(null);
+      else if (view !== 'list') { setView('list'); setSelectedId(null); }
+      else setOpen(false);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
+  }, [open, menu, view]);
 
   const selected = useMemo(() => issues.find(i => i.id === selectedId) || null, [issues, selectedId]);
-  const openCount = useMemo(() => issues.filter(i => i.status !== 'resolved').length, [issues]);
-  const resolvedCount = issues.length - openCount;
-  const visible = useMemo(
-    () => issues.filter(i => (tab === 'resolved' ? i.status === 'resolved' : i.status !== 'resolved')),
-    [issues, tab],
-  );
+  const totalOpen = useMemo(() => issues.filter(i => i.status !== 'resolved').length, [issues]);
+
+  // Keep the detail-sidebar notes box in sync with the selected issue (but don't
+  // clobber while the admin is typing — only reset when the selection changes).
+  useEffect(() => {
+    setDetailNotes(issues.find(i => i.id === selectedId)?.dev_notes || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  // The Dev tab is admin-only; fall back to Open if role changes mid-session.
+  const effTab = tab === 'dev' && !isAdmin ? 'open' : tab;
+
+  // Search + label filter run before the Open/Closed split, so the tab counts
+  // reflect the current filters (as on GitHub).
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return issues.filter(i => {
+      if (labelFilter.length && !labelFilter.every(l => (i.labels || []).includes(l))) return false;
+      if (!q) return true;
+      const haystack = [
+        i.title || '',
+        i.author || '',
+        i.number ? `#${i.number}` : '',
+        blocksToHtml(i.body).replace(/<[^>]+>/g, ' '),
+      ].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [issues, query, labelFilter]);
+
+  const openCount = useMemo(() => filtered.filter(i => i.status !== 'resolved').length, [filtered]);
+  const closedCount = filtered.length - openCount;
+
+  const visible = useMemo(() => {
+    // Dev tab: open issues only (closed = done, nothing left to triage),
+    // highest priority first, unprioritized at the bottom; ties newest-first.
+    if (effTab === 'dev') {
+      const prio = i => i.priority || 99;
+      return filtered
+        .filter(i => i.status !== 'resolved')
+        .sort((a, b) => prio(a) - prio(b)
+          || (new Date(b.created_at || 0) - new Date(a.created_at || 0)));
+    }
+    const list = filtered.filter(i => (effTab === 'closed' ? i.status === 'resolved' : i.status !== 'resolved'));
+    const byDate = (k, dir) => (a, b) => dir * (new Date(a[k] || 0) - new Date(b[k] || 0));
+    const byComments = (dir) => (a, b) => dir * ((a.comments || []).length - (b.comments || []).length);
+    const cmp = {
+      newest: byDate('created_at', -1),
+      oldest: byDate('created_at', 1),
+      'most-commented': byComments(-1),
+      'least-commented': byComments(1),
+      'recently-updated': byDate('updated_at', -1),
+    }[sort] || (() => 0);
+    return [...list].sort(cmp);
+  }, [filtered, effTab, sort]);
 
   const resetComposers = () => {
     setNewTitle('');
     setNewBody(EMPTY_BODY);
+    setNewLabels([]);
     setCommentDraft(EMPTY_BODY);
     setComposerNonce(n => n + 1);
     setConfirmDelete(false);
+    setMenu(null);
   };
 
   const goList = () => { setView('list'); setSelectedId(null); resetComposers(); };
   const openDetail = (id) => { setSelectedId(id); setView('detail'); resetComposers(); };
+
+  // Shared PUT helper — sends an action, folds the updated row back into state.
+  const mutate = async (payload) => {
+    const res = await fetch('/api/issues', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Action failed');
+    const updated = await res.json();
+    setIssues(prev => prev.map(i => (i.id === updated.id ? updated : i)));
+    return updated;
+  };
 
   const createIssue = async () => {
     if (!newTitle.trim() || creating) return;
@@ -158,7 +337,7 @@ export default function IssuesWidget() {
       const res = await fetch('/api/issues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle.trim(), body: newBody }),
+        body: JSON.stringify({ title: newTitle.trim(), body: newBody, labels: newLabels }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to create issue');
       const created = await res.json();
@@ -177,14 +356,7 @@ export default function IssuesWidget() {
     setPosting(true);
     setError('');
     try {
-      const res = await fetch('/api/issues', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: selected.id, action: 'comment', body: commentDraft }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to post comment');
-      const updated = await res.json();
-      setIssues(prev => prev.map(i => (i.id === updated.id ? updated : i)));
+      await mutate({ id: selected.id, action: 'comment', body: commentDraft });
       setCommentDraft(EMPTY_BODY);
       setComposerNonce(n => n + 1);
     } catch (e) {
@@ -194,23 +366,56 @@ export default function IssuesWidget() {
     }
   };
 
+  // Close / reopen. If there's a pending comment when closing, post it first —
+  // GitHub's "Close with comment".
   const setStatus = async (action) => {
     if (!selected || busy) return;
     setBusy(true);
     setError('');
     try {
-      const res = await fetch('/api/issues', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: selected.id, action }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Action failed');
-      const updated = await res.json();
-      setIssues(prev => prev.map(i => (i.id === updated.id ? updated : i)));
+      if (!isBodyEmpty(commentDraft)) {
+        await mutate({ id: selected.id, action: 'comment', body: commentDraft });
+        setCommentDraft(EMPTY_BODY);
+        setComposerNonce(n => n + 1);
+      }
+      await mutate({ id: selected.id, action });
     } catch (e) {
       setError(e.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const setPriority = async (issue, priority) => {
+    setMenu(null);
+    setError('');
+    try {
+      await mutate({ id: issue.id, action: 'priority', priority });
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const saveNote = async (issue, text) => {
+    setEditingNoteId(null);
+    if ((issue.dev_notes || '') === text) return;
+    setError('');
+    try {
+      await mutate({ id: issue.id, action: 'dev-notes', notes: text });
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const toggleIssueLabel = async (name) => {
+    if (!selected) return;
+    const current = selected.labels || [];
+    const next = current.includes(name) ? current.filter(l => l !== name) : [...current, name];
+    setError('');
+    try {
+      await mutate({ id: selected.id, action: 'labels', labels: next });
+    } catch (e) {
+      setError(e.message);
     }
   };
 
@@ -230,9 +435,30 @@ export default function IssuesWidget() {
     }
   };
 
+  const deleteComment = async (commentId) => {
+    if (!selected || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/issues?id=${encodeURIComponent(selected.id)}&commentId=${encodeURIComponent(commentId)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to delete comment');
+      const updated = await res.json();
+      setIssues(prev => prev.map(i => (i.id === updated.id ? updated : i)));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Only render for signed-in sessions (the widget lives inside the auth-gated
   // dashboard, but guard anyway so it never flashes on the login screen).
   if (!authenticated) return null;
+
+  const commentCards = selected ? [
+    { id: '__op__', author: selected.author, createdAt: selected.created_at, body: selected.body, isOp: true },
+    ...(selected.comments || []).map(c => ({ ...c, isOp: false })),
+  ] : [];
 
   return (
     <>
@@ -248,7 +474,7 @@ export default function IssuesWidget() {
 
       {/* Floating feedback button — pinned bottom-right on every page so there is
           always one obvious place to report a bug or leave feedback. z-40 keeps it
-          under toasts (z-50) and the drawer backdrop. */}
+          under toasts (z-50) and the panel backdrop. */}
       {!open && (
         <button
           onClick={() => { setOpen(true); setView('list'); }}
@@ -261,9 +487,9 @@ export default function IssuesWidget() {
           <span className="hidden sm:block text-[11px] font-medium text-emerald-100/90 leading-none -ml-0.5 pl-2.5 border-l border-emerald-400/50">
             Spotted a bug? Tell us
           </span>
-          {openCount > 0 && (
+          {totalOpen > 0 && (
             <span className="absolute -top-1.5 -right-1.5 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center rounded-full bg-white text-emerald-700 text-[11px] font-bold shadow ring-2 ring-emerald-600 tabular-nums">
-              {openCount}
+              {totalOpen}
             </span>
           )}
         </button>
@@ -272,33 +498,44 @@ export default function IssuesWidget() {
       {open && (
         <div className="fixed inset-0 z-[10002]">
           {/* Backdrop */}
-          <div className="absolute inset-0 bg-gray-900/30 backdrop-blur-sm" onClick={() => setOpen(false)} />
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setOpen(false)} />
 
-          {/* Drawer */}
-          <div
-            className="absolute top-0 right-0 h-full w-full max-w-md flex flex-col animate-slide-in-right shadow-2xl"
-            style={{ background: 'linear-gradient(160deg, rgba(255,255,255,0.99) 0%, rgba(248,250,252,1) 100%)' }}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between gap-2 px-4 py-3.5 border-b border-gray-100 shrink-0">
+          {/* Panel — wide and centered, GitHub-issues proportions */}
+          <div className="absolute inset-0 sm:inset-4 lg:inset-y-6 lg:left-1/2 lg:right-auto lg:-translate-x-1/2 lg:w-[min(1080px,calc(100vw-48px))] flex flex-col bg-white sm:rounded-2xl shadow-2xl overflow-hidden">
+
+            {/* Panel header */}
+            <div className="flex items-center justify-between gap-2 px-5 py-3.5 border-b border-gray-200 shrink-0 bg-gray-50/70">
               <div className="flex items-center gap-2.5 min-w-0">
                 {view !== 'list' ? (
-                  <button onClick={goList} className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors" title="Back">
-                    <ArrowLeft size={17} />
-                  </button>
+                  <>
+                    <button
+                      onClick={goList}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-[12.5px] font-semibold text-gray-700 shadow-sm hover:bg-gray-100 hover:border-gray-400 transition-colors shrink-0"
+                      title="Back to issues (Esc)"
+                    >
+                      <ArrowLeft size={14} /> Back to issues
+                    </button>
+                    <span className="flex items-center gap-1 text-[13px] text-gray-400 min-w-0">
+                      <span>Issues</span>
+                      <ChevronRight size={13} className="shrink-0" />
+                      <span className="font-semibold text-gray-700 truncate">
+                        {view === 'new'
+                          ? 'New issue'
+                          : selected?.number ? `#${selected.number}` : (selected?.title || 'Issue')}
+                      </span>
+                    </span>
+                  </>
                 ) : (
-                  <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-                    <CircleDot size={16} />
-                  </div>
+                  <>
+                    <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                      <CircleDot size={16} />
+                    </div>
+                    <div className="min-w-0">
+                      <h2 className="text-[15px] font-bold text-gray-900 leading-tight">Issues</h2>
+                      <p className="text-[11px] text-gray-400">Report bugs & discuss with the team</p>
+                    </div>
+                  </>
                 )}
-                <div className="min-w-0">
-                  <h2 className="text-[15px] font-bold text-gray-900 leading-tight truncate">
-                    {view === 'new' ? 'New issue' : view === 'detail' ? 'Issue' : 'Issues'}
-                  </h2>
-                  {view === 'list' && (
-                    <p className="text-[11px] text-gray-400">Report bugs & discuss with the team</p>
-                  )}
-                </div>
               </div>
               <button onClick={() => setOpen(false)} className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors" title="Close">
                 <X size={18} />
@@ -306,205 +543,567 @@ export default function IssuesWidget() {
             </div>
 
             {error && (
-              <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-red-50 text-red-600 text-[12px] font-medium">
+              <div className="mx-5 mt-3 px-3 py-2 rounded-lg bg-red-50 text-red-600 text-[12px] font-medium shrink-0">
                 {error}
               </div>
             )}
 
             {/* ---- LIST VIEW ---- */}
             {view === 'list' && (
-              <>
-                <div className="flex items-center gap-1 px-4 pt-3 shrink-0">
-                  <button
-                    onClick={() => setTab('open')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ${tab === 'open' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-400 hover:text-gray-600'}`}
-                  >
-                    <CircleDot size={13} /> Open <span className="tabular-nums opacity-70">{openCount}</span>
-                  </button>
-                  <button
-                    onClick={() => setTab('resolved')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ${tab === 'resolved' ? 'bg-purple-50 text-purple-700' : 'text-gray-400 hover:text-gray-600'}`}
-                  >
-                    <Archive size={13} /> Archived <span className="tabular-nums opacity-70">{resolvedCount}</span>
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-                  {loading ? (
-                    <div className="flex items-center justify-center py-10 text-gray-400">
-                      <Loader2 size={20} className="animate-spin" />
-                    </div>
-                  ) : visible.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center mt-4">
-                      {tab === 'resolved' ? <Archive size={24} className="text-gray-300 mx-auto mb-2" /> : <CircleDot size={24} className="text-gray-300 mx-auto mb-2" />}
-                      <p className="text-[13px] font-semibold text-gray-500">
-                        {tab === 'resolved' ? 'No archived issues' : 'No open issues'}
-                      </p>
-                      <p className="text-[11.5px] text-gray-400 mt-1">
-                        {tab === 'resolved' ? 'Resolved issues will appear here.' : 'Open one with the button below.'}
-                      </p>
-                    </div>
-                  ) : (
-                    visible.map(issue => (
-                      <button
-                        key={issue.id}
-                        onClick={() => openDetail(issue.id)}
-                        className="w-full text-left rounded-xl border border-gray-200/80 bg-white hover:border-emerald-300 hover:shadow-sm p-3 transition-all"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="text-[13.5px] font-semibold text-gray-900 leading-snug min-w-0">{issue.title}</span>
-                          <StatusPill status={issue.status} />
-                        </div>
-                        <div className="flex items-center gap-3 mt-1.5 text-[11px] text-gray-400">
-                          <span className="truncate">{issue.author || 'Unknown'}</span>
-                          <span className="flex items-center gap-1 shrink-0"><MessageSquare size={11} />{(issue.comments || []).length}</span>
-                          <span className="shrink-0 ml-auto">{formatTimestamp(issue.updated_at)}</span>
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-
-                <div className="px-4 py-3 border-t border-gray-100 shrink-0">
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                {/* Search + New issue */}
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="relative flex-1">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    <input
+                      value={query}
+                      onChange={e => setQuery(e.target.value)}
+                      placeholder="Search all issues"
+                      className="w-full bg-gray-50 border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-[13.5px] text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
+                    />
+                  </div>
                   <button
                     onClick={() => { setView('new'); resetComposers(); }}
-                    className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors"
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[13px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shrink-0"
                   >
                     <Plus size={15} /> New issue
                   </button>
                 </div>
-              </>
+
+                {/* Issue list */}
+                <div className="border border-gray-200 rounded-xl overflow-visible">
+                  {/* List header: state tabs + filter dropdowns */}
+                  <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-gray-50 border-b border-gray-200 rounded-t-xl">
+                    <div className="flex items-center gap-4">
+                      <button
+                        onClick={() => setTab('open')}
+                        className={`flex items-center gap-1.5 text-[13px] transition-colors ${effTab === 'open' ? 'font-bold text-gray-900' : 'font-medium text-gray-500 hover:text-gray-800'}`}
+                      >
+                        <CircleDot size={15} className={effTab === 'open' ? 'text-emerald-600' : ''} />
+                        Open
+                        <span className={`px-1.5 py-px rounded-full text-[11px] tabular-nums ${effTab === 'open' ? 'bg-gray-200 text-gray-700' : 'bg-gray-200/60 text-gray-500'}`}>
+                          {openCount}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setTab('closed')}
+                        className={`flex items-center gap-1.5 text-[13px] transition-colors ${effTab === 'closed' ? 'font-bold text-gray-900' : 'font-medium text-gray-500 hover:text-gray-800'}`}
+                      >
+                        <Check size={15} className={effTab === 'closed' ? 'text-purple-600' : ''} />
+                        Closed
+                        <span className={`px-1.5 py-px rounded-full text-[11px] tabular-nums ${effTab === 'closed' ? 'bg-gray-200 text-gray-700' : 'bg-gray-200/60 text-gray-500'}`}>
+                          {closedCount}
+                        </span>
+                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => setTab('dev')}
+                          title="Admin triage: every issue in priority order, with your notes"
+                          className={`flex items-center gap-1.5 text-[13px] transition-colors ${effTab === 'dev' ? 'font-bold text-gray-900' : 'font-medium text-gray-500 hover:text-gray-800'}`}
+                        >
+                          <Wrench size={14} className={effTab === 'dev' ? 'text-amber-600' : ''} />
+                          Dev
+                          <span className={`px-1.5 py-px rounded-full text-[11px] tabular-nums ${effTab === 'dev' ? 'bg-gray-200 text-gray-700' : 'bg-gray-200/60 text-gray-500'}`}>
+                            {openCount}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <div className="relative">
+                        <button
+                          onClick={() => setMenu(m => (m === 'labels' ? null : 'labels'))}
+                          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12.5px] font-semibold transition-colors ${labelFilter.length ? 'text-emerald-700 bg-emerald-50' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'}`}
+                        >
+                          Labels{labelFilter.length > 0 && <span className="tabular-nums">({labelFilter.length})</span>}
+                          <ChevronDown size={13} />
+                        </button>
+                        <Menu open={menu === 'labels'} onClose={() => setMenu(null)} title="Filter by label">
+                          {LABELS.map(l => {
+                            const active = labelFilter.includes(l.name);
+                            return (
+                              <button
+                                key={l.name}
+                                onClick={() => setLabelFilter(prev => (active ? prev.filter(n => n !== l.name) : [...prev, l.name]))}
+                                className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
+                              >
+                                <span className="w-3.5 shrink-0">{active && <Check size={13} className="text-emerald-600" />}</span>
+                                <span className={`w-3 h-3 rounded-full shrink-0 ${l.dot}`} />
+                                {l.name}
+                              </button>
+                            );
+                          })}
+                          {labelFilter.length > 0 && (
+                            <button
+                              onClick={() => { setLabelFilter([]); setMenu(null); }}
+                              className="w-full px-3 py-1.5 mt-1 border-t border-gray-100 text-left text-[12px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-50"
+                            >
+                              Clear label filters
+                            </button>
+                          )}
+                        </Menu>
+                      </div>
+
+                      {effTab === 'dev' ? (
+                        <span className="px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-400">Priority order</span>
+                      ) : (
+                        <div className="relative">
+                          <button
+                            onClick={() => setMenu(m => (m === 'sort' ? null : 'sort'))}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12.5px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors"
+                          >
+                            {SORTS.find(s => s.key === sort)?.label || 'Newest'}
+                            <ChevronDown size={13} />
+                          </button>
+                          <Menu open={menu === 'sort'} onClose={() => setMenu(null)} title="Sort by" width="w-48">
+                            {SORTS.map(s => (
+                              <button
+                                key={s.key}
+                                onClick={() => { setSort(s.key); setMenu(null); }}
+                                className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
+                              >
+                                <span className="w-3.5 shrink-0">{sort === s.key && <Check size={13} className="text-emerald-600" />}</span>
+                                {s.label}
+                              </button>
+                            ))}
+                          </Menu>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Rows */}
+                  {loading ? (
+                    <div className="flex items-center justify-center py-14 text-gray-400">
+                      <Loader2 size={20} className="animate-spin" />
+                    </div>
+                  ) : visible.length === 0 ? (
+                    <div className="py-14 text-center px-6">
+                      {effTab === 'closed'
+                        ? <CheckCircle2 size={28} className="text-gray-300 mx-auto mb-3" />
+                        : effTab === 'dev'
+                          ? <Wrench size={28} className="text-gray-300 mx-auto mb-3" />
+                          : <CircleDot size={28} className="text-gray-300 mx-auto mb-3" />}
+                      <p className="text-[14px] font-bold text-gray-600">
+                        {query.trim() || labelFilter.length
+                          ? 'No results matched your search.'
+                          : effTab === 'closed' ? "There aren't any closed issues."
+                            : effTab === 'dev' ? 'Nothing to triage yet.'
+                              : "There aren't any open issues."}
+                      </p>
+                      <p className="text-[12px] text-gray-400 mt-1">
+                        {query.trim() || labelFilter.length
+                          ? 'Try clearing the search or label filters.'
+                          : effTab === 'closed' ? 'Closed issues will appear here.'
+                            : effTab === 'dev' ? 'Every open issue shows up here with your priority and notes.'
+                              : 'Open one with the New issue button.'}
+                      </p>
+                    </div>
+                  ) : (
+                    visible.map((issue, idx) => {
+                      const closed = issue.status === 'resolved';
+                      return (
+                        // The row div is mouse-clickable for convenience, but the title is
+                        // the real (focusable) control — putting role="button" on the row
+                        // would flatten the nested triage controls out of the a11y tree.
+                        <div
+                          key={issue.id}
+                          onClick={() => openDetail(issue.id)}
+                          className={`w-full group text-left flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50/80 transition-colors ${idx < visible.length - 1 ? 'border-b border-gray-100' : 'rounded-b-xl'}`}
+                        >
+                          {closed
+                            ? <CheckCircle2 size={16} className="text-purple-600 mt-0.5 shrink-0" />
+                            : <CircleDot size={16} className="text-emerald-600 mt-0.5 shrink-0" />}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <button
+                                onClick={e => { e.stopPropagation(); openDetail(issue.id); }}
+                                className="text-[14px] font-semibold text-gray-900 group-hover:text-emerald-700 leading-snug transition-colors text-left"
+                              >
+                                {issue.title}
+                              </button>
+                              {(issue.labels || []).map(name => <LabelChip key={name} name={name} />)}
+                            </div>
+                            <p className="text-[12px] text-gray-500 mt-1">
+                              {issue.number ? `#${issue.number} · ` : ''}
+                              {closed
+                                ? <>{issue.author || 'Unknown'} · closed {timeAgo(issue.resolved_at || issue.updated_at)}</>
+                                : <>{issue.author || 'Unknown'} opened {timeAgo(issue.created_at)}</>}
+                            </p>
+                          </div>
+                          {(issue.comments || []).length > 0 && (
+                            <span className="flex items-center gap-1 text-[12px] text-gray-500 font-medium shrink-0 mt-0.5">
+                              <MessageSquare size={13} />{issue.comments.length}
+                            </span>
+                          )}
+
+                          {/* Dev tab: admin triage rail — priority + quick-glance note.
+                              stopPropagation so triaging never opens the issue. */}
+                          {effTab === 'dev' && (
+                            <div
+                              className="w-60 shrink-0 flex flex-col items-start gap-1.5 pl-3 border-l border-gray-100"
+                              onClick={e => e.stopPropagation()}
+                            >
+                              <div className="relative">
+                                <PriorityPill
+                                  value={issue.priority}
+                                  onClick={() => setMenu(m => (m === `prio-${issue.id}` ? null : `prio-${issue.id}`))}
+                                />
+                                <Menu open={menu === `prio-${issue.id}`} onClose={() => setMenu(null)} title="Priority" align="left" width="w-44">
+                                  {PRIORITIES.map(p => (
+                                    <button
+                                      key={p.value}
+                                      onClick={() => setPriority(issue, p.value)}
+                                      className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
+                                    >
+                                      <span className="w-3.5 shrink-0">{issue.priority === p.value && <Check size={13} className="text-emerald-600" />}</span>
+                                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${p.dot}`} />
+                                      {p.label}
+                                    </button>
+                                  ))}
+                                  <button
+                                    onClick={() => setPriority(issue, null)}
+                                    className="w-full px-3 py-1.5 mt-1 border-t border-gray-100 text-left text-[12px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-50"
+                                  >
+                                    Clear priority
+                                  </button>
+                                </Menu>
+                              </div>
+                              {editingNoteId === issue.id ? (
+                                <textarea
+                                  value={noteDraft}
+                                  onChange={e => setNoteDraft(e.target.value)}
+                                  onBlur={() => saveNote(issue, noteDraft)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.blur(); }
+                                    if (e.key === 'Escape') { e.stopPropagation(); setEditingNoteId(null); }
+                                  }}
+                                  autoFocus
+                                  rows={2}
+                                  placeholder="Quick note…"
+                                  className="w-full text-[11.5px] text-gray-700 border border-emerald-300 rounded-lg px-2 py-1.5 bg-white outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+                                />
+                              ) : (
+                                <button
+                                  onClick={() => { setEditingNoteId(issue.id); setNoteDraft(issue.dev_notes || ''); }}
+                                  className="w-full text-left"
+                                  title="Edit note"
+                                >
+                                  {issue.dev_notes ? (
+                                    <span className="block text-[11.5px] text-gray-600 leading-snug line-clamp-2 hover:text-gray-900">
+                                      {issue.dev_notes}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[11.5px] text-gray-300 italic hover:text-gray-500">Add a note…</span>
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             )}
 
             {/* ---- NEW ISSUE VIEW ---- */}
             {view === 'new' && (
-              <div className="flex-1 overflow-y-auto px-4 py-4">
-                <label className="block text-[11px] font-bold uppercase tracking-wide text-gray-400 mb-1.5">Title</label>
-                <input
-                  value={newTitle}
-                  onChange={e => setNewTitle(e.target.value)}
-                  placeholder="Short summary of the issue"
-                  autoFocus
-                  className="w-full bg-gray-50/60 border border-gray-200 rounded-xl px-3.5 py-2.5 text-[14px] text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all mb-4"
-                />
-                <label className="block text-[11px] font-bold uppercase tracking-wide text-gray-400 mb-1.5">Description</label>
-                <RichTextArea
-                  key={`new-${composerNonce}`}
-                  value={newBody}
-                  onChange={setNewBody}
-                  ticker="ISSUES"
-                  placeholder="Describe the bug or request. Paste screenshots directly…"
-                  rows={6}
-                  enableTables
-                />
-                <div className="flex justify-end items-center gap-2 mt-4">
-                  <button onClick={goList} className="text-[12px] font-semibold px-3.5 py-2 rounded-lg text-gray-500 hover:text-gray-700 transition-colors">
-                    Cancel
-                  </button>
-                  <button
-                    onClick={createIssue}
-                    disabled={!newTitle.trim() || creating}
-                    className="flex items-center gap-1.5 text-[12px] font-semibold px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                    Create issue
-                  </button>
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                <h3 className="text-[17px] font-bold text-gray-900 mb-4">Create new issue</h3>
+                <div className="flex flex-col lg:flex-row gap-6">
+                  <div className="flex-1 min-w-0">
+                    <label className="block text-[13px] font-bold text-gray-800 mb-1.5">Add a title</label>
+                    <input
+                      value={newTitle}
+                      onChange={e => setNewTitle(e.target.value)}
+                      placeholder="Title"
+                      autoFocus
+                      className="w-full bg-gray-50 border border-gray-300 rounded-lg px-3.5 py-2 text-[14px] text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all mb-4"
+                    />
+                    <label className="block text-[13px] font-bold text-gray-800 mb-1.5">Add a description</label>
+                    <RichTextArea
+                      key={`new-${composerNonce}`}
+                      value={newBody}
+                      onChange={setNewBody}
+                      ticker="ISSUES"
+                      placeholder="Describe the bug or request. Paste screenshots directly…"
+                      rows={8}
+                      enableTables
+                    />
+                    {/* preventDefault on mousedown keeps the editor focused while the
+                        click lands — otherwise blur hides the RichTextArea toolbar and
+                        the buttons shift up mid-click, swallowing the first click. */}
+                    <div className="flex justify-end items-center gap-2 mt-4" onMouseDown={(e) => e.preventDefault()}>
+                      <button onClick={goList} className="text-[13px] font-semibold px-3.5 py-2 rounded-lg text-gray-500 hover:text-gray-700 transition-colors">
+                        Cancel
+                      </button>
+                      <button
+                        onClick={createIssue}
+                        disabled={!newTitle.trim() || creating}
+                        className="flex items-center gap-1.5 text-[13px] font-semibold px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {creating && <Loader2 size={14} className="animate-spin" />}
+                        Create
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Labels rail */}
+                  <div className="w-full lg:w-60 shrink-0">
+                    <p className="flex items-center gap-1.5 text-[12px] font-bold text-gray-500 uppercase tracking-wide pb-2 border-b border-gray-200 mb-2">
+                      <Tag size={12} /> Labels
+                    </p>
+                    <div className="space-y-0.5">
+                      {LABELS.map(l => {
+                        const active = newLabels.includes(l.name);
+                        return (
+                          <button
+                            key={l.name}
+                            onClick={() => setNewLabels(prev => (active ? prev.filter(n => n !== l.name) : [...prev, l.name]))}
+                            className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left text-[12.5px] transition-colors ${active ? 'bg-emerald-50 text-gray-900 font-semibold' : 'text-gray-600 hover:bg-gray-50'}`}
+                          >
+                            <span className={`w-3 h-3 rounded-full shrink-0 ${l.dot}`} />
+                            <span className="flex-1">{l.name}</span>
+                            {active && <Check size={13} className="text-emerald-600" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
 
             {/* ---- DETAIL VIEW ---- */}
             {view === 'detail' && selected && (
-              <div className="flex-1 overflow-y-auto px-4 py-4">
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <h3 className="text-[16px] font-bold text-gray-900 leading-snug min-w-0">{selected.title}</h3>
-                  <StatusPill status={selected.status} />
-                </div>
-                <p className="text-[11.5px] text-gray-400 mb-3">
-                  Opened by <span className="font-semibold text-gray-500">{selected.author || 'Unknown'}</span> · {formatTimestamp(selected.created_at)}
-                  {selected.status === 'resolved' && selected.resolved_by && (
-                    <> · resolved by <span className="font-semibold text-purple-500">{selected.resolved_by}</span></>
-                  )}
-                </p>
-
-                {/* Body */}
-                <div className="rounded-xl border border-gray-200/80 bg-white p-3.5 mb-4">
-                  <RichDisplay value={selected.body} />
-                </div>
-
-                {/* Admin controls */}
-                {isAdmin && (
-                  <div className="flex flex-wrap items-center gap-2 mb-4">
-                    {selected.status === 'resolved' ? (
-                      <button onClick={() => setStatus('reopen')} disabled={busy} className="flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 transition-colors">
-                        <RotateCcw size={13} /> Reopen
-                      </button>
-                    ) : (
-                      <button onClick={() => setStatus('resolve')} disabled={busy} className="flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg text-purple-700 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 transition-colors">
-                        <CheckCircle2 size={13} /> Resolve & archive
-                      </button>
-                    )}
-                    {confirmDelete ? (
-                      <span className="flex items-center gap-1">
-                        <button onClick={deleteIssue} disabled={busy} className="flex items-center gap-1 text-[12px] font-semibold px-3 py-1.5 rounded-lg text-white bg-red-500 hover:bg-red-600 disabled:opacity-50 transition-colors">
-                          <Check size={13} /> Confirm delete
-                        </button>
-                        <button onClick={() => setConfirmDelete(false)} className="text-[12px] font-semibold px-2.5 py-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
-                          Cancel
-                        </button>
-                      </span>
-                    ) : (
-                      <button onClick={() => setConfirmDelete(true)} className="flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg text-red-600 hover:bg-red-50 transition-colors ml-auto">
-                        <Trash2 size={13} /> Delete
-                      </button>
-                    )}
-                  </div>
-                )}
-                {!isAdmin && (
-                  <p className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-4">
-                    <ShieldCheck size={12} /> Only an admin can resolve or delete issues.
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                {/* Title + meta */}
+                <h3 className="text-[20px] font-bold text-gray-900 leading-snug">
+                  {selected.title}{' '}
+                  {selected.number && <span className="font-normal text-gray-400">#{selected.number}</span>}
+                </h3>
+                <div className="flex flex-wrap items-center gap-2.5 mt-2.5 pb-4 border-b border-gray-200">
+                  <StateBadge status={selected.status} />
+                  <p className="text-[12.5px] text-gray-500">
+                    <span className="font-semibold text-gray-700">{selected.author || 'Unknown'}</span>
+                    {' '}opened this issue {timeAgo(selected.created_at)}
+                    {' '}· {(selected.comments || []).length} {(selected.comments || []).length === 1 ? 'comment' : 'comments'}
                   </p>
-                )}
-
-                {/* Comments */}
-                <div className="flex items-center gap-2 mb-2">
-                  <MessageSquare size={14} className="text-gray-400" />
-                  <span className="text-[12px] font-bold text-gray-500">
-                    {(selected.comments || []).length} {(selected.comments || []).length === 1 ? 'comment' : 'comments'}
-                  </span>
                 </div>
-                <div className="space-y-2.5 mb-4">
-                  {(selected.comments || []).map(c => (
-                    <div key={c.id} className="rounded-xl border border-gray-100 bg-white p-3">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="text-[12px] font-semibold text-gray-700">{c.author || 'Unknown'}</span>
-                        <span className="text-[10px] text-gray-300">{formatTimestamp(c.createdAt)}</span>
+
+                <div className="flex flex-col lg:flex-row gap-6 mt-4">
+                  {/* Thread */}
+                  <div className="flex-1 min-w-0">
+                    <div className="relative">
+                      {/* Timeline spine behind the cards */}
+                      <div className="absolute left-4 top-2 bottom-2 w-px bg-gray-200" />
+                      <div className="relative space-y-3">
+                        {commentCards.map(c => (
+                          <div key={c.id} className="border border-gray-200 rounded-xl bg-white overflow-hidden">
+                            <div className="flex items-center gap-2 px-3.5 py-2 bg-gray-50 border-b border-gray-200">
+                              <Avatar name={c.author} />
+                              <span className="text-[12.5px] text-gray-500 min-w-0 truncate">
+                                <span className="font-semibold text-gray-800">{c.author || 'Unknown'}</span>
+                                {' '}{c.isOp ? 'opened' : 'commented'} {timeAgo(c.createdAt)}
+                              </span>
+                              <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                                {c.author && c.author === selected.author && (
+                                  <span className="text-[10.5px] font-semibold text-gray-500 border border-gray-300 rounded-full px-2 py-px">
+                                    Author
+                                  </span>
+                                )}
+                                {isAdmin && !c.isOp && (
+                                  <button
+                                    onClick={() => deleteComment(c.id)}
+                                    disabled={busy}
+                                    className="w-6 h-6 flex items-center justify-center rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+                                    title="Delete comment"
+                                  >
+                                    <Trash2 size={12.5} />
+                                  </button>
+                                )}
+                              </span>
+                            </div>
+                            <div className="px-3.5 py-3">
+                              <RichDisplay value={c.body} />
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Closed event */}
+                        {selected.status === 'resolved' && (
+                          <div className="flex items-center gap-2.5 pl-1.5 py-1">
+                            <span className="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center shrink-0">
+                              <CheckCircle2 size={14} />
+                            </span>
+                            <p className="text-[12.5px] text-gray-500">
+                              <span className="font-semibold text-gray-700">{selected.resolved_by || 'An admin'}</span>
+                              {' '}closed this {timeAgo(selected.resolved_at)}
+                            </p>
+                          </div>
+                        )}
                       </div>
-                      <RichDisplay value={c.body} />
                     </div>
-                  ))}
-                </div>
 
-                {/* Comment composer */}
-                <div className="border-t border-gray-100 pt-3">
-                  <RichTextArea
-                    key={`comment-${composerNonce}`}
-                    value={commentDraft}
-                    onChange={setCommentDraft}
-                    ticker="ISSUES"
-                    placeholder="Add a comment… (paste screenshots directly)"
-                    rows={3}
-                    enableTables
-                  />
-                  <div className="flex justify-end mt-2">
-                    <button
-                      onClick={postComment}
-                      disabled={isBodyEmpty(commentDraft) || posting}
-                      className="flex items-center gap-1.5 text-[12px] font-semibold px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {posting ? <Loader2 size={14} className="animate-spin" /> : <Send size={13} />}
-                      Comment
-                    </button>
+                    {/* Add a comment */}
+                    <h4 className="text-[15px] font-bold text-gray-900 mt-6 mb-2.5">Add a comment</h4>
+                    <div className="border border-gray-200 rounded-xl overflow-hidden">
+                      <div className="p-2">
+                        <RichTextArea
+                          key={`comment-${composerNonce}`}
+                          value={commentDraft}
+                          onChange={setCommentDraft}
+                          ticker="ISSUES"
+                          placeholder="Use the toolbar to format your comment…"
+                          rows={4}
+                          enableTables
+                        />
+                      </div>
+                      {/* Same mousedown guard as the new-issue buttons: keep the editor
+                          focused so its toolbar doesn't collapse and shift these buttons
+                          mid-click. */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-gray-100 bg-gray-50/70" onMouseDown={(e) => e.preventDefault()}>
+                        {isAdmin ? (
+                          <span className="text-[11.5px] text-gray-400">Paste screenshots directly into the editor</span>
+                        ) : (
+                          <span className="flex items-center gap-1.5 text-[11.5px] text-gray-400">
+                            <ShieldCheck size={12} /> Only an admin can close issues
+                          </span>
+                        )}
+                        <div className="flex items-center gap-2 ml-auto">
+                          {isAdmin && (
+                            selected.status === 'resolved' ? (
+                              <button
+                                onClick={() => setStatus('reopen')}
+                                disabled={busy}
+                                className="flex items-center gap-1.5 text-[12.5px] font-semibold px-3 py-1.5 rounded-lg border border-gray-300 text-emerald-700 bg-white hover:bg-emerald-50 disabled:opacity-50 transition-colors"
+                              >
+                                <RotateCcw size={13} /> Reopen issue
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => setStatus('resolve')}
+                                disabled={busy}
+                                className="flex items-center gap-1.5 text-[12.5px] font-semibold px-3 py-1.5 rounded-lg border border-gray-300 text-purple-700 bg-white hover:bg-purple-50 disabled:opacity-50 transition-colors"
+                              >
+                                <CheckCircle2 size={13} />
+                                {isBodyEmpty(commentDraft) ? 'Close issue' : 'Close with comment'}
+                              </button>
+                            )
+                          )}
+                          <button
+                            onClick={postComment}
+                            disabled={isBodyEmpty(commentDraft) || posting}
+                            className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          >
+                            {posting && <Loader2 size={13} className="animate-spin" />}
+                            Comment
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sidebar */}
+                  <div className="w-full lg:w-60 shrink-0">
+                    <div className="relative">
+                      <button
+                        onClick={() => setMenu(m => (m === 'edit-labels' ? null : 'edit-labels'))}
+                        className="w-full flex items-center justify-between text-[12px] font-bold text-gray-500 uppercase tracking-wide pb-2 border-b border-gray-200 hover:text-gray-800 transition-colors"
+                        title="Edit labels"
+                      >
+                        <span className="flex items-center gap-1.5"><Tag size={12} /> Labels</span>
+                        <ChevronDown size={13} />
+                      </button>
+                      <Menu open={menu === 'edit-labels'} onClose={() => setMenu(null)} title="Apply labels" align="left" width="w-full">
+                        {LABELS.map(l => {
+                          const active = (selected.labels || []).includes(l.name);
+                          return (
+                            <button
+                              key={l.name}
+                              onClick={() => toggleIssueLabel(l.name)}
+                              className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
+                            >
+                              <span className="w-3.5 shrink-0">{active && <Check size={13} className="text-emerald-600" />}</span>
+                              <span className={`w-3 h-3 rounded-full shrink-0 ${l.dot}`} />
+                              {l.name}
+                            </button>
+                          );
+                        })}
+                      </Menu>
+                      <div className="flex flex-wrap gap-1.5 py-2.5">
+                        {(selected.labels || []).length === 0
+                          ? <span className="text-[12px] text-gray-400">None yet</span>
+                          : (selected.labels || []).map(name => <LabelChip key={name} name={name} />)}
+                      </div>
+                    </div>
+
+                    {/* Triage lives in the Dev tab only — an issue opened from the
+                        Open/Closed tabs reads like a plain GitHub issue. `tab` is
+                        unchanged while a detail view is open, so it records where
+                        the issue was opened from. */}
+                    {isAdmin && effTab === 'dev' && (
+                      <div className="mt-4 pt-3 border-t border-gray-200">
+                        <p className="flex items-center gap-1.5 text-[12px] font-bold text-gray-500 uppercase tracking-wide mb-2">
+                          <Wrench size={12} /> Dev triage
+                        </p>
+                        <div className="relative mb-2">
+                          <PriorityPill
+                            value={selected.priority}
+                            onClick={() => setMenu(m => (m === 'detail-prio' ? null : 'detail-prio'))}
+                          />
+                          <Menu open={menu === 'detail-prio'} onClose={() => setMenu(null)} title="Priority" align="left" width="w-44">
+                            {PRIORITIES.map(p => (
+                              <button
+                                key={p.value}
+                                onClick={() => setPriority(selected, p.value)}
+                                className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
+                              >
+                                <span className="w-3.5 shrink-0">{selected.priority === p.value && <Check size={13} className="text-emerald-600" />}</span>
+                                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${p.dot}`} />
+                                {p.label}
+                              </button>
+                            ))}
+                            <button
+                              onClick={() => setPriority(selected, null)}
+                              className="w-full px-3 py-1.5 mt-1 border-t border-gray-100 text-left text-[12px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-50"
+                            >
+                              Clear priority
+                            </button>
+                          </Menu>
+                        </div>
+                        <textarea
+                          value={detailNotes}
+                          onChange={e => setDetailNotes(e.target.value)}
+                          onBlur={() => saveNote(selected, detailNotes)}
+                          rows={3}
+                          placeholder="Quick note on this issue (only admins see this)…"
+                          className="w-full text-[12px] text-gray-700 border border-gray-200 rounded-lg px-2.5 py-2 bg-gray-50 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none transition-all"
+                        />
+                      </div>
+                    )}
+
+                    {isAdmin && (
+                      <div className="mt-4 pt-3 border-t border-gray-200">
+                        {confirmDelete ? (
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={deleteIssue} disabled={busy} className="flex items-center gap-1 text-[12px] font-semibold px-3 py-1.5 rounded-lg text-white bg-red-500 hover:bg-red-600 disabled:opacity-50 transition-colors">
+                              <Check size={13} /> Confirm delete
+                            </button>
+                            <button onClick={() => setConfirmDelete(false)} className="text-[12px] font-semibold px-2.5 py-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setConfirmDelete(true)} className="flex items-center gap-1.5 text-[12px] font-semibold text-red-600 hover:text-red-700 transition-colors">
+                            <Trash2 size={13} /> Delete issue
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
