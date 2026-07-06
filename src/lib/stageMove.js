@@ -123,12 +123,33 @@ async function seedResearchWorkspace(ticker, stock) {
       },
     },
   };
+  // Guard the seed on the version we just read so it never clobbers a concurrent
+  // save of the same thesis (the write is a no-op-if-conflicting compare-and-swap;
+  // losing here is fine — the seed only fills an empty workspace).
   await fetch(`/api/thesis/${ticker}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(updated),
+    body: JSON.stringify({ ...updated, baseVersion: thesis?.version }),
   });
   return updated;
+}
+
+/**
+ * POST a full watchlist payload. On an optimistic-concurrency conflict the server
+ * returns 409 with the fresh watchlist (`{ conflict, current }`); otherwise
+ * `{ ok }`. Exported so every watchlist writer shares one conflict-aware path.
+ */
+export async function postWatchlist(payload) {
+  const res = await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (res.status === 409) {
+    const data = await res.json().catch(() => ({}));
+    return { conflict: true, current: data.current || null };
+  }
+  return { conflict: false, ok: res.ok };
 }
 
 /**
@@ -137,15 +158,21 @@ async function seedResearchWorkspace(ticker, stock) {
  * existing research). Callers should optimistically update their own state with the
  * returned `next` payload and refresh any thesis cache from the returned `thesis`.
  *
+ * Conflict-safe: if a teammate saved the watchlist first, we re-apply this single
+ * stage flip on top of their fresh state and retry — so the teammate's concurrent
+ * change (e.g. moving a different name) is preserved, not overwritten.
+ *
  * @returns {Promise<{ next: object, thesis: object|null }>}
  */
 export async function persistStageMove({ watchlistData, watchlistId, ticker, newStage }) {
-  const next = withStageChange(watchlistData, watchlistId, ticker, newStage);
-  await fetch('/api/watchlist', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(next),
-  });
+  let base = watchlistData;
+  let next = withStageChange(base, watchlistId, ticker, newStage);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await postWatchlist(next);
+    if (!res.conflict) break;
+    base = res.current || base;                                   // adopt teammate's fresh state…
+    next = withStageChange(base, watchlistId, ticker, newStage);  // …re-apply our flip on top
+  }
   let thesis = null;
   if (newStage === 'research') {
     const stock = (watchlistData?.watchlists || [])
@@ -188,14 +215,18 @@ export function withHoldingsBackfilled(watchlistData, holdings) {
 }
 
 // Persist the holdings backfill. Returns the next payload (so callers can update
-// their state/cache), or null when there was nothing to migrate.
+// their state/cache), or null when there was nothing to migrate. Conflict-safe:
+// re-derives the backfill against the server's fresh state on a version conflict.
 export async function persistHoldingsBackfill({ watchlistData, holdings }) {
-  const next = withHoldingsBackfilled(watchlistData, holdings);
+  let base = watchlistData;
+  let next = withHoldingsBackfilled(base, holdings);
   if (!next) return null;
-  await fetch('/api/watchlist', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(next),
-  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await postWatchlist(next);
+    if (!res.conflict) break;
+    base = res.current || base;
+    next = withHoldingsBackfilled(base, holdings);
+    if (!next) return base; // everything already present after adopting server state
+  }
   return next;
 }

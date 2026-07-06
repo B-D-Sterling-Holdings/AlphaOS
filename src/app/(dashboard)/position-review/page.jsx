@@ -24,7 +24,7 @@ import {
   fetchThesis,
   fetchTickerFundamentals,
   fetchWatchlist,
-  saveThesis as saveThesisData,
+  saveThesisReconciled,
 } from '@/lib/researchApi';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -473,14 +473,25 @@ export default function ResearchPage() {
     });
   }, [selectedTicker, loadTickerData]);
 
+  // Save with optimistic-concurrency reconciliation so a concurrent edit to the
+  // same thesis (another tab/analyst) is merged and retried, never silently
+  // overwritten. See saveThesisReconciled / mergeThesis.
   const saveThesis = useCallback(async (data) => {
     if (!selectedTicker || (!thesisDirty && !data)) return;
     setThesisSaving(true);
     try {
-      const result = await saveThesisData(selectedTicker, data || thesis);
-      if (result.success) {
+      const result = await saveThesisReconciled(selectedTicker, data || thesis);
+      if (result.ok) {
         setThesisDirty(false);
-        setToast({ message: 'Thesis saved', type: 'success' });
+        if (result.reloaded) setThesis(result.thesis);
+        else setThesis(prev => (prev ? { ...prev, version: result.thesis.version } : prev));
+        setToast({ message: result.reloaded ? 'Merged newer changes and saved' : 'Thesis saved', type: 'success' });
+      } else if (result.conflict) {
+        setThesis(result.thesis);
+        setThesisDirty(true);
+        setToast({ message: 'Loaded newer changes — review and save again', type: 'info' });
+      } else {
+        setToast({ message: 'Failed to save thesis', type: 'error' });
       }
     } catch {
       setToast({ message: 'Failed to save thesis', type: 'error' });

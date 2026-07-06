@@ -297,7 +297,11 @@ same day). The reminder goes to whoever should speak **next** (the opposite of
 the last message's role). The `sent` map (`{threadId: {msgId, at}}`) re-arms
 on new replies or the next cadence occurrence, and is persisted through the
 `set_draftreview_autonotify_sent` RPC so a concurrent thesis save can't be
-clobbered (and vice versa).
+clobbered. The reverse is covered too: that RPC bumps the thesis `version`, so a
+client save started before it is detected as a conflict rather than silently
+overwriting the `sent` map — part of the document-wide optimistic-concurrency
+scheme (version-guarded saves on theses/watchlists/valuation_models/app_settings;
+see `DATABASE_ARCHITECTURE.md` §11 and `src/lib/concurrency.js`).
 
 ### Macro-regime backtest
 

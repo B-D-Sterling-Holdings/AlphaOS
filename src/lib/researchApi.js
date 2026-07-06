@@ -1,4 +1,5 @@
 import { computeValuationModel } from './valuationModel.js';
+import { mergeThesis } from './thesisMerge.js';
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
 
@@ -27,13 +28,65 @@ export function stripTransientThesisFields(thesis) {
   return rest;
 }
 
-export async function saveThesis(ticker, thesis) {
+// One POST attempt. Pulls the optimistic-concurrency token (`version`) out of the
+// thesis and sends it as `baseVersion`; classifies the response as a conflict
+// (409) or a normal result.
+async function postThesis(ticker, thesis) {
+  const { version: baseVersion, ...payload } = stripTransientThesisFields(thesis) || {};
   const res = await fetch(`/api/thesis/${ticker}`, {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify(stripTransientThesisFields(thesis)),
+    body: JSON.stringify({ ...payload, baseVersion }),
   });
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    return { conflict: true, current: data.current || null, version: data.version };
+  }
+  return { conflict: false, ok: res.ok && data.success !== false, version: data.version, data };
+}
+
+/**
+ * Save a thesis with optimistic-concurrency reconciliation.
+ *
+ * On a version conflict (a teammate saved first) it merges the local edits on top
+ * of the fresh server document (see mergeThesis) and retries, so concurrent Draft
+ * & Review comments are never silently lost. Returns:
+ *   { ok: true,  thesis, reloaded }              — saved (reloaded=true if a merge happened)
+ *   { ok: false, conflict: true, thesis }        — merged a teammate's changes but
+ *                                                  couldn't win the race; caller shows
+ *                                                  the merged state for a manual re-save
+ *   { ok: false, error }                         — network/other failure
+ *
+ * `thesis` (when present) carries the up-to-date `version` for the next save.
+ */
+export async function saveThesisReconciled(ticker, localThesis, { retries = 1 } = {}) {
+  let attempt = localThesis;
+  for (let i = 0; ; i++) {
+    let res;
+    try {
+      res = await postThesis(ticker, attempt);
+    } catch (e) {
+      return { ok: false, error: e?.message || 'network error', thesis: attempt };
+    }
+    if (!res.conflict) {
+      if (!res.ok) return { ok: false, error: res.data?.error || 'save failed', thesis: attempt };
+      // Stamp the new version so the next save compares against the right row.
+      return { ok: true, thesis: { ...attempt, version: res.version }, reloaded: i > 0 };
+    }
+    // Conflict: fuse the teammate's server state under our in-flight edits.
+    attempt = mergeThesis(attempt, res.current);
+    if (i >= retries) {
+      return { ok: false, conflict: true, thesis: attempt };
+    }
+  }
+}
+
+// Back-compat thin wrapper (kept for any caller that only needs a fire-and-forget
+// save and inspects `.success`). Prefer saveThesisReconciled for interactive saves.
+export async function saveThesis(ticker, thesis) {
+  const res = await postThesis(ticker, thesis);
+  if (res.conflict) return { success: false, conflict: true, current: res.current };
+  return { success: res.ok, version: res.version, ...res.data };
 }
 
 export async function fetchQuotes(tickers) {

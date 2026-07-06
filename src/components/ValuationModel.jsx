@@ -231,6 +231,12 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
   const [tabs, setTabs] = useState([]);           // [{ id, name }]
   const [activeId, setActiveId] = useState(null);
   const stashRef = useRef({});                     // id -> inputs for inactive tabs
+  // Optimistic-concurrency token for this ticker's model row (see migration 030 /
+  // src/lib/concurrency.js). Sent as baseVersion on save; a mismatch means someone
+  // else saved first, so we reload their model instead of overwriting it. Bumping
+  // reloadNonce re-runs the load effect.
+  const versionRef = useRef(0);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [editingTabId, setEditingTabId] = useState(null);
   const [editingTabName, setEditingTabName] = useState('');
   const [confirmDeleteTabId, setConfirmDeleteTabId] = useState(null);
@@ -251,6 +257,7 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
     const seedFresh = () => {
       const id = uid();
       stashRef.current = {};
+      versionRef.current = 0; // no row yet → next save inserts
       setTabs([{ id, name: 'Base case' }]);
       setActiveId(id);
       setInputs({ ...makeDefaultInputs(ticker), sharePrice: livePrice || '' });
@@ -258,6 +265,7 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
     fetch(`/api/model/${ticker}`)
       .then(r => r.json())
       .then(result => {
+        versionRef.current = result.version;
         if (!result.exists || !result.inputs) { seedFresh(); return; }
         const raw = result.inputs;
         const list = Array.isArray(raw.__scenarios) ? raw.__scenarios.filter(s => s && s.id && s.data) : null;
@@ -281,7 +289,7 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
       .catch(() => seedFresh())
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticker]);
+  }, [ticker, reloadNonce]);
 
   // Always keep the model's share price on the live market price for THIS ticker. The
   // host page's livePrice (if any) seeds it instantly to avoid a flash, but we also
@@ -393,10 +401,24 @@ const ValuationModel = forwardRef(function ValuationModel({ ticker, livePrice, e
       const res = await fetch(`/api/model/${ticker}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inputs: { ...activeData, __scenarios: list, __activeId: activeIdVal } }),
+        body: JSON.stringify({
+          inputs: { ...activeData, __scenarios: list, __activeId: activeIdVal },
+          baseVersion: versionRef.current,
+        }),
       });
       const result = await res.json();
-      if (result.success) setDirty(false);
+      if (res.status === 409) {
+        // Someone saved this model first — don't clobber it. Adopt their version
+        // and reload their model (the local edit is surfaced by the value snapping
+        // to server state, never silently discarded on the server).
+        versionRef.current = result.version;
+        setReloadNonce(n => n + 1);
+        return;
+      }
+      if (result.success) {
+        versionRef.current = result.version ?? versionRef.current;
+        setDirty(false);
+      }
     } catch {} finally { setSaving(false); }
   }, [ticker]);
 

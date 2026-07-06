@@ -264,7 +264,8 @@ via `lib/appSettings.js`:
 |---|---|
 | `app_current_tenant() → uuid` | reads the JWT `tenant_id` claim; used by every policy and as the column DEFAULT. `GRANT EXECUTE` to authenticated + anon (policies call it). |
 | `set_updated_at()` + `set_updated_at_<table>` triggers | BEFORE UPDATE on every table with an `updated_at` column (the schema file re-creates them for new tables). |
-| `set_draftreview_autonotify_sent(p_tenant, p_ticker, p_sent)` | `jsonb_set` of exactly `underwriting → draftReview → autoNotify → sent` on one thesis, so the auto-notify cron can persist its dedup map **without clobbering a concurrent full-thesis save**. `service_role` execute only. |
+| `bump_version()` + `bump_version_<table>` triggers | BEFORE UPDATE on every table with a `version` column (`theses`, `watchlists`, `valuation_models`, `app_settings`), incrementing it on each update. This is the optimistic-concurrency counter — see §11. |
+| `set_draftreview_autonotify_sent(p_tenant, p_ticker, p_sent)` | `jsonb_set` of exactly `underwriting → draftReview → autoNotify → sent` on one thesis, so the auto-notify cron can persist its dedup map **without clobbering a concurrent full-thesis save**. `service_role` execute only. (The `bump_version` trigger also advances the thesis version on this write, so a client holding a stale version is detected — see §11.) |
 
 ---
 
@@ -393,8 +394,54 @@ Everything else is kept indefinitely; there are no other TTLs.
 4. If it has `updated_at`, include the `set_updated_at` trigger in your
    migration (copy an existing table's block, or re-run `003`'s DO loop, which
    attaches it to any table that has the column).
-5. Record the change in `scripts/migrations/README.md`. (There is no
+5. If it stores **document-shaped state read/written whole** (like a thesis or a
+   watchlist), give it a `version integer NOT NULL DEFAULT 1` column so the
+   `bump_version` trigger picks it up and its saves can be version-guarded (§11);
+   write through `versionedWrite` (`src/lib/concurrency.js`).
+6. Record the change in `scripts/migrations/README.md`. (There is no
    separate schema file to mirror into — the migrations are the source of
    truth; see §3.)
-6. If the table's API should be feature-gated, map its route prefix in
+7. If the table's API should be feature-gated, map its route prefix in
    `API_FEATURES` (`src/lib/features.js`) — see `AUTH_ARCHITECTURE.md` §5.
+
+---
+
+## 11. Optimistic concurrency (no lost updates)
+
+The document-shaped tables — `theses`, `watchlists`, `valuation_models`, and the
+single-blob `app_settings` rows (e.g. `fund-accounting-state`) — are read whole
+into the browser, edited, and written back whole. A blind upsert is
+last-write-wins: two people (or one person in two tabs) editing the same row
+silently overwrite each other. These rows are guarded by **optimistic
+concurrency control (OCC)** instead.
+
+- **The token.** Each such table carries a monotonic **`version integer`**,
+  advanced on every UPDATE by the `bump_version` trigger (§5). Every document GET
+  returns the current `version`; the client echoes it back on save.
+- **Compare-and-swap.** A save is an `UPDATE … WHERE <key> AND version = <base>`.
+  Postgres row locking makes it atomic, so of two saves that both started from
+  version *N*, exactly one lands (row → *N+1*) and the other matches **zero
+  rows**. The loser is reported as a conflict (HTTP **409** carrying the current
+  server row) rather than being allowed to clobber. All of this is centralized in
+  **`versionedWrite`** (`src/lib/concurrency.js`); routes translate a
+  `VersionConflictError` into the 409.
+- **Client reconciliation.** On a 409 the client does **not** silently lose work:
+  - *Theses* (the collaborative Draft & Review / Research surface) merge the local
+    edits on top of the fresh server document and retry — Draft & Review comment
+    threads and their message chains, plus todos and news, are **unioned by id**,
+    so two reviewers commenting at once both survive (`mergeThesis` in
+    `src/lib/thesisMerge.js`). A genuine same-field edit is last-write-wins **but
+    visible**.
+  - *Watchlist stage moves* re-apply the single stage flip onto the server's fresh
+    state and retry (`persistStageMove`), so a concurrent move of a different name
+    is preserved. Direct watchlist edits reload the latest and prompt a redo.
+  - *Accounting / valuation* adopt the server version and reload the latest rather
+    than overwrite it.
+- **Row lifecycle.** New rows start at `version = 1`; the client represents "no row
+  yet" as base **0**, which routes to an INSERT (a losing INSERT trips the
+  per-tenant unique key and is reported as a conflict, so a create race can't lose
+  data either).
+- **Back-compatible rollout.** `versionedWrite` treats a missing base version
+  (`undefined`) as the legacy unguarded upsert, and every document GET selects
+  `*` (never a bare `version` column), so the app behaves exactly as before until
+  the `version` columns exist and then upgrades itself with no hard cutover.

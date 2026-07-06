@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { versionedWrite, versionOf, VersionConflictError } from './concurrency';
 
 const DEFAULT_WATCHLIST = {
   watchlists: [
@@ -34,6 +35,7 @@ export async function loadWatchlist() {
       id: w.id,
       name: w.name,
       stocks: orderStocks(w.stocks || []),
+      version: versionOf(w), // optimistic-concurrency token (migration 030)
     })),
     activeWatchlistId: setting?.value || 'default',
   };
@@ -54,20 +56,30 @@ export async function saveWatchlist(data) {
     await supabase.from('watchlists').delete().in('id', toDelete);
   }
 
-  // Upsert all watchlists
-  if (watchlists.length > 0) {
-    const { error } = await supabase.from('watchlists').upsert(
-      watchlists.map(w => ({
-        id: w.id,
-        name: w.name,
-        stocks: orderStocks(w.stocks || []),
-      })),
-      { onConflict: 'tenant_id,id' }
-    );
-    if (error) throw new Error(error.message);
+  // Upsert each list under its own optimistic-concurrency guard. Two people
+  // editing the same watchlist (or one in two tabs) would otherwise clobber each
+  // other's stocks array. `w.version` is the token the client loaded; a stale one
+  // trips VersionConflictError, which we re-raise carrying the fresh full state so
+  // the route can hand it back (409) for the caller to reconcile. New lists have
+  // no version (undefined) and take the plain-insert/legacy path.
+  for (const w of watchlists) {
+    try {
+      await versionedWrite(supabase, 'watchlists', {
+        match: { id: w.id },
+        values: { name: w.name, stocks: orderStocks(w.stocks || []) },
+        baseVersion: w.version,
+        onConflict: 'tenant_id,id',
+      });
+    } catch (e) {
+      if (e instanceof VersionConflictError) {
+        throw new VersionConflictError(await loadWatchlist());
+      }
+      throw e;
+    }
   }
 
-  // Upsert activeWatchlistId
+  // The active-list pointer is a single scalar with no real contention — a plain
+  // upsert is fine (nobody loses stock data if it races).
   await supabase.from('app_settings').upsert({
     key: 'activeWatchlistId',
     value: activeWatchlistId || 'default',

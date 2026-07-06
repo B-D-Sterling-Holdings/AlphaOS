@@ -1,4 +1,5 @@
 import 'server-only';
+import { versionedWrite, versionOf } from './concurrency';
 
 /*
   Per-tenant key/value config: the `app_settings` table, one row per
@@ -64,4 +65,43 @@ export async function writeSetting(supabase, key, value) {
     .upsert({ key, value }, { onConflict: 'tenant_id,key' });
   if (error) throw new Error(error.message);
   return value;
+}
+
+/**
+ * Read a value together with its optimistic-concurrency version (see migration
+ * 030 / src/lib/concurrency.js). Use this for the big single-blob settings rows
+ * (e.g. fund-accounting-state) so the client can save with a version guard.
+ * Returns { value, version } — version is a number (post-migration), 0 when the
+ * row is absent, or undefined for a pre-migration row.
+ */
+export async function readSettingWithVersion(supabase, key, fallback = null) {
+  // select('*') (not 'value, version') so this tolerates the pre-migration schema
+  // where the `version` column doesn't exist yet — versionOf() then returns
+  // undefined and the client falls back to legacy unguarded saves.
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('*')
+    .eq('key', key)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return { value: fallback, version: 0 }; // no row yet
+    throw new Error(error.message);
+  }
+  return { value: coerce(data?.value, fallback), version: versionOf(data) };
+}
+
+/**
+ * Version-guarded upsert of one app_settings value. Throws VersionConflictError
+ * when `baseVersion` is stale (a concurrent writer moved the row on). Returns
+ * { value, version }.
+ */
+export async function writeSettingWithVersion(supabase, key, value, baseVersion) {
+  const row = await versionedWrite(supabase, 'app_settings', {
+    match: { key },
+    values: { value },
+    baseVersion,
+    onConflict: 'tenant_id,key',
+  });
+  return { value, version: versionOf(row) };
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { versionedWrite, versionOf, VersionConflictError } from '@/lib/concurrency';
 
 const DEFAULT_THESIS = {
   coreReasons: [{ title: '', description: '' }, { title: '', description: '' }, { title: '', description: '' }],
@@ -41,6 +42,28 @@ function normalizeAssumptions(val) {
   return val ?? '';
 }
 
+// Map a DB row (or null) into the client thesis shape. `version` drives optimistic
+// concurrency: a real number post-migration, 0 when there's no row, and omitted
+// (undefined) for a pre-migration row so the client falls back to legacy saves.
+// See src/lib/concurrency.js.
+function shapeThesis(upper, data) {
+  if (!data) {
+    return { ticker: upper, ...DEFAULT_THESIS, version: 0 };
+  }
+  return {
+    ticker: upper,
+    ...DEFAULT_THESIS,
+    coreReasons: data.core_reasons || DEFAULT_THESIS.coreReasons,
+    assumptions: normalizeAssumptions(data.assumptions),
+    valuation: data.valuation || '',
+    underwriting: { ...DEFAULT_THESIS.underwriting, ...(data.underwriting || {}) },
+    newsUpdates: data.news_updates || [],
+    todos: data.todos || [],
+    notes: data.notes || { links: [], tabs: [{ id: '1', title: 'General', content: [] }] },
+    version: versionOf(data),
+  };
+}
+
 export async function GET(request, { params }) {
   const supabase = await getDb();
   const { ticker } = await params;
@@ -53,20 +76,10 @@ export async function GET(request, { params }) {
     .single();
 
   if (error || !data) {
-    return NextResponse.json({ ticker: upper, ...DEFAULT_THESIS });
+    return NextResponse.json(shapeThesis(upper, null));
   }
 
-  return NextResponse.json({
-    ticker: upper,
-    ...DEFAULT_THESIS,
-    coreReasons: data.core_reasons || DEFAULT_THESIS.coreReasons,
-    assumptions: normalizeAssumptions(data.assumptions),
-    valuation: data.valuation || '',
-    underwriting: { ...DEFAULT_THESIS.underwriting, ...(data.underwriting || {}) },
-    newsUpdates: data.news_updates || [],
-    todos: data.todos || [],
-    notes: data.notes || { links: [], tabs: [{ id: '1', title: 'General', content: [] }] },
-  });
+  return NextResponse.json(shapeThesis(upper, data));
 }
 
 export async function POST(request, { params }) {
@@ -76,8 +89,10 @@ export async function POST(request, { params }) {
 
   try {
     const body = await request.json();
-    const row = {
-      ticker: upper,
+    // `baseVersion` is the optimistic-concurrency token (see src/lib/concurrency.js).
+    // Everything else is the thesis document itself.
+    const { baseVersion } = body;
+    const values = {
       core_reasons: body.coreReasons || DEFAULT_THESIS.coreReasons,
       assumptions: normalizeAssumptions(body.assumptions),
       valuation: body.valuation || '',
@@ -85,23 +100,28 @@ export async function POST(request, { params }) {
       news_updates: body.newsUpdates || [],
       todos: body.todos || [],
       notes: body.notes || { links: [], tabs: [{ id: '1', title: 'General', content: [] }] },
-      updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase.from('theses').upsert(row, { onConflict: 'tenant_id,ticker' });
-    if (error) throw new Error(error.message);
+    let row;
+    try {
+      row = await versionedWrite(supabase, 'theses', {
+        match: { ticker: upper },
+        values,
+        baseVersion,
+        onConflict: 'tenant_id,ticker',
+      });
+    } catch (e) {
+      if (e instanceof VersionConflictError) {
+        // Hand the client the fresh server thesis so it can merge its in-flight
+        // edits on top and retry, rather than silently overwriting a teammate.
+        const current = shapeThesis(upper, e.current);
+        return NextResponse.json({ conflict: true, current, version: current.version }, { status: 409 });
+      }
+      throw e;
+    }
 
-    return NextResponse.json({
-      success: true,
-      ticker: upper,
-      coreReasons: row.core_reasons,
-      assumptions: normalizeAssumptions(row.assumptions),
-      valuation: row.valuation,
-      underwriting: row.underwriting,
-      newsUpdates: row.news_updates,
-      todos: row.todos,
-      notes: row.notes,
-    });
+    const shaped = shapeThesis(upper, row);
+    return NextResponse.json({ success: true, ...shaped });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { getValuationExpectedReturn } from '@/lib/valuationModel';
 import {
-  normalizeStage, persistStageMove, withStageChange, writeWatchlistCache,
+  normalizeStage, persistStageMove, postWatchlist, withStageChange, writeWatchlistCache,
 } from '@/lib/stageMove';
 import { computeResearchProgress, draftReviewStatus, checklistStatus } from '@/lib/researchProgress';
 import { useCache } from '@/lib/CacheContext';
@@ -654,17 +654,30 @@ export default function StrategicHubPage() {
   // This is the ONE destructive action; everywhere else only flips `stage`.
   const deleteName = useCallback(async (ticker, watchlistId) => {
     if (!watchlistData) return;
-    const next = {
-      ...watchlistData,
-      watchlists: watchlistData.watchlists.map(w =>
+    const removeFrom = (data) => ({
+      ...data,
+      watchlists: (data.watchlists || []).map(w =>
         w.id === watchlistId ? { ...w, stocks: (w.stocks || []).filter(s => s.ticker !== ticker) } : w
       ),
-    };
+    });
+    let next = removeFrom(watchlistData);
     setWatchlistData(next);
     writeWatchlistCache(cache, next);
     setTheses(prev => { const n = { ...prev }; delete n[ticker]; cache.set('workflow_theses', n); return n; });
+    // Persist the removal under the optimistic-concurrency guard: if a teammate
+    // changed the watchlist first, re-apply the removal to their fresh state and
+    // retry, so the delete lands without clobbering their concurrent edit.
+    const persistRemoval = async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await postWatchlist(next);
+        if (!res.conflict) return;
+        next = removeFrom(res.current || watchlistData);
+        setWatchlistData(next);
+        writeWatchlistCache(cache, next);
+      }
+    };
     await Promise.all([
-      fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) }).catch(() => {}),
+      persistRemoval().catch(() => {}),
       fetch(`/api/thesis/${ticker}`, { method: 'DELETE' }).catch(() => {}),
       fetch('/api/strategic-notes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticker }) }).catch(() => {}),
     ]);
