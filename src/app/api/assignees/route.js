@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiBadRequest, apiError, apiJson, withApiError } from '@/lib/apiResponses';
 
 const TABLE = 'app_settings';
 
@@ -14,7 +14,7 @@ export async function GET(req) {
   const boardId = searchParams.get('board_id') || 'default';
   const key = getKey(boardId);
 
-  try {
+  return withApiError(async () => {
     const { data, error } = await supabase
       .from(TABLE)
       .select('*')
@@ -22,10 +22,10 @@ export async function GET(req) {
       .single();
 
     if (error && error.code === 'PGRST116') {
-      return NextResponse.json({ assignees: [] });
+      return apiJson({ assignees: [] });
     }
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return apiError(error);
     }
 
     let assignees = [];
@@ -35,21 +35,19 @@ export async function GET(req) {
       assignees = [];
     }
 
-    return NextResponse.json({ assignees: Array.isArray(assignees) ? assignees : [] });
-  } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
+    return apiJson({ assignees: Array.isArray(assignees) ? assignees : [] });
+  });
 }
 
 // PUT - save assignees list for a board
 export async function PUT(req) {
   const supabase = await getDb();
-  try {
+  return withApiError(async () => {
     const { assignees, board_id } = await req.json();
     const key = getKey(board_id || 'default');
 
     if (!Array.isArray(assignees)) {
-      return NextResponse.json({ error: 'assignees must be an array' }, { status: 400 });
+      return apiBadRequest('assignees must be an array');
     }
 
     const row = {
@@ -64,7 +62,7 @@ export async function PUT(req) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return apiError(error);
     }
 
     let saved = [];
@@ -74,8 +72,6 @@ export async function PUT(req) {
       saved = assignees;
     }
 
-    return NextResponse.json({ assignees: saved });
-  } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
+    return apiJson({ assignees: saved });
+  });
 }

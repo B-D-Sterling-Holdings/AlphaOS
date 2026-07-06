@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiBadRequest, apiError, apiJson, apiOk, withApiError } from '@/lib/apiResponses';
 
 // Key/value row in app_settings (RLS-scoped to the caller's tenant via getDb).
 const STORAGE_KEY = 'fund-accounting-state';
@@ -15,17 +15,17 @@ export async function GET() {
 
   // PostgREST returns an error when .single() finds no row — treat that as empty.
   if (error && error.code !== 'PGRST116') {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return apiError(error);
   }
-  return NextResponse.json({ value: data?.value ?? null });
+  return apiJson({ value: data?.value ?? null });
 }
 
 // PUT { value: string } -> upsert
 export async function PUT(request) {
-  try {
+  return withApiError(async () => {
     const { value } = await request.json();
     if (typeof value !== 'string') {
-      return NextResponse.json({ error: 'value (string) is required' }, { status: 400 });
+      return apiBadRequest('value (string) is required');
     }
 
     const supabase = await getDb();
@@ -34,8 +34,6 @@ export async function PUT(request) {
       .upsert({ key: STORAGE_KEY, value }, { onConflict: 'tenant_id,key' });
 
     if (error) throw new Error(error.message);
-    return NextResponse.json({ ok: true });
-  } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
+    return apiOk();
+  });
 }

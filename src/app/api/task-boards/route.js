@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiJson, apiOk, withApiError } from '@/lib/apiResponses';
 
 const TABLE = 'app_settings';
 const BOARDS_KEY = 'task_boards';
@@ -33,24 +33,22 @@ async function setSetting(key, value) {
 
 // GET — return { boards: [...], activeBoardId: '...' }
 export async function GET() {
-  try {
+  return withApiError(async () => {
     const [boards, activeId] = await Promise.all([
       getSetting(BOARDS_KEY),
       getSetting(ACTIVE_KEY),
     ]);
 
-    return NextResponse.json({
+    return apiJson({
       boards: Array.isArray(boards) && boards.length > 0 ? boards : DEFAULT_BOARDS,
       activeBoardId: activeId || 'default',
     });
-  } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
+  });
 }
 
 // PUT — save boards list and/or active board
 export async function PUT(req) {
-  try {
+  return withApiError(async () => {
     const { boards, activeBoardId } = await req.json();
 
     const promises = [];
@@ -58,8 +56,6 @@ export async function PUT(req) {
     if (activeBoardId !== undefined) promises.push(setSetting(ACTIVE_KEY, activeBoardId));
     await Promise.all(promises);
 
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
+    return apiOk();
+  });
 }

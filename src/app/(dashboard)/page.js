@@ -152,10 +152,12 @@ export default function DashboardPage() {
         .then(r => r.json())
         .then(d => {
           setPortfolio(d);
-          // Fetch quotes for holdings (quotes is a common, ungated route)
+          // Fetch quotes for holdings (quotes is a common, ungated route).
+          // basic=1: the pie + movers only need price/day-change, so skip the
+          // per-ticker fundamentals fetch — it's the slowest hop on this page.
           const tickers = d?.holdings?.map(h => h.ticker).join(',');
           if (tickers) {
-            fetch(`/api/quotes?tickers=${tickers}`)
+            fetch(`/api/quotes?tickers=${tickers}&basic=1`)
               .then(r => r.json())
               .then(q => setQuotes(q.quotes || q))
               .catch(() => {});

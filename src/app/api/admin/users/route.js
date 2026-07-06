@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/db';
 import { canManageUsers } from '@/lib/roles';
+import { apiBadRequest, apiError, apiJson, apiOk } from '@/lib/apiResponses';
 import {
   listUsers,
   createUser,
@@ -49,7 +49,7 @@ async function requireOwnedSubUser(session, id) {
 
 export async function GET() {
   const gate = await requireManager();
-  if (gate.error) return NextResponse.json({ error: gate.error }, { status: gate.status });
+  if (gate.error) return apiError(gate.error, gate.status);
 
   try {
     const users = gate.isGlobalAdmin
@@ -61,15 +61,15 @@ export async function GET() {
       const cio = await getBuiltinCioUser();
       if (cio) users.push(cio);
     }
-    return NextResponse.json({ users });
+    return apiJson({ users });
   } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return apiError(e);
   }
 }
 
 export async function POST(request) {
   const gate = await requireManager();
-  if (gate.error) return NextResponse.json({ error: gate.error }, { status: gate.status });
+  if (gate.error) return apiError(gate.error, gate.status);
 
   try {
     const { username, password, role, tenantId } = await request.json();
@@ -99,15 +99,15 @@ export async function POST(request) {
         disabledFeatures: inherited,
       });
     }
-    return NextResponse.json({ ok: true, user });
+    return apiJson({ ok: true, user });
   } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 400 });
+    return apiError(e, 400);
   }
 }
 
 export async function PATCH(request) {
   const gate = await requireManager();
-  if (gate.error) return NextResponse.json({ error: gate.error }, { status: gate.status });
+  if (gate.error) return apiError(gate.error, gate.status);
 
   try {
     const { id, isActive, disabledFeatures, password, role, username, tenantId, name } = await request.json();
@@ -115,48 +115,45 @@ export async function PATCH(request) {
     // Workspace rename (display name only). Admin-only.
     if (tenantId !== undefined) {
       if (!gate.isGlobalAdmin) {
-        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+        return apiError('Admin access required', 403);
       }
       const stored = await renameWorkspace(tenantId, name);
-      return NextResponse.json({ ok: true, name: stored });
+      return apiJson({ ok: true, name: stored });
     }
 
-    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    if (!id) return apiBadRequest('id is required');
     if (id === 'cio-admin') {
-      return NextResponse.json(
-        { error: 'The built-in CIO login is managed via environment variables' },
-        { status: 400 }
-      );
+      return apiBadRequest('The built-in CIO login is managed via environment variables');
     }
 
     if (!gate.isGlobalAdmin) {
       const scope = await requireOwnedSubUser(gate.session, id);
-      if (scope.error) return NextResponse.json({ error: scope.error }, { status: scope.status });
+      if (scope.error) return apiError(scope.error, scope.status);
     }
 
     // Promote to / demote from workspace owner. Admin-only — owners cannot
     // mint other owners.
     if (role !== undefined) {
       if (!gate.isGlobalAdmin) {
-        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+        return apiError('Admin access required', 403);
       }
       await setUserRole(id, role);
-      return NextResponse.json({ ok: true });
+      return apiOk();
     }
 
     // Login rename. Admin-only.
     if (username !== undefined) {
       if (!gate.isGlobalAdmin) {
-        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+        return apiError('Admin access required', 403);
       }
       const stored = await setUsername(id, username);
-      return NextResponse.json({ ok: true, username: stored });
+      return apiJson({ ok: true, username: stored });
     }
 
     // Password reset. Owners are already scoped above; admins may reset anyone.
     if (password !== undefined) {
       await setUserPassword(id, password);
-      return NextResponse.json({ ok: true });
+      return apiOk();
     }
 
     // Feature access update (the "guard" toggles). Separate from active/disabled.
@@ -169,22 +166,22 @@ export async function PATCH(request) {
         requested = [...new Set([...requested, ...ownerDisabled])];
       }
       const stored = await setUserFeatures(id, requested);
-      return NextResponse.json({ ok: true, disabledFeatures: stored });
+      return apiJson({ ok: true, disabledFeatures: stored });
     }
 
     if (id === gate.session.userId && isActive === false) {
-      return NextResponse.json({ error: 'You cannot disable your own account' }, { status: 400 });
+      return apiBadRequest('You cannot disable your own account');
     }
     await setUserActive(id, isActive);
-    return NextResponse.json({ ok: true });
+    return apiOk();
   } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return apiError(e);
   }
 }
 
 export async function DELETE(request) {
   const gate = await requireManager();
-  if (gate.error) return NextResponse.json({ error: gate.error }, { status: gate.status });
+  if (gate.error) return apiError(gate.error, gate.status);
 
   try {
     const { id, tenantId } = await request.json();
@@ -193,32 +190,29 @@ export async function DELETE(request) {
     // login in it. Global-admin only, and never the admin's own tenant.
     if (tenantId) {
       if (!gate.isGlobalAdmin) {
-        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+        return apiError('Admin access required', 403);
       }
       if (tenantId === gate.session.tenantId) {
-        return NextResponse.json({ error: 'You cannot delete your own workspace' }, { status: 400 });
+        return apiBadRequest('You cannot delete your own workspace');
       }
       await deleteWorkspace(tenantId);
-      return NextResponse.json({ ok: true, workspaceDeleted: true });
+      return apiJson({ ok: true, workspaceDeleted: true });
     }
 
-    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    if (!id) return apiBadRequest('id is required');
     if (id === 'cio-admin') {
-      return NextResponse.json(
-        { error: 'The built-in CIO login is managed via environment variables' },
-        { status: 400 }
-      );
+      return apiBadRequest('The built-in CIO login is managed via environment variables');
     }
     if (id === gate.session.userId) {
-      return NextResponse.json({ error: 'You cannot delete your own account' }, { status: 400 });
+      return apiBadRequest('You cannot delete your own account');
     }
     if (!gate.isGlobalAdmin) {
       const scope = await requireOwnedSubUser(gate.session, id);
-      if (scope.error) return NextResponse.json({ error: scope.error }, { status: scope.status });
+      if (scope.error) return apiError(scope.error, scope.status);
     }
     const { workspaceDeleted } = await deleteUser(id);
-    return NextResponse.json({ ok: true, workspaceDeleted });
+    return apiJson({ ok: true, workspaceDeleted });
   } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 400 });
+    return apiError(e, 400);
   }
 }

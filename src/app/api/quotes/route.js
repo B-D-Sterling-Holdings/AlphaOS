@@ -10,7 +10,10 @@ export async function GET(request) {
     }
 
     const tickerList = tickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
-    const quotes = await fetchQuotes(tickerList);
+    // `basic=1` skips the per-ticker fundamentals fetch for callers that only
+    // render price/day-change (e.g. the dashboard holdings tiles) — much faster.
+    const basic = searchParams.get('basic') === '1';
+    const quotes = await fetchQuotes(tickerList, { basic });
 
     return NextResponse.json({ quotes });
   } catch (e) {

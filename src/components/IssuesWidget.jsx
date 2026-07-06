@@ -8,6 +8,26 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import RichTextArea from '@/components/RichTextArea';
+import {
+  EMPTY_ISSUE_BODY,
+  ISSUE_COMPLEXITIES,
+  ISSUE_LABELS,
+  ISSUE_PRIORITIES,
+  ISSUE_SORTS,
+  blocksToHtml,
+  countOpenIssues,
+  createIssueRecord,
+  deleteIssueById,
+  deleteIssueCommentById,
+  fetchIssues,
+  filterIssues,
+  findIssueSortSwap,
+  getVisibleIssues,
+  isBodyEmpty,
+  labelDef,
+  mutateIssue,
+  timeAgo,
+} from '@/lib/issues';
 
 /**
  * IssuesWidget — an in-app issue tracker modeled on GitHub Issues.
@@ -25,83 +45,6 @@ import RichTextArea from '@/components/RichTextArea';
  * sort — is hidden too). Only an admin (the CIO login) sees everyone's issues
  * and Close / Reopen / Delete.
  */
-
-const EMPTY_BODY = [{ type: 'text', value: '' }];
-
-// Fixed label palette (GitHub-default-ish names, app-native light chips). Issues
-// only store label names; colors live here.
-const LABELS = [
-  { name: 'bug',           dot: 'bg-red-500',    chip: 'bg-red-50 text-red-700 ring-red-200' },
-  { name: 'enhancement',   dot: 'bg-sky-500',    chip: 'bg-sky-50 text-sky-700 ring-sky-200' },
-  { name: 'question',      dot: 'bg-violet-500', chip: 'bg-violet-50 text-violet-700 ring-violet-200' },
-  { name: 'documentation', dot: 'bg-blue-500',   chip: 'bg-blue-50 text-blue-700 ring-blue-200' },
-  { name: 'ui/ux',         dot: 'bg-pink-500',   chip: 'bg-pink-50 text-pink-700 ring-pink-200' },
-  { name: 'performance',   dot: 'bg-amber-500',  chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
-];
-const labelDef = (name) => LABELS.find(l => l.name === name)
-  || { name, dot: 'bg-gray-400', chip: 'bg-gray-100 text-gray-600 ring-gray-300' };
-
-// Admin triage priorities for the Dev tab (issues.priority: 1..4, null = unset).
-const PRIORITIES = [
-  { value: 1, label: 'Urgent', dot: 'bg-red-500',    chip: 'bg-red-50 text-red-700 ring-red-200' },
-  { value: 2, label: 'High',   dot: 'bg-orange-500', chip: 'bg-orange-50 text-orange-700 ring-orange-200' },
-  { value: 3, label: 'Medium', dot: 'bg-amber-400',  chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
-  { value: 4, label: 'Low',    dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
-];
-
-// Admin triage complexity — how hard the fix looks (issues.complexity: 1..5,
-// null = unset). Red→green reads as effort: very hard is a project, trivial
-// is a quick win. Listed hardest-first — that's the dropdown's display order.
-const COMPLEXITIES = [
-  { value: 5, label: 'Very hard', dot: 'bg-red-500',     chip: 'bg-red-50 text-red-700 ring-red-200' },
-  { value: 4, label: 'Hard',      dot: 'bg-orange-500',  chip: 'bg-orange-50 text-orange-700 ring-orange-200' },
-  { value: 3, label: 'Moderate',  dot: 'bg-yellow-400',  chip: 'bg-yellow-50 text-yellow-800 ring-yellow-200' },
-  { value: 2, label: 'Easy',      dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
-  { value: 1, label: 'Trivial',   dot: 'bg-sky-500',     chip: 'bg-sky-50 text-sky-700 ring-sky-200' },
-];
-
-const SORTS = [
-  { key: 'newest',           label: 'Newest' },
-  { key: 'oldest',           label: 'Oldest' },
-  { key: 'most-commented',   label: 'Most commented' },
-  { key: 'least-commented',  label: 'Least commented' },
-  { key: 'recently-updated', label: 'Recently updated' },
-];
-
-// Merge stored RichTextArea blocks into display HTML (same shape RichTextArea emits:
-// text blocks concatenated with <br>, legacy image blocks folded in as <img>).
-function blocksToHtml(value) {
-  const blocks = Array.isArray(value) ? value : [{ type: 'text', value: value || '' }];
-  return blocks
-    .map(b => (b?.type === 'image'
-      ? `<img src="${String(b.url || '').replace(/"/g, '&quot;')}" class="rt-inline-img" />`
-      : (b?.value || '')))
-    .filter(frag => frag && frag.trim())
-    .join('<br>');
-}
-
-function isBodyEmpty(value) {
-  if (Array.isArray(value)) {
-    return !value.some(block => block?.type === 'image'
-      || (block?.value && block.value.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim()));
-  }
-  return !(typeof value === 'string' && value.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim());
-}
-
-// GitHub-style relative timestamps: "5m ago", "3h ago", "2d ago", then "on Mar 5".
-function timeAgo(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const secs = Math.max(0, (Date.now() - d.getTime()) / 1000);
-  if (secs < 60) return 'just now';
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  if (secs < 30 * 86400) return `${Math.floor(secs / 86400)}d ago`;
-  const opts = { month: 'short', day: 'numeric' };
-  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
-  return `on ${d.toLocaleDateString(undefined, opts)}`;
-}
 
 // Read-only render of stored rich-text (issue body / comment). The scoped styles
 // in the component cover images, tables and lists so content looks the same as in
@@ -226,12 +169,12 @@ export default function IssuesWidget() {
 
   // New-issue composer
   const [newTitle, setNewTitle] = useState('');
-  const [newBody, setNewBody] = useState(EMPTY_BODY);
+  const [newBody, setNewBody] = useState(EMPTY_ISSUE_BODY);
   const [newLabels, setNewLabels] = useState([]);
   const [creating, setCreating] = useState(false);
 
   // Comment composer (in detail view)
-  const [commentDraft, setCommentDraft] = useState(EMPTY_BODY);
+  const [commentDraft, setCommentDraft] = useState(EMPTY_ISSUE_BODY);
   const [composerNonce, setComposerNonce] = useState(0);
   const [posting, setPosting] = useState(false);
 
@@ -249,9 +192,7 @@ export default function IssuesWidget() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/issues');
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to load issues');
-      setIssues(await res.json());
+      setIssues(await fetchIssues());
     } catch (e) {
       setError(e.message);
     } finally {
@@ -288,7 +229,7 @@ export default function IssuesWidget() {
   }, [open, menu, view]);
 
   const selected = useMemo(() => issues.find(i => i.id === selectedId) || null, [issues, selectedId]);
-  const totalOpen = useMemo(() => issues.filter(i => i.status !== 'resolved').length, [issues]);
+  const totalOpen = useMemo(() => countOpenIssues(issues), [issues]);
 
   // Keep the detail-sidebar notes box in sync with the selected issue (but don't
   // clobber while the admin is typing — only reset when the selection changes).
@@ -302,55 +243,24 @@ export default function IssuesWidget() {
 
   // Search + label filter run before the Open/Closed split, so the tab counts
   // reflect the current filters (as on GitHub).
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return issues.filter(i => {
-      if (labelFilter.length && !labelFilter.every(l => (i.labels || []).includes(l))) return false;
-      if (!q) return true;
-      const haystack = [
-        i.title || '',
-        i.author || '',
-        i.number ? `#${i.number}` : '',
-        blocksToHtml(i.body).replace(/<[^>]+>/g, ' '),
-      ].join(' ').toLowerCase();
-      return haystack.includes(q);
-    });
-  }, [issues, query, labelFilter]);
+  const filtered = useMemo(
+    () => filterIssues(issues, { query, labelFilter }),
+    [issues, query, labelFilter],
+  );
 
-  const openCount = useMemo(() => filtered.filter(i => i.status !== 'resolved').length, [filtered]);
+  const openCount = useMemo(() => countOpenIssues(filtered), [filtered]);
   const closedCount = filtered.length - openCount;
 
-  const visible = useMemo(() => {
-    // Dev tab: open issues only (closed = done, nothing left to triage),
-    // highest priority first, unprioritized at the bottom; inside a priority
-    // band the admin's manual order (the row chevrons) wins, ties newest-first.
-    if (effTab === 'dev') {
-      const prio = i => i.priority || 99;
-      const ord = i => i.sort_order ?? 0;
-      return filtered
-        .filter(i => i.status !== 'resolved')
-        .sort((a, b) => prio(a) - prio(b)
-          || ord(a) - ord(b)
-          || (new Date(b.created_at || 0) - new Date(a.created_at || 0)));
-    }
-    const list = filtered.filter(i => (effTab === 'closed' ? i.status === 'resolved' : i.status !== 'resolved'));
-    const byDate = (k, dir) => (a, b) => dir * (new Date(a[k] || 0) - new Date(b[k] || 0));
-    const byComments = (dir) => (a, b) => dir * ((a.comments || []).length - (b.comments || []).length);
-    const cmp = {
-      newest: byDate('created_at', -1),
-      oldest: byDate('created_at', 1),
-      'most-commented': byComments(-1),
-      'least-commented': byComments(1),
-      'recently-updated': byDate('updated_at', -1),
-    }[sort] || (() => 0);
-    return [...list].sort(cmp);
-  }, [filtered, effTab, sort]);
+  const visible = useMemo(
+    () => getVisibleIssues(filtered, { tab: effTab, sort }),
+    [filtered, effTab, sort],
+  );
 
   const resetComposers = () => {
     setNewTitle('');
-    setNewBody(EMPTY_BODY);
+    setNewBody(EMPTY_ISSUE_BODY);
     setNewLabels([]);
-    setCommentDraft(EMPTY_BODY);
+    setCommentDraft(EMPTY_ISSUE_BODY);
     setComposerNonce(n => n + 1);
     setConfirmDelete(false);
     setMenu(null);
@@ -361,13 +271,7 @@ export default function IssuesWidget() {
 
   // Shared PUT helper — sends an action, folds the updated row back into state.
   const mutate = async (payload) => {
-    const res = await fetch('/api/issues', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Action failed');
-    const updated = await res.json();
+    const updated = await mutateIssue(payload);
     setIssues(prev => prev.map(i => (i.id === updated.id ? updated : i)));
     return updated;
   };
@@ -377,13 +281,7 @@ export default function IssuesWidget() {
     setCreating(true);
     setError('');
     try {
-      const res = await fetch('/api/issues', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle.trim(), body: newBody, labels: newLabels }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to create issue');
-      const created = await res.json();
+      const created = await createIssueRecord({ title: newTitle.trim(), body: newBody, labels: newLabels });
       setIssues(prev => [created, ...prev]);
       setTab('open');
       openDetail(created.id);
@@ -400,7 +298,7 @@ export default function IssuesWidget() {
     setError('');
     try {
       await mutate({ id: selected.id, action: 'comment', body: commentDraft });
-      setCommentDraft(EMPTY_BODY);
+      setCommentDraft(EMPTY_ISSUE_BODY);
       setComposerNonce(n => n + 1);
     } catch (e) {
       setError(e.message);
@@ -418,7 +316,7 @@ export default function IssuesWidget() {
     try {
       if (!isBodyEmpty(commentDraft)) {
         await mutate({ id: selected.id, action: 'comment', body: commentDraft });
-        setCommentDraft(EMPTY_BODY);
+        setCommentDraft(EMPTY_ISSUE_BODY);
         setComposerNonce(n => n + 1);
       }
       await mutate({ id: selected.id, action });
@@ -434,22 +332,9 @@ export default function IssuesWidget() {
   // priority band and persist both rows' sort_order (admin-only on the API).
   const rowRefs = useRef({});
   const moveIssue = async (issue, direction) => {
-    const list = visible;
-    const prio = i => i.priority || 99;
-    const idx = list.findIndex(i => i.id === issue.id);
-    if (idx < 0) return;
-    let swapIdx = -1;
-    if (direction === 'up') {
-      for (let i = idx - 1; i >= 0; i--) if (prio(list[i]) === prio(issue)) { swapIdx = i; break; }
-    } else {
-      for (let i = idx + 1; i < list.length; i++) if (prio(list[i]) === prio(issue)) { swapIdx = i; break; }
-    }
-    if (swapIdx < 0) return;
-    const other = list[swapIdx];
-    const a = issue.sort_order ?? 0;
-    const b = other.sort_order ?? 0;
-    const newA = b === a ? (direction === 'up' ? a - 1 : a + 1) : b;
-    const newB = a;
+    const swap = findIssueSortSwap(visible, issue, direction);
+    if (!swap) return;
+    const { other, issueSortOrder, otherSortOrder } = swap;
 
     // Animate the swap (same feel as Strategic Hub)
     const curEl = rowRefs.current[issue.id];
@@ -467,8 +352,8 @@ export default function IssuesWidget() {
     }
 
     setIssues(prev => prev.map(i => (
-      i.id === issue.id ? { ...i, sort_order: newA }
-        : i.id === other.id ? { ...i, sort_order: newB }
+      i.id === issue.id ? { ...i, sort_order: issueSortOrder }
+        : i.id === other.id ? { ...i, sort_order: otherSortOrder }
           : i
     )));
 
@@ -490,8 +375,8 @@ export default function IssuesWidget() {
     setError('');
     try {
       await Promise.all([
-        mutate({ id: issue.id, action: 'sort-order', sort_order: newA }),
-        mutate({ id: other.id, action: 'sort-order', sort_order: newB }),
+        mutate({ id: issue.id, action: 'sort-order', sort_order: issueSortOrder }),
+        mutate({ id: other.id, action: 'sort-order', sort_order: otherSortOrder }),
       ]);
     } catch (e) {
       setError(e.message);
@@ -546,8 +431,7 @@ export default function IssuesWidget() {
     setBusy(true);
     setError('');
     try {
-      const res = await fetch(`/api/issues?id=${encodeURIComponent(selected.id)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to delete');
+      await deleteIssueById(selected.id);
       setIssues(prev => prev.filter(i => i.id !== selected.id));
       goList();
     } catch (e) {
@@ -562,9 +446,7 @@ export default function IssuesWidget() {
     setBusy(true);
     setError('');
     try {
-      const res = await fetch(`/api/issues?id=${encodeURIComponent(selected.id)}&commentId=${encodeURIComponent(commentId)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to delete comment');
-      const updated = await res.json();
+      const updated = await deleteIssueCommentById(selected.id, commentId);
       setIssues(prev => prev.map(i => (i.id === updated.id ? updated : i)));
     } catch (e) {
       setError(e.message);
@@ -747,7 +629,7 @@ export default function IssuesWidget() {
                           <ChevronDown size={13} />
                         </button>
                         <Menu open={menu === 'labels'} onClose={() => setMenu(null)} title="Filter by label">
-                          {LABELS.map(l => {
+                          {ISSUE_LABELS.map(l => {
                             const active = labelFilter.includes(l.name);
                             return (
                               <button
@@ -780,11 +662,11 @@ export default function IssuesWidget() {
                             onClick={() => setMenu(m => (m === 'sort' ? null : 'sort'))}
                             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12.5px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors"
                           >
-                            {SORTS.find(s => s.key === sort)?.label || 'Newest'}
+                            {ISSUE_SORTS.find(s => s.key === sort)?.label || 'Newest'}
                             <ChevronDown size={13} />
                           </button>
                           <Menu open={menu === 'sort'} onClose={() => setMenu(null)} title="Sort by" width="w-48">
-                            {SORTS.map(s => (
+                            {ISSUE_SORTS.map(s => (
                               <button
                                 key={s.key}
                                 onClick={() => { setSort(s.key); setMenu(null); }}
@@ -899,7 +781,7 @@ export default function IssuesWidget() {
                             >
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <TriageControl
-                                  defs={PRIORITIES}
+                                  defs={ISSUE_PRIORITIES}
                                   placeholder="Set priority"
                                   title="Priority"
                                   value={issue.priority}
@@ -909,7 +791,7 @@ export default function IssuesWidget() {
                                   onSelect={v => setPriority(issue, v)}
                                 />
                                 <TriageControl
-                                  defs={COMPLEXITIES}
+                                  defs={ISSUE_COMPLEXITIES}
                                   placeholder="Set complexity"
                                   title="Complexity"
                                   value={issue.complexity}
@@ -1006,7 +888,7 @@ export default function IssuesWidget() {
                       <Tag size={12} /> Labels
                     </p>
                     <div className="space-y-0.5">
-                      {LABELS.map(l => {
+                      {ISSUE_LABELS.map(l => {
                         const active = newLabels.includes(l.name);
                         return (
                           <button
@@ -1168,7 +1050,7 @@ export default function IssuesWidget() {
                         <ChevronDown size={13} />
                       </button>
                       <Menu open={menu === 'edit-labels'} onClose={() => setMenu(null)} title="Apply labels" align="left" width="w-full">
-                        {LABELS.map(l => {
+                        {ISSUE_LABELS.map(l => {
                           const active = (selected.labels || []).includes(l.name);
                           return (
                             <button
@@ -1201,7 +1083,7 @@ export default function IssuesWidget() {
                         </p>
                         <div className="flex flex-wrap items-center gap-1.5 mb-2">
                           <TriageControl
-                            defs={PRIORITIES}
+                            defs={ISSUE_PRIORITIES}
                             placeholder="Set priority"
                             title="Priority"
                             value={selected.priority}
@@ -1211,7 +1093,7 @@ export default function IssuesWidget() {
                             onSelect={v => setPriority(selected, v)}
                           />
                           <TriageControl
-                            defs={COMPLEXITIES}
+                            defs={ISSUE_COMPLEXITIES}
                             placeholder="Set complexity"
                             title="Complexity"
                             value={selected.complexity}

@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiBadRequest, apiCreated, apiError, apiJson, apiOk } from '@/lib/apiResponses';
 
 /*
   CREATE TABLE contact_files (
@@ -25,8 +25,8 @@ export async function GET(req) {
   if (contactId) query = query.eq('contact_id', contactId);
 
   const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  if (error) return apiError(error);
+  return apiJson(data);
 }
 
 export async function POST(req) {
@@ -34,7 +34,7 @@ export async function POST(req) {
   const body = await req.json();
   const { contact_id, name, url, type = 'link' } = body;
 
-  if (!contact_id || !name) return NextResponse.json({ error: 'contact_id and name are required' }, { status: 400 });
+  if (!contact_id || !name) return apiBadRequest('contact_id and name are required');
 
   const { data, error } = await supabase
     .from(TABLE)
@@ -42,8 +42,8 @@ export async function POST(req) {
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data, { status: 201 });
+  if (error) return apiError(error);
+  return apiCreated(data);
 }
 
 export async function DELETE(req) {
@@ -51,9 +51,9 @@ export async function DELETE(req) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
 
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  if (!id) return apiBadRequest('id is required');
 
   const { error } = await supabase.from(TABLE).delete().eq('id', id);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  if (error) return apiError(error);
+  return apiOk();
 }

@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiBadRequest, apiCreated, apiError, apiJson, apiOk } from '@/lib/apiResponses';
 
 /*
   CREATE TABLE interactions (
@@ -27,8 +27,8 @@ export async function GET(req) {
   if (contactId) query = query.eq('contact_id', contactId);
 
   const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  if (error) return apiError(error);
+  return apiJson(data);
 }
 
 export async function POST(req) {
@@ -36,7 +36,7 @@ export async function POST(req) {
   const body = await req.json();
   const { contact_id, type = 'note', summary, next_step, date } = body;
 
-  if (!contact_id) return NextResponse.json({ error: 'contact_id is required' }, { status: 400 });
+  if (!contact_id) return apiBadRequest('contact_id is required');
 
   const record = {
     contact_id,
@@ -47,7 +47,7 @@ export async function POST(req) {
   };
 
   const { data, error } = await supabase.from(TABLE).insert(record).select().single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return apiError(error);
 
   // Update the contact's last_contacted_at and optionally next_action / follow_up_date
   const contactUpdates = {
@@ -59,7 +59,7 @@ export async function POST(req) {
 
   await supabase.from('contacts').update(contactUpdates).eq('id', contact_id);
 
-  return NextResponse.json(data, { status: 201 });
+  return apiCreated(data);
 }
 
 export async function DELETE(req) {
@@ -67,9 +67,9 @@ export async function DELETE(req) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
 
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  if (!id) return apiBadRequest('id is required');
 
   const { error } = await supabase.from(TABLE).delete().eq('id', id);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  if (error) return apiError(error);
+  return apiOk();
 }

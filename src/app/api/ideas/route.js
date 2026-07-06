@@ -1,9 +1,9 @@
-import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { apiBadRequest, apiJson, apiOk, withApiError } from '@/lib/apiResponses';
 
 export async function GET(request) {
   const supabase = await getDb();
-  try {
+  return withApiError(async () => {
     const { searchParams } = new URL(request.url);
     const includeArchived = searchParams.get('archived') === '1';
 
@@ -18,15 +18,13 @@ export async function GET(request) {
 
     const { data, error } = await query;
     if (error) throw new Error(error.message);
-    return NextResponse.json({ ideas: data || [] });
-  } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
+    return apiJson({ ideas: data || [] });
+  });
 }
 
 export async function POST(request) {
   const supabase = await getDb();
-  try {
+  return withApiError(async () => {
     const body = await request.json();
     const row = {
       title: body.title || '',
@@ -41,18 +39,16 @@ export async function POST(request) {
 
     const { data, error } = await supabase.from('ideas').insert(row).select().single();
     if (error) throw new Error(error.message);
-    return NextResponse.json({ idea: data });
-  } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
+    return apiJson({ idea: data });
+  });
 }
 
 export async function PUT(request) {
   const supabase = await getDb();
-  try {
+  return withApiError(async () => {
     const body = await request.json();
     const { id, ...rest } = body;
-    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    if (!id) return apiBadRequest('id is required');
 
     const updates = {};
     const allowed = ['title', 'content', 'color', 'category', 'tags', 'pinned', 'archived', 'position'];
@@ -69,23 +65,19 @@ export async function PUT(request) {
       .single();
 
     if (error) throw new Error(error.message);
-    return NextResponse.json({ idea: data });
-  } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
+    return apiJson({ idea: data });
+  });
 }
 
 export async function DELETE(request) {
   const supabase = await getDb();
-  try {
+  return withApiError(async () => {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
-    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    if (!id) return apiBadRequest('id is required');
 
     const { error } = await supabase.from('ideas').delete().eq('id', id);
     if (error) throw new Error(error.message);
-    return NextResponse.json({ ok: true });
-  } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
+    return apiOk();
+  });
 }

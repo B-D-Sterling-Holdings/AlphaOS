@@ -9,13 +9,20 @@ import CompanyFundamentals, { computeQuickStats } from '@/components/CompanyFund
 import Toast from '@/components/Toast';
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
-import { computeValuationModel } from '@/lib/valuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import ReviewCommentsPanel from '@/components/ReviewCommentsPanel';
 import { RESEARCH_TABS } from '@/lib/researchProgress';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
 import { startGeneration, isGenerating, subscribeGeneration } from '@/lib/generateTickerJob';
+import {
+  fetchComputedValuationModel,
+  fetchQuote,
+  fetchThesis,
+  fetchTickerFundamentals,
+  fetchWatchlist,
+  saveThesis as saveThesisData,
+} from '@/lib/researchApi';
 
 const FUNDAMENTALS_BOXES = [
   { key: 'revenueGrowth', label: 'Revenue and Growth', color: 'blue', placeholder: 'Revenue CAGR, segment growth, unit economics, pricing, and demand drivers...' },
@@ -532,8 +539,7 @@ export default function ResearchPage() {
         setLoading(false);
       }
 
-      const res = await fetch('/api/watchlist');
-      const data = await res.json();
+      const data = await fetchWatchlist();
       setAllData(data);
       writeWatchlistCache(cache, data);
       setLoading(false);
@@ -564,8 +570,7 @@ export default function ResearchPage() {
     setLoadedTickerData(null);
     setTickerLoading(true);
     try {
-      const res = await fetch(`/api/ticker/${ticker}`);
-      const data = await res.json();
+      const data = await fetchTickerFundamentals(ticker);
       cache.set(`deep_research_tickerData_${ticker}`, data);
       if (tickerDataReqRef.current === ticker) setLoadedTickerData(data);
     } catch {
@@ -630,13 +635,12 @@ export default function ResearchPage() {
     } else {
       setLiveQuote(null);
       setQuoteLoading(true);
-      fetch(`/api/quotes?tickers=${selectedTicker}`)
-        .then(r => r.json())
-        .then(data => {
-          if (data.quotes?.[selectedTicker]) {
-            setLiveQuote(data.quotes[selectedTicker]);
-            cache.set('deep_research_liveQuote', data.quotes[selectedTicker]);
-            cache.set(`deep_research_quote_${selectedTicker}`, data.quotes[selectedTicker]);
+      fetchQuote(selectedTicker)
+        .then(quote => {
+          if (quote) {
+            setLiveQuote(quote);
+            cache.set('deep_research_liveQuote', quote);
+            cache.set(`deep_research_quote_${selectedTicker}`, quote);
           }
         })
         .catch(() => {})
@@ -653,8 +657,7 @@ export default function ResearchPage() {
     setThesis(null);
     setThesisLoading(true);
     setThesisDirty(false);
-    fetch(`/api/thesis/${selectedTicker}`)
-      .then(r => r.json())
+    fetchThesis(selectedTicker)
       .then(data => { if (!cancelled) setThesis(migrateNewsImages(data)); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setThesisLoading(false); });
@@ -695,15 +698,7 @@ export default function ResearchPage() {
     if (!selectedTicker || (!thesisDirty && !data)) return;
     setThesisSaving(true);
     try {
-      const res = await fetch(`/api/thesis/${selectedTicker}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify((() => {
-          const { _activeNewsIdx, ...rest } = data || thesis;
-          return rest;
-        })()),
-      });
-      const result = await res.json();
+      const result = await saveThesisData(selectedTicker, data || thesis);
       if (result.success) {
         setThesisDirty(false);
         setToast({ message: 'Research notes saved', type: 'success' });
@@ -964,22 +959,13 @@ export default function ResearchPage() {
 
       if (!modelData) {
         try {
-          const modelRes = await fetch(`/api/model/${selectedTicker}`);
-          const modelJson = await modelRes.json();
-          if (modelJson.exists && modelJson.inputs) {
-            const p = (v) => (v === '' || v === undefined || v === null || isNaN(Number(v))) ? 0 : Number(v);
-            const sharePrice = p(modelJson.inputs.sharePrice) || (livePrice || 0);
-            const inp = { ...modelJson.inputs, sharePrice };
-            modelData = { inputs: inp, computed: computeValuationModel(inp) };
-          }
+          modelData = await fetchComputedValuationModel(selectedTicker, livePrice);
         } catch {}
       }
 
       let freshQuote = liveQuote;
       try {
-        const quoteRes = await fetch(`/api/quotes?tickers=${selectedTicker}`);
-        const quoteJson = await quoteRes.json();
-        if (quoteJson.quotes?.[selectedTicker]) freshQuote = quoteJson.quotes[selectedTicker];
+        freshQuote = await fetchQuote(selectedTicker) || freshQuote;
       } catch {}
 
       const prevTab = activeResearchTab;

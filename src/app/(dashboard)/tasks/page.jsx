@@ -4,37 +4,46 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, X, Check, ChevronDown, ChevronRight, User, Pencil, GripVertical, Trash2, Circle } from 'lucide-react';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, DragOverlay, useDroppable } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-
-const PRIORITY_SECTIONS = [
-  { key: 'highest', label: 'HIGH PRIORITY',   color: 'bg-red-500',     maxTasks: 3 },
-  { key: 'medium',  label: 'MEDIUM PRIORITY', color: 'bg-yellow-400',  maxTasks: 5 },
-  { key: 'low',     label: 'LOW PRIORITY',    color: 'bg-emerald-500', maxTasks: null },
-];
-
-const COLOR_PALETTE = [
-  '#2563eb', // blue
-  '#dc2626', // red
-  '#16a34a', // green
-  '#9333ea', // purple
-  '#ea580c', // orange
-  '#0891b2', // cyan
-  '#c026d3', // fuchsia
-  '#4f46e5', // indigo
-];
-
-function getColorForAssignee(assignee, savedAssignees) {
-  if (!assignee) return null;
-  const found = savedAssignees.find(a => a.name.toLowerCase() === assignee.toLowerCase());
-  return found ? found.color : '#6b7280';
-}
-
-function getAssigneeInlineStyle(assignee, savedAssignees) {
-  const color = getColorForAssignee(assignee, savedAssignees);
-  if (!color) return {};
-  return { backgroundColor: color, borderColor: color, color: '#fff' };
-}
+import {
+  COLOR_PALETTE,
+  PRIORITY_SECTIONS,
+  addAssignee as addAssigneeToList,
+  addSubtask as addSubtaskToTask,
+  completedTasks as selectCompletedTasks,
+  createBoard as createBoardState,
+  finalizeTaskDrag,
+  findPriority,
+  getAssigneeInlineStyle,
+  getMaxForPriority,
+  insertBlankSubtaskAfter,
+  moveTaskAcrossPriority,
+  openTaskCount,
+  removeAssignee as removeAssigneeFromList,
+  removeBoard as removeBoardState,
+  removeEmptySubtask,
+  removeSubtask as removeSubtaskFromTask,
+  renameBoard as renameBoardState,
+  renameSubtask as renameSubtaskInTask,
+  resolveBoardsPayload,
+  tasksByPriority as selectTasksByPriority,
+  toggleSubtask as toggleSubtaskInTask,
+  updateSubtask as updateSubtaskInTask,
+  updateSubtasks as replaceTaskSubtasks,
+} from '@/lib/taskBoard';
+import {
+  createTask,
+  deleteTask,
+  deleteTasksForBoard,
+  fetchAssigneesForBoard,
+  fetchTaskBoards,
+  fetchTasksForBoard,
+  reorderTasks,
+  saveAssigneesForBoard,
+  saveTaskBoardsMeta,
+  updateTask,
+} from '@/lib/taskBoardApi';
 
 function AssigneeTag({ assignee, onClick, size = 'normal', savedAssignees = [] }) {
   if (!assignee) {
@@ -591,8 +600,7 @@ export default function TaskBoardPage() {
     const bid = boardId || activeBoardId;
     setLoading(true);
     try {
-      const res = await fetch(`/api/tasks?board_id=${encodeURIComponent(bid)}`);
-      const data = await res.json();
+      const data = await fetchTasksForBoard(bid);
       if (Array.isArray(data)) setTasks(data);
     } catch (err) {
       console.error('Failed to load tasks', err);
@@ -604,8 +612,7 @@ export default function TaskBoardPage() {
   const fetchAssignees = useCallback(async (boardId) => {
     const bid = boardId || activeBoardId;
     try {
-      const res = await fetch(`/api/assignees?board_id=${encodeURIComponent(bid)}`);
-      const data = await res.json();
+      const data = await fetchAssigneesForBoard(bid);
       if (Array.isArray(data.assignees) && data.assignees.length > 0) {
         setSavedAssignees(data.assignees);
       } else {
@@ -619,13 +626,11 @@ export default function TaskBoardPage() {
 
   const fetchBoards = useCallback(async () => {
     try {
-      const res = await fetch('/api/task-boards');
-      const data = await res.json();
-      if (Array.isArray(data.boards) && data.boards.length > 0) {
-        setBoards(data.boards);
-        setActiveBoardId(data.activeBoardId || data.boards[0].id);
-        return data.activeBoardId || data.boards[0].id;
-      }
+      const data = await fetchTaskBoards();
+      const resolved = resolveBoardsPayload(data);
+      setBoards(resolved.boards);
+      setActiveBoardId(resolved.activeBoardId);
+      return resolved.activeBoardId;
     } catch (err) {
       console.error('Failed to load boards', err);
     }
@@ -641,15 +646,8 @@ export default function TaskBoardPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveBoardsMeta = async (newBoards, newActiveId) => {
-    const payload = {};
-    if (newBoards !== undefined) payload.boards = newBoards;
-    if (newActiveId !== undefined) payload.activeBoardId = newActiveId;
     try {
-      await fetch('/api/task-boards', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      await saveTaskBoardsMeta({ boards: newBoards, activeBoardId: newActiveId });
     } catch (err) {
       console.error('Failed to save boards', err);
     }
@@ -665,58 +663,50 @@ export default function TaskBoardPage() {
   };
 
   const createBoard = async (name) => {
-    const id = `board_${Date.now()}`;
-    const newBoards = [...boards, { id, name }];
-    setBoards(newBoards);
-    setActiveBoardId(id);
+    const next = createBoardState(boards, name);
+    setBoards(next.boards);
+    setActiveBoardId(next.activeBoardId);
     setTasks([]);
     setSavedAssignees([]);
-    saveBoardsMeta(newBoards, id);
+    saveBoardsMeta(next.boards, next.activeBoardId);
   };
 
   const renameBoard = async (id, name) => {
-    const newBoards = boards.map(b => b.id === id ? { ...b, name } : b);
+    const newBoards = renameBoardState(boards, id, name);
     setBoards(newBoards);
     saveBoardsMeta(newBoards, undefined);
   };
 
   const deleteBoard = async (id) => {
-    const remaining = boards.filter(b => b.id !== id);
-    if (remaining.length === 0) return;
-    const newActiveId = activeBoardId === id ? remaining[0].id : activeBoardId;
-    setBoards(remaining);
-    setActiveBoardId(newActiveId);
-    saveBoardsMeta(remaining, newActiveId);
-    if (activeBoardId === id) fetchTasks(newActiveId);
-    // Delete all tasks in this board
+    const next = removeBoardState(boards, activeBoardId, id);
+    if (!next) return;
+    setBoards(next.boards);
+    setActiveBoardId(next.activeBoardId);
+    saveBoardsMeta(next.boards, next.activeBoardId);
+    if (activeBoardId === id) fetchTasks(next.activeBoardId);
     try {
-      const res = await fetch(`/api/tasks?board_id=${encodeURIComponent(id)}`);
-      const tasksInBoard = await res.json();
-      if (Array.isArray(tasksInBoard)) {
-        await Promise.all(tasksInBoard.map(t => fetch(`/api/tasks?id=${t.id}`, { method: 'DELETE' })));
-      }
+      await deleteTasksForBoard(id);
     } catch (err) {
       console.error('Failed to delete board tasks', err);
     }
   };
 
   const addAssignee = useCallback(async (name, color) => {
-    const exists = savedAssignees.find(a => a.name.toLowerCase() === name.toLowerCase());
-    if (exists) return;
-    const updated = [...savedAssignees, { name, color }];
+    const updated = addAssigneeToList(savedAssignees, name, color);
+    if (updated === savedAssignees) return;
     setSavedAssignees(updated);
     try {
-      await fetch('/api/assignees', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assignees: updated, board_id: activeBoardId }) });
+      await saveAssigneesForBoard(activeBoardId, updated);
     } catch (err) {
       console.error('Failed to save assignees', err);
     }
   }, [savedAssignees, activeBoardId]);
 
   const removeAssignee = useCallback(async (name) => {
-    const updated = savedAssignees.filter(a => a.name.toLowerCase() !== name.toLowerCase());
+    const updated = removeAssigneeFromList(savedAssignees, name);
     setSavedAssignees(updated);
     try {
-      await fetch('/api/assignees', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assignees: updated, board_id: activeBoardId }) });
+      await saveAssigneesForBoard(activeBoardId, updated);
     } catch (err) {
       console.error('Failed to save assignees', err);
     }
@@ -742,14 +732,12 @@ export default function TaskBoardPage() {
   }, [editingSubId]);
 
 
-  const tasksByPriority = (key) => tasks.filter(t => t.priority === key && !t.done);
-  const completedTasks = tasks.filter(t => t.done);
+  const tasksByPriority = (key) => selectTasksByPriority(tasks, key);
+  const completedTasks = selectCompletedTasks(tasks);
   const [completedOpen, setCompletedOpen] = useState(false);
-  const totalOpen = tasks.filter(t => !t.done).length;
+  const totalOpen = openTaskCount(tasks);
 
   // --- Task CRUD ---
-
-  const getMaxForPriority = (priority) => PRIORITY_SECTIONS.find(s => s.key === priority)?.maxTasks ?? null;
 
   const handleAddTask = async (priority, { keepOpen = false } = {}) => {
     if (!newTaskTitle.trim()) return;
@@ -761,13 +749,8 @@ export default function TaskBoardPage() {
     const willBeAtCapacity = max && currentCount + 1 >= max;
     if (!keepOpen || willBeAtCapacity) setAdding(null);
     try {
-      const res = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, priority, board_id: activeBoardId }),
-      });
-      const created = await res.json();
-      if (res.ok) setTasks(prev => [...prev, created]);
+      const { ok, data } = await createTask({ title, priority, boardId: activeBoardId });
+      if (ok) setTasks(prev => [...prev, data]);
     } catch (err) {
       console.error('Failed to add task', err);
     }
@@ -776,11 +759,7 @@ export default function TaskBoardPage() {
   const toggleDone = async (id, currentDone) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, done: !currentDone } : t));
     try {
-      await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, done: !currentDone }),
-      });
+      await updateTask(id, { done: !currentDone });
     } catch (err) {
       setTasks(prev => prev.map(t => t.id === id ? { ...t, done: currentDone } : t));
     }
@@ -790,7 +769,7 @@ export default function TaskBoardPage() {
     const prev = tasks;
     setTasks(t => t.filter(x => x.id !== id));
     try {
-      await fetch(`/api/tasks?id=${id}`, { method: 'DELETE' });
+      await deleteTask(id);
     } catch (err) {
       setTasks(prev);
     }
@@ -829,11 +808,7 @@ export default function TaskBoardPage() {
 
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
     try {
-      await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, ...updates }),
-      });
+      await updateTask(id, updates);
     } catch (err) {
       setTasks(prev => prev.map(t => t.id === id ? { ...t, title: task.title, notes: task.notes } : t));
     }
@@ -844,11 +819,7 @@ export default function TaskBoardPage() {
     if (!task) return;
     setTasks(prev => prev.map(t => t.id === id ? { ...t, assignee } : t));
     try {
-      await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, assignee }),
-      });
+      await updateTask(id, { assignee });
     } catch (err) {
       setTasks(prev => prev.map(t => t.id === id ? { ...t, assignee: task.assignee } : t));
     }
@@ -859,11 +830,7 @@ export default function TaskBoardPage() {
     if (!task) return;
     setTasks(prev => prev.map(t => t.id === id ? { ...t, status } : t));
     try {
-      await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, status }),
-      });
+      await updateTask(id, { status });
     } catch (err) {
       setTasks(prev => prev.map(t => t.id === id ? { ...t, status: task.status } : t));
     }
@@ -880,13 +847,9 @@ export default function TaskBoardPage() {
   };
 
   const updateSubtasks = async (taskId, subtasks) => {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, subtasks } : t));
+    setTasks(prev => replaceTaskSubtasks(prev, taskId, subtasks));
     try {
-      await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: taskId, subtasks }),
-      });
+      await updateTask(taskId, { subtasks });
     } catch (err) {
       fetchTasks();
     }
@@ -894,23 +857,23 @@ export default function TaskBoardPage() {
 
   const addSubtask = (taskId, { keepOpen = false } = {}) => {
     if (!newSubtaskTitle.trim()) return;
-    const task = tasks.find(t => t.id === taskId);
-    const subtasks = [...(task.subtasks || []), { id: Date.now(), title: newSubtaskTitle.trim(), done: false, assignee: '' }];
-    updateSubtasks(taskId, subtasks);
+    const nextTasks = addSubtaskToTask(tasks, taskId, newSubtaskTitle.trim());
+    const task = nextTasks.find(t => t.id === taskId);
+    updateSubtasks(taskId, task?.subtasks || []);
     setNewSubtaskTitle('');
     if (!keepOpen) setAddingSubtask(null);
   };
 
   const toggleSubtask = (taskId, subtaskId) => {
-    const task = tasks.find(t => t.id === taskId);
-    const subtasks = (task.subtasks || []).map(s => s.id === subtaskId ? { ...s, done: !s.done } : s);
-    updateSubtasks(taskId, subtasks);
+    const nextTasks = toggleSubtaskInTask(tasks, taskId, subtaskId);
+    const task = nextTasks.find(t => t.id === taskId);
+    updateSubtasks(taskId, task?.subtasks || []);
   };
 
   const removeSubtask = (taskId, subtaskId) => {
-    const task = tasks.find(t => t.id === taskId);
-    const subtasks = (task.subtasks || []).filter(s => s.id !== subtaskId);
-    updateSubtasks(taskId, subtasks);
+    const nextTasks = removeSubtaskFromTask(tasks, taskId, subtaskId);
+    const task = nextTasks.find(t => t.id === taskId);
+    updateSubtasks(taskId, task?.subtasks || []);
   };
 
   const startEditingSubtask = (taskId, sub) => {
@@ -923,21 +886,20 @@ export default function TaskBoardPage() {
     if (!task) { setEditingSubId(null); return; }
     const newTitle = editingSubTitle.trim();
     if (!newTitle) {
-      // Remove the empty subtask if it has no title
-      const cleaned = (task.subtasks || []).filter(s => s.id !== subtaskId || s.title.trim());
-      if (cleaned.length !== (task.subtasks || []).length) updateSubtasks(taskId, cleaned);
+      const nextTasks = removeEmptySubtask(tasks, taskId, subtaskId);
+      const nextTask = nextTasks.find(t => t.id === taskId);
+      if (nextTask && nextTask !== task) updateSubtasks(taskId, nextTask.subtasks || []);
       setEditingSubId(null);
       return;
     }
-    const currentSubs = (task.subtasks || []).map(s => s.id === subtaskId ? { ...s, title: newTitle } : s);
+    const renamedTasks = renameSubtaskInTask(tasks, taskId, subtaskId, newTitle);
+    const renamedTask = renamedTasks.find(t => t.id === taskId);
+    const currentSubs = renamedTask?.subtasks || [];
 
     if (thenAdd) {
-      // Insert a new empty subtask right after the current one
-      const idx = currentSubs.findIndex(s => s.id === subtaskId);
-      const newSub = { id: Date.now(), title: '', done: false, assignee: '' };
-      const subtasks = [...currentSubs.slice(0, idx + 1), newSub, ...currentSubs.slice(idx + 1)];
-      updateSubtasks(taskId, subtasks);
-      // Start editing the new subtask
+      const { tasks: withBlank, subtask: newSub } = insertBlankSubtaskAfter(renamedTasks, taskId, subtaskId);
+      const nextTask = withBlank.find(t => t.id === taskId);
+      updateSubtasks(taskId, nextTask?.subtasks || currentSubs);
       setEditingSubId(`${taskId}-${newSub.id}`);
       setEditingSubTitle('');
     } else {
@@ -947,10 +909,9 @@ export default function TaskBoardPage() {
   };
 
   const updateSubtaskAssignee = (taskId, subtaskId, assignee) => {
-    const task = tasks.find(t => t.id === taskId);
-    if (!task) return;
-    const subtasks = (task.subtasks || []).map(s => s.id === subtaskId ? { ...s, assignee } : s);
-    updateSubtasks(taskId, subtasks);
+    const nextTasks = updateSubtaskInTask(tasks, taskId, subtaskId, { assignee });
+    const task = nextTasks.find(t => t.id === taskId);
+    updateSubtasks(taskId, task?.subtasks || []);
   };
 
   // Subtask drag reorder — pointer-event based, immediate swap on crossing midpoints
@@ -1004,13 +965,6 @@ export default function TaskBoardPage() {
 
   // --- Drag and Drop ---
 
-  // Find which priority section a task or droppable belongs to
-  const findPriority = (id) => {
-    if (typeof id === 'string' && id.startsWith('section-')) return id.replace('section-', '');
-    const task = tasksRef.current.find(t => t.id === id);
-    return task?.priority ?? null;
-  };
-
   const handleDragStart = (event) => {
     setActiveId(event.active.id);
     tasksSnapshot.current = tasks;
@@ -1021,13 +975,13 @@ export default function TaskBoardPage() {
   };
 
   // onDragOver: ONLY handle cross-container moves (changing priority).
-  // Within the same container, do nothing — let onDragEnd handle it with arrayMove.
+  // Within the same container, do nothing — let onDragEnd handle final ordering.
   const handleDragOver = (event) => {
     const { active, over } = event;
     if (!over) return;
 
-    const activePriority = findPriority(active.id);
-    const overPriority = findPriority(over.id);
+    const activePriority = findPriority(tasksRef.current, active.id);
+    const overPriority = findPriority(tasksRef.current, over.id);
 
     if (!activePriority || !overPriority) return;
     // Same container — skip, onDragEnd will handle reordering
@@ -1035,15 +989,10 @@ export default function TaskBoardPage() {
 
     // Cross-container: move the active task into the over container
     setTasks(prev => {
-      const activeTask = prev.find(t => t.id === active.id);
-      if (!activeTask) return prev;
-
-      // Check capacity (exclude the dragged task itself in case handleDragOver fires multiple times)
-      const section = PRIORITY_SECTIONS.find(s => s.key === overPriority);
-      const targetCount = prev.filter(t => t.priority === overPriority && !t.done && t.id !== active.id).length;
-      if (section?.maxTasks && targetCount >= section.maxTasks) {
+      const moved = moveTaskAcrossPriority(prev, active.id, over.id);
+      if (moved.rejectedPriority) {
         if (!capacityFlashTimer.current) {
-          setCapacityFlash(overPriority);
+          setCapacityFlash(moved.rejectedPriority);
           capacityFlashTimer.current = setTimeout(() => {
             setCapacityFlash(null);
             capacityFlashTimer.current = null;
@@ -1051,41 +1000,7 @@ export default function TaskBoardPage() {
         }
         return prev;
       }
-
-      // Determine insert index
-      const overIsSection = typeof over.id === 'string' && over.id.startsWith('section-');
-      const targetTasks = prev.filter(t => t.priority === overPriority);
-      let insertIdx = targetTasks.length; // default: append to end
-      if (!overIsSection) {
-        const idx = targetTasks.findIndex(t => t.id === over.id);
-        if (idx !== -1) insertIdx = idx;
-      }
-
-      // Remove from old section, insert into new
-      const without = prev.filter(t => t.id !== active.id);
-      const movedTask = { ...activeTask, priority: overPriority };
-
-      // Find the global insert point
-      if (insertIdx >= targetTasks.length) {
-        // Append after the last task in target section
-        const lastTarget = targetTasks[targetTasks.length - 1];
-        const globalIdx = lastTarget ? without.findIndex(t => t.id === lastTarget.id) + 1 : without.length;
-        without.splice(globalIdx, 0, movedTask);
-      } else {
-        const globalIdx = without.findIndex(t => t.id === targetTasks[insertIdx].id);
-        without.splice(globalIdx, 0, movedTask);
-      }
-
-      // Reindex positions for affected sections
-      const affected = new Set([activePriority, overPriority]);
-      const counters = {};
-      for (const t of without) {
-        if (affected.has(t.priority)) {
-          counters[t.priority] = counters[t.priority] ?? 0;
-          t.position = counters[t.priority]++;
-        }
-      }
-      return without;
+      return moved.tasks;
     });
   };
 
@@ -1096,66 +1011,15 @@ export default function TaskBoardPage() {
     tasksSnapshot.current = null;
     setActiveId(null);
 
-    if (!over || !snapshot) {
-      if (snapshot) setTasks(snapshot);
+    const {
+      tasks: newTasks,
+      itemsToSave,
+      shouldRevert,
+    } = finalizeTaskDrag(tasksRef.current, snapshot, active.id, over?.id);
+
+    if (shouldRevert) {
+      setTasks(newTasks);
       return;
-    }
-
-    // Compute the new task list synchronously, then set state AND persist
-    const prev = tasksRef.current;
-    const activePriority = prev.find(t => t.id === active.id)?.priority;
-    if (!activePriority) return;
-
-    const overIsSection = typeof over.id === 'string' && over.id.startsWith('section-');
-
-    let newTasks = prev;
-    let itemsToSave = [];
-
-    // Check if a cross-container move happened during onDragOver
-    const origTask = snapshot.find(s => s.id === active.id);
-    const crossContainerMove = origTask && origTask.priority !== activePriority;
-
-    if (overIsSection || crossContainerMove) {
-      // Cross-container was handled in onDragOver — persist current state
-      newTasks = prev;
-      itemsToSave = prev
-        .filter(t => {
-          const orig = snapshot.find(s => s.id === t.id);
-          return !orig || orig.position !== t.position || orig.priority !== t.priority;
-        })
-        .map(t => {
-          const orig = snapshot.find(s => s.id === t.id);
-          const item = { id: t.id, position: t.position };
-          if (orig && orig.priority !== t.priority) item.priority = t.priority;
-          return item;
-        });
-    } else {
-      const overTask = prev.find(t => t.id === over.id);
-      if (!overTask || overTask.priority !== activePriority) return;
-
-      // Same container — reorder with arrayMove
-      const sectionTasks = prev.filter(t => t.priority === activePriority);
-      const oldIdx = sectionTasks.findIndex(t => t.id === active.id);
-      const newIdx = sectionTasks.findIndex(t => t.id === over.id);
-      if (oldIdx === -1 || newIdx === -1 || oldIdx === newIdx) return;
-
-      const reordered = arrayMove(sectionTasks, oldIdx, newIdx);
-      const reorderedWithPos = reordered.map((t, i) => ({ ...t, position: i }));
-
-      const otherTasks = prev.filter(t => t.priority !== activePriority);
-      newTasks = [...otherTasks, ...reorderedWithPos].sort((a, b) => {
-        const pa = PRIORITY_SECTIONS.findIndex(s => s.key === a.priority);
-        const pb = PRIORITY_SECTIONS.findIndex(s => s.key === b.priority);
-        if (pa !== pb) return pa - pb;
-        return a.position - b.position;
-      });
-
-      itemsToSave = reorderedWithPos
-        .filter(t => {
-          const orig = snapshot.find(s => s.id === t.id);
-          return !orig || orig.position !== t.position;
-        })
-        .map(t => ({ id: t.id, position: t.position }));
     }
 
     setTasks(newTasks);
@@ -1164,11 +1028,7 @@ export default function TaskBoardPage() {
     if (itemsToSave.length === 0) return;
 
     try {
-      const res = await fetch('/api/tasks/reorder', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: itemsToSave }),
-      });
+      const res = await reorderTasks(itemsToSave);
       if (!res.ok) console.error('Reorder API error:', await res.text());
     } catch (err) {
       console.error('Failed to reorder tasks', err);
@@ -1548,8 +1408,9 @@ export default function TaskBoardPage() {
                                           <StatusPicker
                                             current={sub.status}
                                             onSelect={(val) => {
-                                              const updated = (task.subtasks || []).map(s => s.id === sub.id ? { ...s, status: val } : s);
-                                              updateSubtasks(task.id, updated);
+                                              const nextTasks = updateSubtaskInTask(tasks, task.id, sub.id, { status: val });
+                                              const nextTask = nextTasks.find(t => t.id === task.id);
+                                              updateSubtasks(task.id, nextTask?.subtasks || []);
                                             }}
                                             onClose={() => setStatusPickerOpen(null)}
                                             anchorRef={{ current: statusAnchorRefs.current[pickerKey] }}

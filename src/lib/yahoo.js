@@ -100,7 +100,13 @@ export async function validateTicker(ticker) {
   return { valid: false, suggestions };
 }
 
-export async function fetchQuotes(tickers) {
+// `basic: true` returns only the batch-quote fields (price, day change, name,
+// 52-week range, marketCap) and SKIPS the per-ticker quoteSummary round-trips.
+// Callers that render just a price/mover — the dashboard's holdings pie and
+// movers — don't touch the fundamentals, so paying for N quoteSummary calls
+// there is pure latency (it was the dashboard's slowest hop). The watchlist,
+// which shows PE/EV/growth, omits the flag and gets the full payload.
+export async function fetchQuotes(tickers, { basic = false } = {}) {
   const result = {};
   if (!tickers?.length) return result;
 
@@ -121,7 +127,9 @@ export async function fetchQuotes(tickers) {
   // 2. Layer in the richer quoteSummary fundamentals per ticker. These are
   //    best-effort: a failure here (e.g. rate limit) leaves the price intact
   //    rather than nulling it out and surfacing a "failed to load" error.
-  for (const t of tickers) {
+  //    Resolving one ticker must NEVER throw — a single bad symbol has to
+  //    degrade to a no-data entry, not sink the whole response.
+  async function resolveTicker(t) {
     let quote = quoteMap[t];
     if (!quote) {
       // Symbol missing from the batch — try once, then retry after a short delay.
@@ -132,17 +140,41 @@ export async function fetchQuotes(tickers) {
           await new Promise(r => setTimeout(r, 500));
           quote = await yahooFinance.quote(t);
         } catch (retryErr) {
-          result[t] = { price: null, error: retryErr.message };
-          continue;
+          return { price: null, error: retryErr.message };
         }
       }
     }
+
+    // Yahoo RESOLVES an unknown/foreign symbol (e.g. bare "UMG", which only
+    // lists as UMG.AS) to `undefined` instead of throwing, so the catch above
+    // never fires. Guard here: without it buildQuote reads
+    // `undefined.postMarketPrice`, throws, and 500s the entire /api/quotes
+    // response — blanking out every other (valid) ticker on the watchlist.
+    if (!quote?.symbol) return { price: null, error: 'no data' };
+
+    // Basic mode: everything the caller needs is already in the batch quote —
+    // don't pay for the fundamentals round-trip. buildQuote handles a null
+    // summary (the fundamentals fields just come back null).
+    if (basic) return buildQuote(quote, null);
 
     const summary = await yahooFinance.quoteSummary(t, {
       modules: ['financialData', 'defaultKeyStatistics', 'assetProfile'],
     }).catch(() => null);
 
-    result[t] = buildQuote(quote, summary);
+    return buildQuote(quote, summary);
+  }
+
+  // The fundamentals calls are independent per ticker, so run them in small
+  // concurrent windows rather than strictly one-at-a-time — for a full
+  // watchlist that's the difference between ~N sequential round-trips and a
+  // handful of batched ones. The window stays small on purpose: a flat parallel
+  // burst of all N trips Yahoo's rate limit (worse under dev StrictMode's
+  // double-fire), but a few at a time does not.
+  const CONCURRENCY = 6;
+  for (let i = 0; i < tickers.length; i += CONCURRENCY) {
+    const window = tickers.slice(i, i + CONCURRENCY);
+    const resolved = await Promise.all(window.map(resolveTicker));
+    window.forEach((t, j) => { result[t] = resolved[j]; });
   }
 
   return result;
@@ -237,49 +269,52 @@ export async function fetchFundamentals(tickers) {
 
 export async function fetchPeriodChanges(tickers, period) {
   const result = {};
+  const periodMap = { '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825 };
 
-  for (const t of tickers) {
+  // Per-ticker change (a delisted/foreign symbol quietly falls back to 0 rather
+  // than sinking the response — same contract as before).
+  async function changeFor(t) {
     try {
       if (period === '1d') {
         const quote = await yahooFinance.quote(t);
-        const price = safeFloat(quote.regularMarketPrice);
-        const prev = safeFloat(quote.regularMarketPreviousClose);
-        if (price && prev) {
-          result[t] = Math.round(((price - prev) / prev) * 100 * 10000) / 10000;
-        } else {
-          result[t] = 0;
-        }
-      } else {
-        const periodMap = { '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825 };
-        const days = periodMap[period];
-        if (!days) { result[t] = 0; continue; }
-
-        const end = new Date();
-        const start = new Date();
-        start.setDate(start.getDate() - days);
-
-        const chartResult = await yahooFinance.chart(t, {
-          period1: start.toISOString().split('T')[0],
-          period2: end.toISOString().split('T')[0],
-        });
-        const hist = chartResult.quotes || [];
-
-        if (!hist || hist.length < 2) {
-          result[t] = 0;
-          continue;
-        }
-
-        const startPrice = hist[0].close;
-        const endPrice = hist[hist.length - 1].close;
-        if (startPrice > 0) {
-          result[t] = Math.round(((endPrice - startPrice) / startPrice) * 100 * 10000) / 10000;
-        } else {
-          result[t] = 0;
-        }
+        const price = safeFloat(quote?.regularMarketPrice);
+        const prev = safeFloat(quote?.regularMarketPreviousClose);
+        if (price && prev) return Math.round(((price - prev) / prev) * 100 * 10000) / 10000;
+        return 0;
       }
+
+      const days = periodMap[period];
+      if (!days) return 0;
+
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - days);
+
+      const chartResult = await yahooFinance.chart(t, {
+        period1: start.toISOString().split('T')[0],
+        period2: end.toISOString().split('T')[0],
+      });
+      const hist = chartResult?.quotes || [];
+      if (hist.length < 2) return 0;
+
+      const startPrice = hist[0].close;
+      const endPrice = hist[hist.length - 1].close;
+      if (startPrice > 0) return Math.round(((endPrice - startPrice) / startPrice) * 100 * 10000) / 10000;
+      return 0;
     } catch {
-      result[t] = 0;
+      return 0;
     }
+  }
+
+  // Bounded concurrency (see fetchQuotes): the Dip Finder asks for every
+  // watchlist name at once, so a strictly sequential chart() loop is the slow
+  // path the user feels when switching periods. A small window parallelizes it
+  // without bursting past Yahoo's rate limit.
+  const CONCURRENCY = 6;
+  for (let i = 0; i < tickers.length; i += CONCURRENCY) {
+    const window = tickers.slice(i, i + CONCURRENCY);
+    const changes = await Promise.all(window.map(changeFor));
+    window.forEach((t, j) => { result[t] = changes[j]; });
   }
 
   return result;
