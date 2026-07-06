@@ -1,9 +1,9 @@
 # AlphaOS — Database Architecture
 
-*Verified against the live Supabase database on 2026-07-06 (all migrations
-001–020 applied). Companion docs: `AUTH_ARCHITECTURE.md` (who may touch what
-and why) and `BACKEND_ARCHITECTURE.md` (the app code that talks to this
-database).*
+*Verified against the live Supabase database on 2026-07-06. Companion docs:
+`AUTH_ARCHITECTURE.md` (who may touch what and why) and
+`BACKEND_ARCHITECTURE.md` (the app code that talks to this database). The
+ordered SQL change history lives in `scripts/migrations/`.*
 
 This document describes the data layer: how the database is reached, how the
 schema is evolved, what every table is for, the multi-tenant mechanics, and
@@ -34,16 +34,16 @@ facts shape everything else:
    | Tenant JWT (minted per request by `src/lib/supabaseTenant.js`, 1 h TTL, `tenant_id` claim) | server only | its own tenant's rows, via the `tenant_isolation` policies |
    | Service-role key (`SUPABASE_SERVICE_ROLE_KEY`) | server + CI only | everything (BYPASSRLS) — used for identity tables, cron, demo reset, and pipeline sync, always stamping `tenant_id` explicitly |
 
-As of 2026-07-06 the live database exposes **67 relations** through PostgREST:
-31 tenant-scoped data tables, `users` + `tenants` + `auth_revocations`
-(service-role-only), 8 pipeline/no-tenant relations (one of them a view), and
-25 legacy `demo_*` tables (superseded, droppable).
+The live database exposes **33 relations** through PostgREST: 28 tenant-scoped
+data tables, `users` + `tenants` + `auth_revocations` (service-role-only), and
+2 no-tenant pipeline tables (`macro_regime_signal`, `task_comments`).
 
 ---
 
 ## 2. Multi-tenancy mechanics
 
-Introduced by migration `005_multitenancy.sql`; re-assertable by `018`/`019`.
+Tenant isolation is enforced entirely in the database (RLS), not by application
+`WHERE` clauses.
 
 - **`app_current_tenant()`** (SQL function, `STABLE`) reads the `tenant_id`
   claim out of the request JWT (`request.jwt.claims`). It returns NULL for the
@@ -63,23 +63,24 @@ Introduced by migration `005_multitenancy.sql`; re-assertable by `018`/`019`.
 
   `FOR ALL` + `WITH CHECK` refuses cross-tenant reads, writes, and re-stamping
   a row into another tenant.
-- RLS is `ENABLE`d **and `FORCE`d** on *every* public table (001, re-asserted
-  by 018), so even the table owner can't bypass it.
+- RLS is `ENABLE`d **and `FORCE`d** on *every* public table, so even the table
+  owner can't bypass it.
 - **Identity tables** (`users`, `tenants`) and `auth_revocations` are RLS-on
   with **no policies** and explicit `REVOKE` from anon/authenticated:
   service-role only.
-- **Pipeline tables without `tenant_id`** (`rag_*`, `scraped_content`,
-  `content_chunks`, `chat_*`, `macro_regime_signal`, `task_comments`) are
-  RLS-on with no policies: service-role only by construction.
-- **Views bypass table RLS** — migration 019 therefore revokes
-  anon/authenticated on every public view and sets `security_invoker = true`,
-  so even a later re-grant only exposes what the caller's own RLS allows.
+- **Pipeline tables without `tenant_id`** (`macro_regime_signal`,
+  `task_comments`) are RLS-on with no policies: service-role only by
+  construction.
+- **Views bypass table RLS** — so anon/authenticated are revoked on every
+  public view and `security_invoker = true` is set, so even a later re-grant
+  only exposes what the caller's own RLS allows. (There are no public views
+  today; this remains the standing rule for any future one.)
 
 ### Reserved tenants
 
 | Tenant | UUID | Notes |
 |---|---|---|
-| CIO Alpha | `11111111-1111-1111-1111-111111111111` | original production data (005 backfilled every pre-tenancy row here); cannot be deleted through any code path |
+| CIO Alpha | `11111111-1111-1111-1111-111111111111` | holds the original production data; cannot be deleted through any code path |
 | Demo | `22222222-2222-2222-2222-222222222222` | `tenants.is_demo = true`; wiped + re-seeded on every `demo`/`demo` login (§8) |
 
 ### The singleton pattern
@@ -90,12 +91,12 @@ Config tables that used to be single-row (`portfolio_cash`,
 per tenant — while keeping an `id` column defaulted to `1` so legacy
 `.eq('id', 1)` reads and `{ id: 1 }` upserts still resolve under RLS. New
 tenants get these rows from `seedTenantDefaults()` (`src/lib/users.js`) at
-creation; the two reserved tenants were seeded by 005.
+creation; the two reserved tenants already have them.
 
 ### Per-tenant business keys
 
-Global uniques were re-scoped so two tenants can hold the same ticker/date/key
-(005 did most; `009_finish_tenant_keys.sql` finished the stragglers):
+Business uniques are scoped per tenant so two tenants can hold the same
+ticker/date/key:
 
 | Table | Key |
 |---|---|
@@ -104,57 +105,32 @@ Global uniques were re-scoped so two tenants can hold the same ticker/date/key
 | `app_settings` | `UNIQUE (tenant_id, key)` |
 | `watchlists` | `PRIMARY KEY (tenant_id, id)` (`id` is text, e.g. `'default'`) |
 | `fund_nav_data` | `UNIQUE (tenant_id, date)` |
-| `prism_recommendations` | `UNIQUE (tenant_id, source_file)` |
-| `prism_ticker_data` | `UNIQUE (tenant_id, ticker, category)` |
-| `prism_ticker_documents` | `UNIQUE (tenant_id, ticker, filename)` |
 
 Upsert call sites pass the matching `onConflict` (e.g.
 `{ onConflict: 'tenant_id,ticker' }`).
 
 ---
 
-## 3. Schema evolution (migrations)
+## 3. Schema evolution
 
-Two artifacts, complementary:
+There is **no programmatic DDL path** (the app holds only PostgREST keys, no
+connection string), so every schema change is applied **by hand, once, in the
+Supabase SQL editor**. Two artifacts, complementary:
 
 - **`scripts/supabase-schema.sql`** — the idempotent *from-scratch* schema
   (base tables, buckets, storage policies, `updated_at` triggers, the
   auto-notify RPC). Safe to re-run; used only for brand-new projects.
-- **`scripts/migrations/NNN_*.sql`** — ordered, append-only migrations, run
-  **once, by hand, in the Supabase SQL editor** (no programmatic DDL path
-  exists). Each is idempotent where practical; never edit an applied one —
-  add a new number. After writing one, mirror the end-state into
-  `supabase-schema.sql`.
-
-Catalog (001–021 all **applied** to the live DB as of 2026-07-06):
-
-| # | What it did |
-|---|---|
-| 001 | RLS enabled + forced on every public table (locks the anon key out) |
-| 002 | Dropped orphaned `prism_runs` / `demo_prism_runs` |
-| 003 | `set_updated_at()` trigger on every table with an `updated_at` column |
-| 004 | Dropped public INSERT/DELETE storage policies (public read kept) |
-| 005 | Multitenancy: `tenants`/`users`, `tenant_id` everywhere, `app_current_tenant()`, `tenant_isolation` policies, singleton re-keying, per-tenant uniques, demo/CIO seed |
-| 006 | `set_draftreview_autonotify_sent()` RPC (nested-path JSONB update for the cron's dedup map) |
-| 007 | `lessons` + `lesson_patterns` tables |
-| 008 | `users.disabled_features text[]` (per-user feature denylist) |
-| 009 | Finished per-tenant keys (`ticker_prices`/`ticker_fundamentals` PK, `theses`/`valuation_models`, `fund_nav_data`, `app_settings`) |
-| 010 | `issues` table (tenant-scoped tracker) |
-| 011 | Sub-users: role CHECK widened to `admin/owner/user`, `users.created_by` |
-| 012 | One-time promotion of legacy single logins to workspace `owner` |
-| 013 | `issues.number` (per-tenant sequential) + `issues.labels` |
-| 014 | `issues.priority` (1–4) + `issues.dev_notes` (admin triage) |
-| 015 | `issues.sort_order` (manual ordering within a priority band) |
-| 016 | `issues.complexity` (1–4) |
-| 017 | Widened complexity CHECK to 1–5 |
-| 018 | Re-lock: RLS everywhere, drop stray policies, recreate `tenant_isolation` — re-run after any dashboard experiment or pipeline table rebuild |
-| 019 | Lock views: revoke anon/authenticated on every public view + `security_invoker = true` |
-| 020 | `auth_revocations(subject, not_before)` — session-revocation floor (service-role-only) |
-| 021 | **Private storage buckets** (drop public read; reads go through `/api/storage/object` → signed URLs). Applied 2026-07-06 after the code deploy + `scripts/migrate-storage-urls.mjs`; verified live in prod. |
+- **`scripts/migrations/`** — the ordered, append-only SQL change history, one
+  numbered file per change. Each is idempotent where practical; never edit an
+  applied one — add a new file. After writing one, mirror the end-state into
+  `supabase-schema.sql`. The catalog of what each file did lives in
+  `scripts/migrations/README.md`; **this document describes only the resulting
+  current state.**
 
 **Drift discipline:** anything created outside the repo (dashboard quick-adds,
-pipeline `CREATE TABLE`) starts unlocked. Re-running 018 + 019 restores the
-intended end-state regardless of cause.
+pipeline `CREATE TABLE`) starts unlocked. The RLS/view-lock migrations are
+idempotent — re-running them restores the intended end-state regardless of
+cause.
 
 ---
 
@@ -232,7 +208,7 @@ table must be added to that list** or workspace deletion will orphan its rows.
 
 | Table | Purpose |
 |---|---|
-| `issues` | GitHub-style tickets: `title`, `body JSONB` (rich-text blocks), `status open|resolved`, `author` (server-set from the session; non-admins only ever see their own), `comments JSONB`, per-tenant `number`, `labels JSONB`, and the admin-only triage columns `priority` (1–4), `complexity` (1–5, CHECK widened by 017), `dev_notes`, `sort_order`. `number` is assigned by a read-max+1 under RLS (races acceptable, no uniqueness constraint). |
+| `issues` | GitHub-style tickets: `title`, `body JSONB` (rich-text blocks), `status open|resolved`, `author` (server-set from the session; non-admins only ever see their own), `comments JSONB`, per-tenant `number`, `labels JSONB`, and the admin-only triage columns `priority` (1–4), `complexity` (1–5), `dev_notes`, `sort_order`. `number` is assigned by a read-max+1 under RLS (races acceptable, no uniqueness constraint). |
 
 ### Config singletons (one row per tenant, `id = 1`)
 
@@ -251,27 +227,6 @@ portfolio weights), `portfolio_cash`.
 | `macro_regime_results` | parsed outputs of a completed run: `backtest JSONB` (row array from CSV), `live_prediction JSONB` (final-model signal — preferred over the last backtest row), `metrics`, `report` (markdown), **`plots JSONB` (`{filename: base64 png}`)**, validation report/data. ⚠️ The schema file calls `run_id` a soft reference, but the **live DB has a hard FK to `macro_regime_runs.id`** (no cascade) — so results must always be deleted *before* runs (demo wipe and workspace purge are ordered accordingly), and pruning runs before their results can fail quietly. **Retention: newest 3 per tenant.** |
 | `macro_regime_signal` | legacy pipeline-era signal cache; no `tenant_id`, service-role only, unread by current app code. |
 
-### Prism AI (LLM fundamental-analysis pipeline)
-
-| Table | Purpose |
-|---|---|
-| `prism_recommendations` | one row per analysis output: ticker, analysis_date, signal (BUY/HOLD/AVOID), conviction, position_size_pct, price_target, `recommendation`/`sections JSONB`, `full_response`, `source_file`. Signal-history helpers live in `lib/prismSignal.js`. The UI over this was archived (`docs/ai-pipeline-archive.md`) but the data + pipeline remain. |
-| `prism_ticker_data` | generated CSVs stored as text, keyed `(tenant_id, ticker, category)` — e.g. `fundamentals/revenue`. |
-| `prism_ticker_documents` | uploaded research PDFs, base64, keyed `(tenant_id, ticker, filename)`. |
-
-### RAG / chat (service-role-only, no tenant_id, no policies)
-
-`scraped_content`, `content_chunks` (with `embedding`), `chat_conversations`,
-`chat_messages`, `rag_traces`, and the **`rag_coverage` view** (ingest stats —
-the view that caused audit finding F1). These belong to the Python-pipeline
-era; nothing in `src/` reads them today. They are locked (018/019) and safe to
-leave or drop.
-
-### Legacy `demo_*` clones (25 tables)
-
-Pre-multitenancy demo copies of the data tables. Superseded by the Demo tenant
-on 2026-07-01, unread, RLS-locked. Safe to drop whenever.
-
 ---
 
 ## 5. Functions, triggers, views
@@ -279,9 +234,8 @@ on 2026-07-01, unread, RLS-locked. Safe to drop whenever.
 | Object | Purpose |
 |---|---|
 | `app_current_tenant() → uuid` | reads the JWT `tenant_id` claim; used by every policy and as the column DEFAULT. `GRANT EXECUTE` to authenticated + anon (policies call it). |
-| `set_updated_at()` + `set_updated_at_<table>` triggers | BEFORE UPDATE on every table with an `updated_at` column (003; the schema file re-creates them for new tables). |
-| `set_draftreview_autonotify_sent(p_tenant, p_ticker, p_sent)` | 006 — `jsonb_set` of exactly `underwriting → draftReview → autoNotify → sent` on one thesis, so the auto-notify cron can persist its dedup map **without clobbering a concurrent full-thesis save**. `service_role` execute only. |
-| `rag_coverage` (view) | pipeline ingest stats. Locked by 019 (no anon/authenticated grants, `security_invoker = true`). |
+| `set_updated_at()` + `set_updated_at_<table>` triggers | BEFORE UPDATE on every table with an `updated_at` column (the schema file re-creates them for new tables). |
+| `set_draftreview_autonotify_sent(p_tenant, p_ticker, p_sent)` | `jsonb_set` of exactly `underwriting → draftReview → autoNotify → sent` on one thesis, so the auto-notify cron can persist its dedup map **without clobbering a concurrent full-thesis save**. `service_role` execute only. |
 
 ---
 
@@ -299,7 +253,7 @@ whole, rather than normalized across many tables. Conventions to preserve:
 - **`theses.underwriting`** is the biggest document. Load-bearing paths:
   - `researchWorkspace` — `{ note, fundamentals{revenueGrowth, profitability, capitalReturn, misc}, dueDiligenceItems[], dislocationItems[] }`; seeded **once** on entry to the research stage and never overwritten (`workspaceHasContent` guard in `lib/stageMove.js`).
   - `draftReview` — `{ paper: blocks[], threads: [{ id, title, resolved, messages: [{ id, role: 'author'|'reviewer', body, createdAt }] }], author {name,email}, reviewer {name,email}, autoNotify { enabled, everyDays 1–3, atMinutes, tz, roles, sent } }`.
-  - `autoNotify.sent` — `{ [threadId]: { msgId, at } }`, the cron/in-app shared dedup map. Written only through the 006 RPC on the server path.
+  - `autoNotify.sent` — `{ [threadId]: { msgId, at } }`, the cron/in-app shared dedup map. Written only through the `set_draftreview_autonotify_sent` RPC on the server path.
   - `sectionsComplete`, `equityRating`, valuation input fields — drive the Workflow progress strip (`lib/researchProgress.js`).
 - **`watchlists.stocks[*].stage`** is the pipeline enum
   (`watching → draft → research → position`); every other ticker-keyed store
@@ -314,8 +268,8 @@ whole, rather than normalized across many tables. Conventions to preserve:
 
 ## 7. Storage (private buckets + signed URLs)
 
-Two **private** buckets (migration 021, applied); table RLS does not apply to
-objects, so isolation is enforced in the app's storage layer instead:
+Two **private** buckets; table RLS does not apply to objects, so isolation is
+enforced in the app's storage layer instead:
 
 | Bucket | Contents | Path convention |
 |---|---|---|
@@ -335,17 +289,16 @@ objects, so isolation is enforced in the app's storage layer instead:
   logs, exports, referrers) are therefore worthless without a session, and
   the only bearer-readable artifact is a signed URL bounded by its TTL
   (7 days for the ones minted into reminder emails at send time).
-- The buckets hold **no anon/authenticated policies**; every operation runs
-  through the service-role client behind the helpers above. Public
-  INSERT/DELETE were dropped in 004, public READ in 021.
+- The buckets hold **no anon/authenticated policies** at all — no public
+  INSERT, DELETE, or READ; every operation runs through the service-role
+  client behind the helpers above.
 - The CIO tenant may additionally read/delete pre-multitenancy paths that
   carry no tenant prefix (they predate prefixing and can never collide with a
   tenant UUID prefix) — `isPathAllowedForTenant` encodes this exception once
   for reads, deletes, and email signing.
-- Rows/content written before the cutover stored public object URLs;
-  `scripts/migrate-storage-urls.mjs` rewrites them to app URLs (and
-  `/api/documents` re-derives `url` from `storage_path` on every read
-  regardless).
+- Stored URLs are never trusted: `/api/documents` re-derives `url` from
+  `storage_path` on every read, so a row always resolves to the current
+  session-gated app URL.
 - Workspace deletion purges `<tenant_id>/` in both buckets via the non-exported
   `purgeTenantStorage()` (UUID-shape check + per-path prefix re-check).
 - Demo resets do **not** purge storage (rows are wiped so objects become
@@ -366,8 +319,7 @@ objects, so isolation is enforced in the app's storage layer instead:
      rescaled to live Yahoo quotes when reachable);
   4. uploads demo PDFs to deterministic storage paths (upsert-in-place).
 - Resets are coalesced and throttled (20 s min interval); insert helpers
-  tolerate schema drift (strip unknown columns and retry) and, pre-009,
-  tolerated cross-tenant unique collisions (no longer relevant — 009 applied).
+  tolerate schema drift (strip unknown columns and retry).
 - Everything runs through the service role with `tenant_id` stamped explicitly.
 
 ---
@@ -391,16 +343,17 @@ Everything else is kept indefinitely; there are no other TTLs.
 1. Write a numbered migration: `CREATE TABLE … tenant_id uuid NOT NULL DEFAULT
    public.app_current_tenant()`, tenant index, `ENABLE`+`FORCE` RLS, the
    `tenant_isolation` policy, `GRANT SELECT, INSERT, UPDATE, DELETE … TO
-   authenticated` (copy the 010 pattern) — or just create the table and re-run
-   018, which retrofits all of that.
+   authenticated` (copy an existing tenant-scoped table's block) — or just
+   create the table and re-run the RLS-lock migration, which retrofits all of
+   that.
 2. Business uniques go per-tenant: `UNIQUE (tenant_id, …)`, and upserts pass
    the matching `onConflict`.
 3. Add the table to `TENANT_DATA_TABLES` in `src/lib/users.js` (workspace
    purge) and, if the demo should showcase it, to `DEMO_TABLES` +
    `lib/demoData.js`.
-4. If it has `updated_at`, the 003 trigger loop in `supabase-schema.sql`
-   covers it on fresh installs; live DBs get it by re-running that DO block.
-5. Mirror the end-state into `scripts/supabase-schema.sql` and add the row to
-   `scripts/migrations/README.md`.
+4. If it has `updated_at`, the trigger loop in `supabase-schema.sql` covers it
+   on fresh installs; live DBs get it by re-running that DO block.
+5. Mirror the end-state into `scripts/supabase-schema.sql` and record the
+   change in `scripts/migrations/README.md`.
 6. If the table's API should be feature-gated, map its route prefix in
    `API_FEATURES` (`src/lib/features.js`) — see `AUTH_ARCHITECTURE.md` §5.

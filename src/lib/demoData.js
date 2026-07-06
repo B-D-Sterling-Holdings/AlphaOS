@@ -20,7 +20,7 @@
 
 import {
   demoId, dstr, addDays, lastBusinessDay, businessDays,
-  pricePath, marketDataFor, fundamentalsFor, seriesToCsv,
+  pricePath, marketDataFor, fundamentalsFor,
   navSeries, accountingState, macroBacktest, macroMetrics, macroLivePrediction,
   makePdf,
 } from './demoSeries.js';
@@ -652,70 +652,6 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
         ['author', 'No - the outcome can end up fine and the process was still wrong. That distinction is the whole point of the library. Entry stays a process mistake regardless of where the stock goes.'],
       ], ago(55))],
     }, 65),
-  ];
-
-  /* ── Prism AI (recommendations + pipeline data + docs) ───────── */
-  const rec = (label, ticker, daysAgo, fields) => ({
-    id: demoId(`rec:${label}`), ticker, analysis_date: ago(daysAgo), model: 'llama3.1:8b', analysis_mode: 'balanced',
-    price_target: null, expected_return_pct: null,
-    source_file: `${dstr(addDays(now, -daysAgo)).replace(/-/g, '')}_1${(daysAgo * 7) % 10}2${daysAgo % 10}17_${ticker}_analysis.json`,
-    created_at: ago(daysAgo), ...fields,
-  });
-  T.prism_recommendations = [
-    rec('mco', 'MCO', 12, {
-      signal: 'BUY', conviction: 'VERY_HIGH', position_size_pct: 8,
-      recommendation: { signal: 'BUY', conviction: 'VERY_HIGH', position_size_pct: 8, reasoning: 'MCO meets the durable-moat criteria in ratings; the current dislocation is sentiment-driven repricing of AI risk concentrated in the Analytics segment (~35% of operating income). Expected return >15% on multiple normalization alone.', key_risks: ['Issuance air pocket like 2022', 'Faster-than-modeled Analytics decay'], key_catalysts: ['2026-2028 refinancing wall', 'Buyback cadence'], review_trigger: 'Two consecutive quarters of MIS revenue share loss to private credit ratings', price_dislocation: 'YES_DOWN_FROM_HIGH', expected_return_pct: null, price_dislocation_detail: 'Trading ~15% below the 52-week high while segment fundamentals compounded; multiple at ~27x vs 5-year average north of 33x.' },
-      sections: { executive_summary: 'High-quality ratings franchise at a below-average multiple; AI fear misallocated across segments. Recommend BUY at 8% target weight.', fundamental_analysis: 'Revenue +10% TTM led by MIS (+18% on the refi wave). MIS operating margin ~60%; share count declining ~1.5%/yr; 15 consecutive years of dividend growth. FCF conversion consistently above 90% of net income.', qualitative_factors: 'Issuer-pays ratings duopoly protected by fund mandates and index inclusion rules; Analytics is ~95% recurring revenue on multi-year contracts. Management capital allocation disciplined.', risk_factors: 'Cyclical issuance exposure; regulatory reform of the NRSRO regime is the true tail risk; Analytics seat attrition to AI-native tooling.' },
-      full_response: '{ "sections": { "executive_summary": "High-quality ratings franchise at a below-average multiple..." } }',
-    }),
-    rec('meli', 'MELI', 9, {
-      signal: 'BUY', conviction: 'MODERATE', position_size_pct: 3,
-      recommendation: { signal: 'BUY', conviction: 'MODERATE', position_size_pct: 3, reasoning: 'Quality flywheel with improving cohort credit data; EM and credit-book tail risk argues for starter sizing. Temporary dislocation from Brazil rate spike.', key_risks: ['Brazil funding costs', 'Credit book loss-rate inflection'], key_catalysts: ['Rate normalization in Brazil', 'Ads take-rate expansion'], review_trigger: 'NPL cohort deterioration for two consecutive quarters', price_dislocation: 'YES_DOWN_FROM_HIGH', expected_return_pct: null, price_dislocation_detail: 'Roughly 25% below the high while USD revenue compounds >30%; multiple at the 5-year trough.' },
-      sections: { executive_summary: 'LatAm commerce/fintech compounder at trough multiple; credit fear looks cyclical, not structural. BUY at starter size.', fundamental_analysis: 'USD revenue +34% TTM; EBIT margin expanding ~200bps y/y on logistics scale; cohort NPLs improving three consecutive quarters with coverage above 100%.', qualitative_factors: 'Logistics network (96%+ managed) is a moat competitors cannot replicate at current unit economics; fintech attach deepens commerce lock-in.', risk_factors: 'Credit book growth outpacing GDP in a rate-stressed economy; FX translation; Argentina policy volatility.' },
-      full_response: '{ "sections": { "executive_summary": "LatAm commerce/fintech compounder at trough multiple..." } }',
-    }),
-    rec('pypl', 'PYPL', 7, {
-      signal: 'AVOID', conviction: 'HIGH', position_size_pct: 0,
-      recommendation: { signal: 'AVOID', conviction: 'HIGH', position_size_pct: 0, reasoning: 'Blended cheapness masks branded checkout share erosion; growth mix is low-take-rate processing. Fails the temporary-dislocation test - the dislocation tracks fundamentals.', key_risks: ['Value-trap continuation'], key_catalysts: ['Branded TPV stabilization (would flip the call)'], review_trigger: 'Branded TPV growth >= e-commerce growth for two consecutive quarters', price_dislocation: 'STRUCTURAL', expected_return_pct: null, price_dislocation_detail: 'Multiple compression matches branded share-loss data; not a sentiment gap.' },
-      sections: { executive_summary: 'Optically cheap, structurally challenged. AVOID pending branded checkout stabilization.', fundamental_analysis: 'Total TPV +10% but branded +2-3% for ten consecutive quarters; unbranded take rate ~100bps caps mix-adjusted revenue growth near mid single digits despite the buyback.', qualitative_factors: 'Checkout incumbency eroding vs Apple Pay/Shop Pay as button placement becomes auctioned; Venmo monetization still sub-scale.', risk_factors: 'Risk to the AVOID call: Fastlane conversion data proving out, or faster Venmo checkout attach.' },
-      full_response: '{ "sections": { "executive_summary": "Optically cheap, structurally challenged..." } }',
-    }),
-    rec('tsm', 'TSM', 5, {
-      signal: 'HOLD', conviction: 'HIGH', position_size_pct: 7,
-      recommendation: { signal: 'HOLD', conviction: 'HIGH', position_size_pct: 7, reasoning: 'Monopoly intact; leading-edge order recovery not yet confirmed in the data. Hold current weight, add only on backlog inflection - consistent with the fund\'s open process rule.', key_risks: ['Extended digestion', 'Export-control scope expansion'], key_catalysts: ['H2 order recovery', 'N2 ramp milestones'], review_trigger: 'Leading-edge bookings turning positive y/y', price_dislocation: 'YES_DOWN_FROM_HIGH', expected_return_pct: null, price_dislocation_detail: 'Down meaningfully from the high on headline risk, not share loss or pricing.' },
-      sections: { executive_summary: 'The moat is not the question; the cycle timing is. HOLD at current weight with add criteria defined.', fundamental_analysis: 'Revenue +17% CAGR modeled through 2028 on wafer pricing and AI demand; gross margin above 55% through the capex cycle; N2 pricing ~20% above N3.', qualitative_factors: 'Sole leading-edge foundry at scale; customer co-investment and multi-year prepayments make displacement economically irrational for any single node generation.', risk_factors: 'Geopolitical tail (unhedgeable); overseas fab margin dilution; a customer insourcing at trailing edge.' },
-      full_response: '{ "sections": { "executive_summary": "The moat is not the question; the cycle timing is..." } }',
-    }),
-    rec('spot', 'SPOT', 3, {
-      signal: 'BUY', conviction: 'MODERATE', position_size_pct: 10,
-      recommendation: { signal: 'BUY', conviction: 'MODERATE', position_size_pct: 10, reasoning: 'Pullback on content-spend guidance reads as discipline, not desperation; gross-margin optionality underpriced. Conditional on the open position review closing clean.', key_risks: ['Content ROI regime slipping', 'Price-hike churn'], key_catalysts: ['Gross margin through 32%', 'Price ladder execution'], review_trigger: 'Content spend growth exceeding revenue growth for two quarters', price_dislocation: 'YES_DOWN_FROM_HIGH', expected_return_pct: null, price_dislocation_detail: '~9% off the high while ARPU and margin guidance were maintained.' },
-      sections: { executive_summary: 'Audio winner in pricing-power phase; pullback is an add zone pending review confirmation.', fundamental_analysis: 'Revenue ~14% CAGR with gross margin marching past 31%; FCF positive and compounding as content amortization normalizes.', qualitative_factors: 'Per-show ROI discipline survived the leadership transition (primary-source confirmed); competitors retreated from exclusive content bidding.', risk_factors: 'Label negotiation cycles; churn response to the next price increase; short-form engagement competition.' },
-      full_response: '{ "sections": { "executive_summary": "Audio winner in pricing-power phase..." } }',
-    }),
-  ];
-
-  const mcoF = fundamentalsFor(now, { seed: 900, ...FUNDAMENTAL_PARAMS.MCO, quarters: 21 });
-  const meliF = fundamentalsFor(now, { seed: 901, ...FUNDAMENTAL_PARAMS.MELI, quarters: 21 });
-  const csvRows = (series, key) => ({ csv: seriesToCsv(series, key), n: series.length });
-  T.prism_ticker_data = [];
-  for (const [ticker, F] of [['MCO', mcoF], ['MELI', meliF]]) {
-    const specs = [
-      ['fundamentals/revenue', F.revenue, 'revenue'],
-      ['fundamentals/eps', F.eps, 'eps_diluted'],
-      ['fundamentals/buybacks', F.buybacks, 'shares_outstanding'],
-      ['fundamentals/fcf', F.fcf, 'free_cash_flow'],
-      ['fundamentals/operating_margins', F.operating_margins, 'operating_margin'],
-    ];
-    for (const [category, series, key] of specs) {
-      const { csv, n } = csvRows(series, key);
-      T.prism_ticker_data.push({ ticker, category, csv_content: csv, rows: n, updated_at: ago(10) });
-    }
-  }
-
-  T.prism_ticker_documents = [
-    { ticker: 'MCO', filename: 'MCO_Investment_Brief.pdf', content_base64: makePdf('MCO - Investment Brief (Blue Harbor demo)', ['Prepared for the Prism AI pipeline - demo artifact.', 'Thesis: ratings toll booth mispriced on AI fear.', 'Segments: MIS (~63% of op income, ~60% margin),', 'MA (~37%, 95% recurring revenue).', 'See the Draft & Review memo for the full write-up.']).toString('base64'), updated_at: ago(12) },
-    { ticker: 'MELI', filename: 'MELI_briefing_pre_earnings.pdf', content_base64: makePdf('MELI - Pre-earnings Briefing (demo)', ['Focus items: cohort NPL curves, funding costs, ads take rate.', 'Credit book is the swing factor for sizing.', 'Constant-currency view essential; FX masks unit economics.']).toString('base64'), updated_at: ago(9) },
-    { ticker: 'PYPL', filename: 'PYPL_devils_advocate_memo.pdf', content_base64: makePdf('PYPL - Devil\'s Advocate Memo (demo)', ['Deliberately adversarial write-up. Burden of proof on bulls.', 'Branded TPV +2-3% vs unbranded +20% for ten quarters.', 'Re-entry criteria: branded >= e-comm growth, 2 consecutive qtrs.']).toString('base64'), updated_at: ago(7) },
   ];
 
   /* ── Macro regime allocator ──────────────────────────────────── */

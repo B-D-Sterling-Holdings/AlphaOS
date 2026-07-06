@@ -19,15 +19,16 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 - Each migration is idempotent where practical (`IF NOT EXISTS`, `DROP ... IF EXISTS`,
   guarded `DO` blocks) so an accidental re-run is harmless.
 - Never edit a migration after it's been applied to prod — add a new one.
-- After writing a migration, mirror the end-state into `supabase-schema.sql` and,
-  if it touches a cloned table, `demo-schema.sql`.
+- After writing a migration, mirror the end-state into `supabase-schema.sql`.
 
 ## Order of operations for a fresh database
 
 1. `supabase-schema.sql`     — base tables, buckets, storage policies
-2. `demo-schema.sql`         — demo_* clones (optional; demo env only)
-3. `demo-seed.sql`           — demo data (optional)
-4. `migrations/*.sql`        — in numeric order
+2. `migrations/*.sql`        — in numeric order
+
+The demo environment is no longer a set of `demo_*` clone tables — it is the
+reserved **Demo tenant**, provisioned by `scripts/provision-demo.mjs` and
+re-seeded on every `demo`/`demo` login (see `docs/DATABASE_ARCHITECTURE.md` §8).
 
 ## Applied migrations
 
@@ -54,7 +55,9 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 | `019_lock_views.sql` | Revoke anon/authenticated from every public VIEW + set `security_invoker` — views bypass table RLS, which is how `rag_coverage` stayed anon-readable after 018. |
 | `020_session_revocation.sql` | `auth_revocations(subject, not_before)` — session-revocation floor behind logout / "sign out everywhere"; also makes the bootstrap `cio-admin` revocable. Service-role-only (RLS forced, no grants). |
 | `021_private_storage.sql` | Flip the `documents` / `research-images` buckets to **private** + drop the public-read policies (closes audit finding F3). Reads now go through `/api/storage/object` → short-lived signed URLs. ⚠️ Deploy order: ship the app code and run `scripts/migrate-storage-urls.mjs` first — see the header of the migration file. |
+| `022_drop_legacy_prism_rag_demo.sql` | Drop the retired Prism AI tables (`prism_recommendations`, `prism_ticker_data`, `prism_ticker_documents`), the RAG/chat pipeline tables + `rag_coverage` view (`scraped_content`, `content_chunks`, `chat_conversations`, `chat_messages`, `rag_traces`), and all pre-multitenancy `demo_*` clones. None are read/written by live app code. |
 
 All of 001–021 are applied to the live database (001–020 verified by probe
 2026-07-06; 021 applied and verified live in prod the same day, after the
-code deploy and `scripts/migrate-storage-urls.mjs`).
+code deploy and `scripts/migrate-storage-urls.mjs`). **022 is written but not
+yet applied — run it by hand in the Supabase SQL editor.**

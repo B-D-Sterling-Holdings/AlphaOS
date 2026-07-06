@@ -346,7 +346,6 @@ const TENANT_DATA_TABLES = [
   'portfolio_cash', 'watchlists', 'ticker_fundamentals', 'ticker_prices',
   'allocation_config', 'sector_config', 'factor_config', 'fund_nav_data',
   'strategic_notes', 'candidate_positions', 'ideas',
-  'prism_recommendations', 'prism_ticker_data', 'prism_ticker_documents',
   'macro_regime_config', 'macro_regime_results', 'macro_regime_runs',
   'macro_regime_weights', 'lessons', 'lesson_patterns', 'issues',
 ];
