@@ -46,6 +46,10 @@ BEGIN
     SELECT data_type FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'theses' AND column_name = 'assumptions'
   ) = 'text' THEN
+    -- A TEXT default (e.g. '') can't auto-cast to jsonb and blocks the TYPE
+    -- change, so drop it first. The app always supplies a value (the thesis
+    -- route defaults to ''), so no DB-level default is needed afterward.
+    ALTER TABLE public.theses ALTER COLUMN assumptions DROP DEFAULT;
     EXECUTE $ddl$
       ALTER TABLE public.theses
         ALTER COLUMN assumptions TYPE jsonb
