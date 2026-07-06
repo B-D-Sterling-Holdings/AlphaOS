@@ -179,7 +179,7 @@ table must be added to that list** or workspace deletion will orphan its rows.
 | Table | Purpose |
 |---|---|
 | `watchlists` | `id text` + `name` + **`stocks JSONB`** — the array of stock objects `{ ticker, stage, position, note, fundamentals{}, dueDiligenceItems[], dislocationItems[], … }`. `stage ∈ watching | draft | research | position` (the retired `researching` is folded into `watching` on read). Stage moves only flip this field (`lib/stageMove.js`). |
-| `theses` | the per-ticker research dossier. `core_reasons JSONB`, `assumptions TEXT` (legacy plain string or JSON-stringified rich-text blocks), `valuation`, **`underwriting JSONB`** (see §6), `news_updates JSONB`, `todos JSONB`, `notes JSONB`. `UNIQUE (tenant_id, ticker)`. |
+| `theses` | the per-ticker research dossier. `core_reasons JSONB`, **`assumptions JSONB`** (rich-text block array, or a bare string for legacy/empty — stored natively since 029), `valuation TEXT` (plain string), **`underwriting JSONB`** (see §6), `news_updates JSONB`, `todos JSONB`, `notes JSONB`. `UNIQUE (tenant_id, ticker)`. |
 | `valuation_models` | `inputs JSONB` for the editable income-statement valuation engine (`lib/valuationModel.js`); outputs are recomputed client-side, never stored. |
 | `ticker_prices` | generated market data, one row per `(ticker, data_type)` with `data_type ∈ daily_prices | market_data` and `data JSONB` (arrays of `{date, close}` / metric rows). Written by Generate Data (`lib/generateData.js`) from Yahoo. |
 | `ticker_fundamentals` | same shape, `data_type ∈ revenue | eps | fcf | operating_margins | buybacks`, each a TTM quarterly frame computed from Alpha Vantage statements. **The app treats "has fundamentals rows" as "data exists"** (`/api/ticker/[ticker]`), which is why Generate Data refuses to report success without them. |
@@ -190,9 +190,20 @@ table must be added to that list** or workspace deletion will orphan its rows.
 
 | Table | Purpose |
 |---|---|
-| `strategic_notes` | per-held-position CIO annotations: sentiment, conviction 1–5, action (hold/trim/add/watch/exit), target_weight, priority, sort_order. `UNIQUE (tenant_id, ticker)`. |
-| `candidate_positions` | research-pipeline candidates not yet held: status (researching/watching/ready/passed), sentiment, conviction, target_weight, sort_order. |
+| `strategic_notes` | per-held-position CIO annotations, **one row per held ticker** (`UNIQUE (tenant_id, ticker)`, upsert). `sentiment` ∈ uneasy/neutral/feeling_good, `conviction` 1–5, `action` ∈ exit/trim/hold/add(/watch), `priority` ∈ low/normal/high/urgent, plus `action_reason`, `alternatives`, `expected_return`, `target_weight`, `sort_order`. Enum columns are CHECK-constrained (027). |
+| `candidate_positions` | research-pipeline candidates not yet held — an **id-keyed list** (a ticker may recur), distinct from `strategic_notes`. `status` ∈ researching/watching/ready/passed, `sentiment`/`priority`/`conviction` share the same vocab as strategic_notes, plus `target_weight`, `sort_order`. Enum columns CHECK-constrained (027). *Not merged with `strategic_notes`: different key model + different type-specific fields (see note below).* |
 | `ideas` | free-form sticky notes: title/content/color/category/tags, pinned, archived, position. |
+
+> **Why `strategic_notes` and `candidate_positions` stay separate.** They look
+> similar (both carry sentiment/conviction/priority/target_weight for a ticker)
+> but model different things: `strategic_notes` is a **1:1 annotation on a held
+> position** (ticker-unique, upsert), while `candidate_positions` is a **list of
+> research ideas** (id-keyed, a ticker may appear more than once) with its own
+> `status` lifecycle and none of the held-position fields (`action`,
+> `expected_return`, `alternatives`). Merging them behind a discriminator would
+> force those columns nullable and break the ticker-unique upsert — a
+> single-table-inheritance smell for no real gain. They share the same enum
+> vocabularies (enforced by 027), which is the consistency that actually matters.
 
 ### Relationships (CRM)
 
@@ -242,7 +253,7 @@ via `lib/appSettings.js`:
 | Table | Purpose |
 |---|---|
 | `macro_regime_runs` | job history: `run_type` (run/fast/validate/predict/clean), status, timestamps, `log_output` (last 10 kB). **Retention: newest 5 per tenant** (pruned by the run route and `scripts/macro-sync.mjs`). |
-| `macro_regime_results` | parsed outputs of a completed run: `backtest JSONB` (row array from CSV), `live_prediction JSONB` (final-model signal — preferred over the last backtest row), `metrics`, `report` (markdown), **`plots JSONB` (`{filename: storage_path}`)** — the PNGs live in the `macro-plots` bucket (see §7), not inline; the row stores only paths. Validation report/data. ⚠️ The schema file calls `run_id` a soft reference, but the **live DB has a hard FK to `macro_regime_runs.id`** (no cascade) — so results must always be deleted *before* runs (demo wipe and workspace purge are ordered accordingly), and pruning runs before their results can fail quietly. **Retention: newest 3 per tenant** (pruning a result also purges its plot folder). |
+| `macro_regime_results` | parsed outputs of a completed run: `backtest JSONB` (row array from CSV), `live_prediction JSONB` (final-model signal — preferred over the last backtest row), `metrics`, `report` (markdown), **`plots JSONB` (`{filename: storage_path}`)** — the PNGs live in the `macro-plots` bucket (see §7), not inline; the row stores only paths. Validation report/data. `run_id` is a hard FK to `macro_regime_runs.id` with **ON DELETE SET NULL** (029→028): deleting a run nulls the reference instead of erroring, so the old "delete results before runs" ordering is now just belt-and-suspenders, not a correctness requirement. **Retention: newest 3 per tenant** (pruning a result also purges its plot folder). |
 | `macro_regime_signal` | legacy pipeline-era signal cache; no `tenant_id`, service-role only, unread by current app code. |
 
 ---
@@ -268,6 +279,8 @@ whole, rather than normalized across many tables. Conventions to preserve:
   Legacy plain/HTML strings still appear and every reader tolerates them
   (`normalizeBody` in the issues route, `richHasContent` in
   `lib/researchProgress.js`, `renderBody` in `lib/email.js`).
+  `theses.assumptions` is a JSONB column of exactly this shape (or a bare string
+  for legacy/empty rows), stored natively since 029 — no serialize/parse.
 - **`theses.underwriting`** is the biggest document. Load-bearing paths:
   - `researchWorkspace` — `{ note, fundamentals{revenueGrowth, profitability, capitalReturn, misc}, dueDiligenceItems[], dislocationItems[] }`; seeded **once** on entry to the research stage and never overwritten (`workspaceHasContent` guard in `lib/stageMove.js`).
   - `draftReview` — `{ paper: blocks[], threads: [{ id, title, resolved, messages: [{ id, role: 'author'|'reviewer', body, createdAt }] }], author {name,email}, reviewer {name,email}, autoNotify { enabled, everyDays 1–3, atMinutes, tz, roles, sent } }`.
