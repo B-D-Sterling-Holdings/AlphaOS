@@ -126,8 +126,7 @@ Two artifacts, complementary:
   add a new number. After writing one, mirror the end-state into
   `supabase-schema.sql`.
 
-Catalog (001–020 **applied** to the live DB as of 2026-07-06; 021 pending —
-it must follow the code deploy):
+Catalog (001–021 all **applied** to the live DB as of 2026-07-06):
 
 | # | What it did |
 |---|---|
@@ -151,7 +150,7 @@ it must follow the code deploy):
 | 018 | Re-lock: RLS everywhere, drop stray policies, recreate `tenant_isolation` — re-run after any dashboard experiment or pipeline table rebuild |
 | 019 | Lock views: revoke anon/authenticated on every public view + `security_invoker = true` |
 | 020 | `auth_revocations(subject, not_before)` — session-revocation floor (service-role-only) |
-| 021 | **Private storage buckets** (drop public read; reads go through `/api/storage/object` → signed URLs). *Written, not yet applied — must follow the `auth_design` deploy + `scripts/migrate-storage-urls.mjs`; see the file header.* |
+| 021 | **Private storage buckets** (drop public read; reads go through `/api/storage/object` → signed URLs). Applied 2026-07-06 after the code deploy + `scripts/migrate-storage-urls.mjs`; verified live in prod. |
 
 **Drift discipline:** anything created outside the repo (dashboard quick-adds,
 pipeline `CREATE TABLE`) starts unlocked. Re-running 018 + 019 restores the
@@ -315,9 +314,8 @@ whole, rather than normalized across many tables. Conventions to preserve:
 
 ## 7. Storage (private buckets + signed URLs)
 
-Two **private** buckets (migration 021 — apply after the `auth_design` deploy);
-table RLS does not apply to objects, so isolation is enforced in the app's
-storage layer instead:
+Two **private** buckets (migration 021, applied); table RLS does not apply to
+objects, so isolation is enforced in the app's storage layer instead:
 
 | Bucket | Contents | Path convention |
 |---|---|---|
