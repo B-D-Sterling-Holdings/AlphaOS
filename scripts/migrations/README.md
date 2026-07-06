@@ -55,6 +55,6 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 | `020_session_revocation.sql` | `auth_revocations(subject, not_before)` — session-revocation floor behind logout / "sign out everywhere"; also makes the bootstrap `cio-admin` revocable. Service-role-only (RLS forced, no grants). |
 | `021_private_storage.sql` | Flip the `documents` / `research-images` buckets to **private** + drop the public-read policies (closes audit finding F3). Reads now go through `/api/storage/object` → short-lived signed URLs. ⚠️ Deploy order: ship the app code and run `scripts/migrate-storage-urls.mjs` first — see the header of the migration file. |
 
-All of 001–020 are applied to the live database (verified by probe 2026-07-06).
-**021 is written but NOT yet applied** — it must wait until the `auth_design`
-branch (which serves `/api/storage/object`) is deployed.
+All of 001–021 are applied to the live database (001–020 verified by probe
+2026-07-06; 021 applied and verified live in prod the same day, after the
+code deploy and `scripts/migrate-storage-urls.mjs`).

@@ -13,10 +13,10 @@ Supersedes the cutover-era notes in `MULTITENANCY.md`. Companion docs:
 > is service-role-only, and already holds a real logout stamp for `cio-admin`
 > (so the F6 wiring has fired end-to-end). The code fixes (F2 API feature
 > gate, F4 issues-purge, F5 rate-limit, F6 revocation, **F3 private-storage
-> rework**) live on the `auth_design` branch and take effect in production
-> when it merges to main and deploys. Migration **021** (private buckets,
-> the DB half of F3) is written but **must only run after that deploy** — see
-> the cutover order in `021_private_storage.sql`.
+> rework**) are **deployed to production**, and migration **021** (private
+> buckets, the DB half of F3) is **applied** — the full storage cutover
+> (deploy → `migrate-storage-urls.mjs` → 021) was executed and verified live
+> in prod on 2026-07-06 (15/15 checks).
 
 This document describes the full authentication and authorization stack: how a
 request goes from a browser cookie to a row in Postgres, which role may do
@@ -355,8 +355,9 @@ exempt. Verified with unit tests across single/multi-owner and sub-path cases.
 
 ### ✅ F3 — storage moved to private buckets + short-lived signed URLs (was: known tradeoff)
 
-Reworked 2026-07-06 (code on `auth_design`; DB half = migration **021**, to be
-applied after deploy):
+Reworked 2026-07-06 and **live in production** (code deployed, data migrated,
+migration **021** applied — re-verified against prod: buckets private, old
+public URLs dead, gate enforces 401/403, signed round-trip serves):
 
 - **Buckets are private** (021 flips `public = false` and drops the
   public-read policies). Old public object URLs stop resolving entirely.
