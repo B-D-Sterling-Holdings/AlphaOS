@@ -10,8 +10,9 @@ import 'server-only';
 */
 
 const WINDOW_MS = 15 * 60 * 1000;
-const MAX_FAILURES_PER_KEY = 5;   // per ip+username
-const MAX_FAILURES_PER_IP = 20;   // per ip across all usernames
+const MAX_FAILURES_PER_KEY = 5;       // per ip+username
+const MAX_FAILURES_PER_IP = 20;       // per ip across all usernames
+const MAX_FAILURES_PER_USERNAME = 20; // per username across all ips
 const MAX_ENTRIES = 10_000;
 
 const failures = new Map(); // key -> { count, resetAt }
@@ -48,7 +49,12 @@ export function isLoginBlocked(ip, username) {
   const uname = String(username || '').toLowerCase();
   return (
     countFor(`u:${ip}:${uname}`) >= MAX_FAILURES_PER_KEY ||
-    countFor(`ip:${ip}`) >= MAX_FAILURES_PER_IP
+    countFor(`ip:${ip}`) >= MAX_FAILURES_PER_IP ||
+    // IP-independent: x-forwarded-for is client-controllable on some hops, so
+    // an attacker rotating IPs must still stop guessing one account here. The
+    // ceiling is high enough that a spoofer can't trivially lock out a real
+    // user, whose own successful login clears the counter anyway.
+    countFor(`uname:${uname}`) >= MAX_FAILURES_PER_USERNAME
   );
 }
 
@@ -56,9 +62,11 @@ export function recordLoginFailure(ip, username) {
   const uname = String(username || '').toLowerCase();
   bump(`u:${ip}:${uname}`);
   bump(`ip:${ip}`);
+  bump(`uname:${uname}`);
 }
 
 export function clearLoginFailures(ip, username) {
   const uname = String(username || '').toLowerCase();
   failures.delete(`u:${ip}:${uname}`);
+  failures.delete(`uname:${uname}`);
 }

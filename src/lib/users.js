@@ -40,6 +40,36 @@ export async function getDisabledFeaturesForUser(id) {
   return sanitizeFeatureKeys(data.disabled_features);
 }
 
+/**
+ * Revoke every session issued before now() for a subject (a users.id UUID or
+ * the bootstrap 'cio-admin' string). Called by logout and by an admin's
+ * "sign out everywhere" action. Best-effort: a failure here must not block
+ * logout, so callers swallow errors.
+ */
+export async function revokeSessionsBefore(subject, at = new Date()) {
+  if (!subject) return;
+  const iso = at.toISOString();
+  const { error } = await supabaseAdmin
+    .from('auth_revocations')
+    .upsert({ subject, not_before: iso, updated_at: iso }, { onConflict: 'subject' });
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * The "not before" instant for a subject, or null if it has never been
+ * revoked. A session JWT whose `iat` predates this is no longer valid.
+ */
+export async function getSessionNotBefore(subject) {
+  if (!subject) return null;
+  const { data, error } = await supabaseAdmin
+    .from('auth_revocations')
+    .select('not_before')
+    .eq('subject', subject)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data?.not_before ? new Date(data.not_before) : null;
+}
+
 /** Minimal identity lookup for authz checks (tenant scoping, role guards). */
 export async function getUserById(id) {
   if (!id) return null;
@@ -307,15 +337,18 @@ export async function setUserFeatures(id, disabledFeatures) {
 // Every tenant-scoped data table. These carry a `tenant_id` column but (unlike
 // users.tenant_id) have NO foreign key to tenants, so deleting a tenant does not
 // cascade to them — deleteUser purges them explicitly to avoid orphaned rows.
+// Deletion runs IN THIS ORDER: FK children must precede their parents
+// (interactions/contact_files -> contacts; macro_regime_results.run_id ->
+// macro_regime_runs), or the purge aborts on an FK violation.
 const TENANT_DATA_TABLES = [
-  'contacts', 'interactions', 'contact_files', 'tasks', 'app_settings',
+  'interactions', 'contact_files', 'contacts', 'tasks', 'app_settings',
   'research_links', 'documents', 'theses', 'valuation_models', 'holdings',
   'portfolio_cash', 'watchlists', 'ticker_fundamentals', 'ticker_prices',
   'allocation_config', 'sector_config', 'factor_config', 'fund_nav_data',
   'strategic_notes', 'candidate_positions', 'ideas',
   'prism_recommendations', 'prism_ticker_data', 'prism_ticker_documents',
-  'macro_regime_config', 'macro_regime_runs', 'macro_regime_results',
-  'macro_regime_weights', 'lessons', 'lesson_patterns',
+  'macro_regime_config', 'macro_regime_results', 'macro_regime_runs',
+  'macro_regime_weights', 'lessons', 'lesson_patterns', 'issues',
 ];
 
 // Storage buckets whose objects are namespaced by a `<tenant_id>/` path prefix

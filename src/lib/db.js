@@ -1,8 +1,7 @@
 import { cookies } from 'next/headers';
-import { supabaseAdmin } from './supabaseAdmin';
 import { getTenantClient } from './supabaseTenant';
 import { SESSION_COOKIE_NAME, verifySession } from './auth';
-import { getUserAuthState } from './users';
+import { getUserAuthState, getSessionNotBefore } from './users';
 import { normalizeRole } from './roles';
 
 /*
@@ -20,8 +19,11 @@ import { normalizeRole } from './roles';
       const supabase = await getDb();
       await supabase.from('tasks').select('*');   // RLS-scoped to this tenant
 
-  Storage still runs through the service-role client (it has its own RLS), with
-  object paths prefixed by `storagePrefix` (`<tenant_id>/...`) for isolation.
+  Storage is deliberately NOT exposed here: buckets are private and every
+  upload/read/delete goes through the narrow, session-validating helpers in
+  src/lib/storage.js (uploadTenantImage/Document, getTenantSignedUrl,
+  deleteTenantImage/Document), so no route can hand-build or manipulate
+  arbitrary object paths.
 
   Fail-closed: a request without a valid session has no tenant and gets no data
   access (throws), rather than silently falling back to a default tenant.
@@ -34,6 +36,34 @@ import { normalizeRole } from './roles';
 const USERS_TABLE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const activeCache = new Map(); // userId -> { active, at }
 const ACTIVE_CACHE_TTL_MS = 30_000;
+
+// Logout / "sign out everywhere" revoke sessions by stamping a not-before
+// instant (migration 020). Unlike the is_active check, this also covers the
+// bootstrap 'cio-admin' subject (which has no users row). Cached the same way
+// so it adds no per-request round-trip.
+const nbfCache = new Map(); // subject -> { notBefore: number|null, at }
+
+async function isSessionRevoked(userId, iatSeconds) {
+  if (!userId || typeof iatSeconds !== 'number') return false;
+  let entry = nbfCache.get(userId);
+  if (!entry || Date.now() - entry.at >= ACTIVE_CACHE_TTL_MS) {
+    try {
+      const nb = await getSessionNotBefore(userId);
+      // Store the floor as whole seconds to match the token's `iat` precision.
+      entry = { notBeforeSec: nb ? Math.floor(nb.getTime() / 1000) : null, at: Date.now() };
+      nbfCache.set(userId, entry);
+    } catch {
+      // Transient lookup failure: don't lock everyone out — the signed JWT is
+      // still required; revocation just isn't re-checked this request.
+      return false;
+    }
+  }
+  if (entry.notBeforeSec == null) return false;
+  // Revoke tokens issued strictly BEFORE the revocation second. A token issued
+  // in the same second as (or after) the logout survives — so a re-login right
+  // after logging out is never mistaken for the revoked session.
+  return iatSeconds < entry.notBeforeSec;
+}
 
 async function isUserStillActive(userId) {
   // Bootstrap env logins (e.g. 'cio-admin') have no users row to revoke.
@@ -60,6 +90,9 @@ export async function getSession() {
   const session = await verifySession(token);
   if (!session?.tenantId) return null;
   if (!(await isUserStillActive(session.userId))) return null;
+  // Reject tokens issued before the subject's revocation floor (logout /
+  // sign-out-everywhere). Covers the bootstrap admin, which is_active can't.
+  if (await isSessionRevoked(session.userId, session.iat)) return null;
   return {
     userId: session.userId,
     username: session.username,
@@ -69,8 +102,8 @@ export async function getSession() {
 }
 
 // Returns a tenant-scoped facade over Supabase. `.from()`/`.rpc()` are RLS-scoped
-// to the caller's tenant; `.storage` is the service-role client (prefix paths
-// with `storagePrefix`).
+// to the caller's tenant. For files, use src/lib/storage.js — storage access is
+// intentionally absent from this facade.
 export async function getDb() {
   const session = await getSession();
   if (!session) {
@@ -86,13 +119,8 @@ export async function getDb() {
     username,
     userId,
     isAdmin: role === 'admin',
-    storagePrefix: `${tenantId}/`,
     from(table) {
       return client.from(table);
-    },
-    get storage() {
-      // Storage bypasses table RLS; isolation is by `storagePrefix` path.
-      return supabaseAdmin.storage;
     },
     rpc(...args) {
       return client.rpc(...args);

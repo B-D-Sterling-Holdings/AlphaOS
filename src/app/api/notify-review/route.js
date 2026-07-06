@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sendEmail, renderNotifyEmail, computePendingThreads } from '@/lib/email';
+import { getSession } from '@/lib/db';
+import { signStorageUrlsForTenant } from '@/lib/storage';
 
 /**
  * POST /api/notify-review
@@ -11,6 +13,14 @@ import { sendEmail, renderNotifyEmail, computePendingThreads } from '@/lib/email
  */
 export async function POST(request) {
   try {
+    // The session tenant authorizes which storage paths may be re-signed into
+    // the outgoing email — a crafted body can't reference another tenant's
+    // files into a signed URL (those paths are simply left untouched).
+    const session = await getSession();
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { ticker, author, reviewer, threads, threadIds } = await request.json();
 
     if (!ticker) {
@@ -40,11 +50,14 @@ export async function POST(request) {
         continue;
       }
 
+      // Rewrite inline-image references into signed URLs the recipient's
+      // email client can actually load (no cookie there).
+      const signedItems = await signStorageUrlsForTenant(items, { tenantId: session.tenantId });
       const { subject, html } = renderNotifyEmail({
         ticker,
         recipientName: person.name,
         role,
-        threads: items,
+        threads: signedItems,
       });
 
       try {

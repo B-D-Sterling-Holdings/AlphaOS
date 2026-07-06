@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { sendEmail, renderNotifyEmail } from '@/lib/email';
 import { selectDueReminders, computeNextSent } from '@/lib/autoNotify';
+import { signStorageUrlsForTenant } from '@/lib/storage';
 
 /**
  * GET|POST /api/cron/auto-notify
@@ -83,11 +84,16 @@ async function runAutoNotify() {
         summary.skipped.push({ ticker: row.ticker, role, count: items.length, reason: 'no email set' });
         continue;
       }
+      // Inline images reference auth-gated app URLs (or legacy public URLs),
+      // neither of which an email client can load. Re-sign them for the
+      // tenant that OWNS this thesis row — authority comes from the DB, and
+      // paths outside that tenant's prefix are left untouched.
+      const signedItems = await signStorageUrlsForTenant(items, { tenantId: row.tenant_id });
       const { subject, html } = renderNotifyEmail({
         ticker: row.ticker,
         recipientName: person.name,
         role,
-        threads: items,
+        threads: signedItems,
       });
       try {
         await sendEmail({ to: person.email, subject, html });

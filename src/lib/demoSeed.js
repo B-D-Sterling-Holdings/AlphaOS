@@ -1,6 +1,7 @@
 import 'server-only';
 import { supabaseAdmin } from './supabaseAdmin.js';
 import { buildDemoDataset } from './demoData.js';
+import { appStorageUrl, DOCUMENT_BUCKET } from './storageShared.js';
 
 /*
   Demo tenant reset.
@@ -87,12 +88,14 @@ async function wipeTable(table) {
 }
 
 async function wipeDemoRows() {
-  // FK children first (contacts cascades would race parallel deletes),
-  // then everything else concurrently.
-  await wipeTable('interactions');
-  await wipeTable('contact_files');
+  // FK children strictly before their parents — parallel deletes race, and
+  // the live DB enforces interactions/contact_files -> contacts AND
+  // macro_regime_results.run_id -> macro_regime_runs (a runs-delete landing
+  // first aborts the whole reset with an FK violation).
+  const children = ['interactions', 'contact_files', 'macro_regime_results'];
+  for (const t of children) await wipeTable(t);
   await Promise.all(
-    DEMO_TABLES.filter((t) => t !== 'interactions' && t !== 'contact_files').map(wipeTable)
+    DEMO_TABLES.filter((t) => !children.includes(t)).map(wipeTable)
   );
 }
 
@@ -157,11 +160,12 @@ async function uploadDocuments(documents) {
     const slug = label.replace(/[^a-z0-9]+/gi, '-');
     const path = `${DEMO_TENANT_ID}/${category}/${slug}.pdf`;
     const { error } = await supabaseAdmin.storage
-      .from('documents')
+      .from(DOCUMENT_BUCKET)
       .upload(path, bytes, { contentType: 'application/pdf', upsert: true });
     if (error) throw new Error(`demo reset: upload ${path}: ${error.message}`);
     doc.storage_path = path;
-    doc.url = supabaseAdmin.storage.from('documents').getPublicUrl(path).data.publicUrl;
+    // Buckets are private — store the auth-gated app URL, not a public one.
+    doc.url = appStorageUrl(DOCUMENT_BUCKET, path);
   }));
 }
 
