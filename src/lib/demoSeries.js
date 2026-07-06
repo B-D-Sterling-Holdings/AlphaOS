@@ -168,13 +168,6 @@ export function fundamentalsFor(now, {
   return { revenue: rev, operating_margins: margins, eps, fcf, buybacks };
 }
 
-// Render one fundamentals series as the CSV format the prism pipeline stores.
-export function seriesToCsv(rows, valueKey) {
-  const lines = ['year,quarter,' + valueKey];
-  for (const r of rows) lines.push(`${r.year},${r.quarter},${r[valueKey]}`);
-  return lines.join('\n');
-}
-
 /* ── Fund NAV curve (fund vs S&P, daily, inception -> last close) ── */
 export function navSeries(now, { fundEnd = 164.8, spEnd = 129.9, seed = 77 } = {}) {
   const inception = quarterStart(now, 7);

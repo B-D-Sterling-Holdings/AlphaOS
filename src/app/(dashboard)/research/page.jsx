@@ -2,12 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ArrowLeft, Star, Sparkles, User } from 'lucide-react';
+import { RefreshCw, AlertTriangle, Save, Plus, Trash2, CheckCircle, FileDown, Check, X, ClipboardList, FlaskConical, Square, CheckSquare, ChevronRight, ArrowLeft, Star, User } from 'lucide-react';
 import Card from '@/components/Card';
 import TickerSearchSelect from '@/components/TickerSearchSelect';
 import CompanyFundamentals, { computeQuickStats } from '@/components/CompanyFundamentals';
 import Toast from '@/components/Toast';
-import { formatLargeNumber, formatShareCount } from '@/lib/formatters';
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
 import { computeValuationModel } from '@/lib/valuationModel';
@@ -174,151 +173,6 @@ function buildResearchWorkspace(thesis, stock) {
     dislocationItems: normalizeQuestionItems(
       pickWorkspaceValue(workspace.dislocationItems, stock?.dislocationItems ?? [])
     ),
-  };
-}
-
-function makeTtmQuarterLabel(row) {
-  return `${row.quarter}'${String(row.year).slice(-2)}`;
-}
-
-function ttmPctChange(curr, prior) {
-  if (curr == null || prior == null || prior === 0) return null;
-  return Math.round(((curr - prior) / Math.abs(prior)) * 1000) / 10;
-}
-
-function round1(v) {
-  return v == null ? null : Math.round(v * 10) / 10;
-}
-
-// Build a compact, narration-ready TTM fundamentals summary from the data shown
-// in the Fundamentals tab (tickerData). IMPORTANT: those series are ALREADY
-// trailing-twelve-month figures — revenue/eps/fcf are TTM sums, operating margin
-// is TTM-based, shares are a TTM mean — each indexed by quarter-end (see
-// generateData.js). So every data point IS a rolling 12-month value; a "lookback
-// of k quarters" is simply the value k points back, never a sum across points.
-// Monetary values are pre-formatted so the model narrates rather than re-deriving
-// magnitudes; growth/CAGRs are computed here so the figures are authoritative.
-function buildFundamentalsTTM(tickerData, liveQuote) {
-  if (!tickerData) return null;
-  const rev = tickerData.revenue || [];
-  const eps = tickerData.eps || [];
-  const fcf = tickerData.fcf || [];
-  const margins = tickerData.operating_margins || [];
-  const shares = tickerData.buybacks || [];
-  const valuation = tickerData.valuation || {};
-
-  const revVals = rev.map(r => r.revenue);
-  const epsVals = eps.map(e => e.eps_diluted);
-  const fcfVals = fcf.map(f => f.free_cash_flow);
-  const marginVals = margins.map(m => m.operating_margin * 100);
-  const shareVals = shares.map(s => s.shares_outstanding);
-
-  // at(vals, k): the TTM value k quarters before the latest quarter-end. k=0 is
-  // the current TTM, k=4 the TTM one year ago, k=8 two years ago, etc. Each point
-  // is already a rolling 12-month figure, so this is a direct lookup — no summing.
-  const at = (vals, k) => {
-    const idx = vals.length - 1 - k;
-    return idx >= 0 && vals[idx] != null ? Number(vals[idx]) : null;
-  };
-  const cagrPct = (current, past, years) => {
-    if (current == null || past == null || past <= 0 || current <= 0) return null;
-    return Math.round((Math.pow(current / past, 1 / years) - 1) * 1000) / 10;
-  };
-  // CAGR ladder for a TTM metric. Each rung is null when history is too short, so
-  // the model can read the trajectory (e.g. 5Y < 3Y < 1Y reads as accelerating).
-  const cagrLadder = (vals) => ({
-    cagr2yPct: cagrPct(at(vals, 0), at(vals, 8), 2),
-    cagr3yPct: cagrPct(at(vals, 0), at(vals, 12), 3),
-    cagr5yPct: cagrPct(at(vals, 0), at(vals, 20), 5),
-  });
-
-  const ttmRevenue = at(revVals, 0);
-  const ttmEps = at(epsVals, 0);
-  const ttmFcf = at(fcfVals, 0);
-  const priorRevenue = at(revVals, 4);
-  const priorEps = at(epsVals, 4);
-  const priorFcf = at(fcfVals, 4);
-
-  const latestShares = at(shareVals, 0);
-  const yearAgoShares = at(shareVals, 4);
-  const threeYrAgoShares = at(shareVals, 12);
-  const fiveYrAgoShares = at(shareVals, 20);
-
-  const price = liveQuote?.price || (valuation.currentPrice ? Number(valuation.currentPrice) : null);
-  const ttmPe = (price && ttmEps && ttmEps > 0) ? price / ttmEps : null;
-  const ttmFcfYield = (price && ttmFcf && latestShares && latestShares > 0)
-    ? (ttmFcf / (price * latestShares)) * 100 : null;
-  const ttmPs = (price && ttmRevenue && latestShares && latestShares > 0)
-    ? (price * latestShares) / ttmRevenue : null;
-
-  // FCF margin at a given lookback (both already TTM at the same quarter-end).
-  const fcfMarginAt = (k) => {
-    const f = at(fcfVals, k);
-    const r = at(revVals, k);
-    return (f != null && r) ? round1((f / r) * 100) : null;
-  };
-
-  // A trailing series of TTM snapshots for trend color. Because the underlying
-  // values are rolling 12-month figures, this shows the smoothed trend (it does
-  // NOT show quarterly seasonality).
-  const series = (rows, vals, fmt, n = 8) => {
-    const startIdx = Math.max(0, rows.length - n);
-    return rows.slice(startIdx).map((row, i) => ({
-      asOf: makeTtmQuarterLabel(row),
-      value: fmt(vals[startIdx + i]),
-    }));
-  };
-  const money = (v) => (v == null ? null : formatLargeNumber(v));
-  const dollars = (v) => (v == null ? null : `$${Number(v).toFixed(2)}`);
-  const pct = (v) => (v == null ? null : `${round1(v)}%`);
-
-  return {
-    asOf: rev.length ? makeTtmQuarterLabel(rev[rev.length - 1]) : null,
-    quartersOfHistory: rev.length,
-    note: 'All revenue/EPS/FCF figures are trailing-twelve-month (TTM); each series point is a rolling 12-month value at that quarter-end.',
-    price: price != null ? Number(price.toFixed(2)) : null,
-    revenue: {
-      ttm: money(ttmRevenue),
-      ttmOneYearAgo: money(priorRevenue),
-      yoyGrowthPct: ttmPctChange(ttmRevenue, priorRevenue),
-      ...cagrLadder(revVals),
-      ttmTrend: series(rev, revVals, money),
-    },
-    eps: {
-      ttm: dollars(ttmEps),
-      ttmOneYearAgo: dollars(priorEps),
-      yoyGrowthPct: ttmPctChange(ttmEps, priorEps),
-      ...cagrLadder(epsVals),
-      ttmTrend: series(eps, epsVals, dollars),
-    },
-    fcf: {
-      ttm: money(ttmFcf),
-      ttmOneYearAgo: money(priorFcf),
-      yoyGrowthPct: ttmPctChange(ttmFcf, priorFcf),
-      ...cagrLadder(fcfVals),
-      ttmMarginPct: fcfMarginAt(0),
-      ttmMarginOneYearAgoPct: fcfMarginAt(4),
-      ttmTrend: series(fcf, fcfVals, money),
-    },
-    operatingMargin: {
-      ttmPct: round1(at(marginVals, 0)),
-      ttmOneYearAgoPct: round1(at(marginVals, 4)),
-      ttmThreeYearsAgoPct: round1(at(marginVals, 12)),
-      ttmTrend: series(margins, marginVals, pct),
-    },
-    shares: {
-      latest: latestShares != null ? formatShareCount(latestShares) : null,
-      yoyChangePct: ttmPctChange(latestShares, yearAgoShares),
-      threeYrChangePct: ttmPctChange(latestShares, threeYrAgoShares),
-      fiveYrChangePct: ttmPctChange(latestShares, fiveYrAgoShares),
-      // Annualized pace of the share-count change (negative = net buybacks).
-      annualized3yChangePct: cagrPct(latestShares, threeYrAgoShares, 3),
-    },
-    valuation: {
-      peRatioTtm: round1(ttmPe),
-      fcfYieldTtmPct: round1(ttmFcfYield),
-      priceToSalesTtm: round1(ttmPs),
-    },
   };
 }
 
@@ -608,8 +462,6 @@ export default function ResearchPage() {
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [overviewGenerating, setOverviewGenerating] = useState(false);
-  const [fundamentalsGenerating, setFundamentalsGenerating] = useState(false);
   const [liveQuote, setLiveQuote] = useState(() => cache.get('deep_research_liveQuote') || null);
   const [quoteLoading, setQuoteLoading] = useState(() => !cache.get('deep_research_liveQuote') && !!cache.get('deep_research_selectedTicker'));
   const [activeResearchTab, setActiveResearchTab] = useState(() => cache.get('deep_research_activeTab') || 'fundamentals');
@@ -888,17 +740,6 @@ export default function ResearchPage() {
     }
   }, [selectedStock, allData, cache, router, movingTo]);
 
-  // AI generation (company overview / thesis fundamentals) is not production-ready
-  // yet, so the buttons are wired to this no-op warning instead of the real
-  // generators. Re-point them at generateCompanyOverview / generateThesisFundamentals
-  // to re-enable once it's ready.
-  const aiNotReady = useCallback(() => {
-    setToast({
-      message: 'AI generation is still in development and not available in production yet.',
-      type: 'info',
-    });
-  }, []);
-
   const updateThesisField = (field, value) => {
     setThesis(prev => ({ ...prev, [field]: value }));
     setThesisDirty(true);
@@ -1081,101 +922,6 @@ export default function ResearchPage() {
       item.id === parentId ? { ...item, subQuestions: newSubs.map(createSubQuestion) } : item
     );
     updateQuestionList(field, nextItems, persist);
-  };
-
-  // ---- Native Company Overview generation -----------------------------------
-  // Generates a business overview grounded in the company's latest 10-K
-  // (Item 1: Business) and 10-Q, then writes it straight into the Company
-  // Overview editor. Existing analyst notes are preserved — generated text is
-  // appended under a divider, never overwritten.
-  const overviewHasContent = (val) => {
-    if (Array.isArray(val)) {
-      return val.some(b => b?.type === 'image' || (b?.value && b.value.replace(/<[^>]+>/g, '').trim()));
-    }
-    return typeof val === 'string' && val.replace(/<[^>]+>/g, '').trim().length > 0;
-  };
-
-  const mergeOverview = (existing, html) => {
-    const divider = `<b>— AI-generated from SEC filings —</b><br>`;
-    if (!overviewHasContent(existing)) return html;
-    if (Array.isArray(existing)) {
-      return [...existing, { type: 'text', value: `<br>${divider}${html}` }];
-    }
-    return `${existing}<br><br>${divider}${html}`;
-  };
-
-  const generateCompanyOverview = async () => {
-    if (!selectedTicker || overviewGenerating) return;
-    setOverviewGenerating(true);
-    setToast({ message: `Generating company overview for ${selectedTicker} from SEC filings… This may take ~30 seconds.`, type: 'info' });
-    try {
-      const res = await fetch('/api/research/company-overview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: selectedTicker }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setToast({ message: data.error || 'Failed to generate company overview', type: 'error' });
-        return;
-      }
-      const existing = thesis?.underwriting?.companyOverview;
-      commitUnderwriting('companyOverview', mergeOverview(existing, data.html));
-      setToast({ message: `Company overview generated for ${selectedTicker}`, type: 'success' });
-    } catch (e) {
-      setToast({ message: `Generation failed: ${e.message}`, type: 'error' });
-    } finally {
-      setOverviewGenerating(false);
-    }
-  };
-
-  // ---- Native Thesis Structure (fundamentals) generation --------------------
-  // Computes TTM figures from the Fundamentals-tab data (tickerData) and asks
-  // the model to fill all four thesis boxes at once. Like the overview, each box
-  // appends under a divider so the analyst's own notes are never overwritten.
-  const mergeBox = (existing, text) => {
-    const add = String(text || '').trim();
-    const cur = typeof existing === 'string' ? existing.trim() : '';
-    if (!add) return cur;
-    return cur ? `${cur}\n\n— Generated from TTM fundamentals —\n${add}` : add;
-  };
-
-  const generateThesisFundamentals = async () => {
-    if (!selectedTicker || fundamentalsGenerating) return;
-    const summary = buildFundamentalsTTM(tickerData, liveQuote);
-    if (!summary || !summary.revenue.ttm) {
-      setToast({ message: 'No fundamentals data available yet — generate data for this ticker first.', type: 'error' });
-      return;
-    }
-    setFundamentalsGenerating(true);
-    setToast({ message: `Filling the thesis fundamentals for ${selectedTicker} from TTM data… This may take ~20 seconds.`, type: 'info' });
-    try {
-      const res = await fetch('/api/research/thesis-fundamentals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: selectedTicker, fundamentals: summary }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setToast({ message: data.error || 'Failed to generate thesis fundamentals', type: 'error' });
-        return;
-      }
-      const boxes = data.boxes || {};
-      updateResearchWorkspace((ws) => ({
-        ...ws,
-        fundamentals: {
-          revenueGrowth: mergeBox(ws.fundamentals.revenueGrowth, boxes.revenueGrowth),
-          profitability: mergeBox(ws.fundamentals.profitability, boxes.profitability),
-          capitalReturn: mergeBox(ws.fundamentals.capitalReturn, boxes.capitalReturn),
-          misc: mergeBox(ws.fundamentals.misc, boxes.misc),
-        },
-      }), true);
-      setToast({ message: `Thesis fundamentals filled for ${selectedTicker}`, type: 'success' });
-    } catch (e) {
-      setToast({ message: `Generation failed: ${e.message}`, type: 'error' });
-    } finally {
-      setFundamentalsGenerating(false);
-    }
   };
 
   if (loading) {

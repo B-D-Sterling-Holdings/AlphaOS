@@ -17,35 +17,28 @@ database**, so a query that forgets to filter by tenant still cannot leak.
   `tenant_id = app_current_tenant()` does the rest. `getDb()` **fails closed** — no
   valid session means no data access.
 - **Service role** (`supabaseAdmin`) still bypasses RLS and is used only for
-  auth/admin/user-management and the Python pipeline (which stamps `tenant_id`
-  explicitly via `APP_TENANT_ID`).
+  auth/admin/user-management and the macro-allocator pipeline (which stamps
+  `tenant_id` explicitly via `APP_TENANT_ID`).
 - **Two reserved tenants** with fixed UUIDs:
-  - `11111111-…-111111111111` → **CIO Alpha** (all pre-existing data is backfilled here)
-  - `22222222-…-222222222222` → **Demo** (starts empty)
+  - `11111111-…-111111111111` → **CIO Alpha** (holds the original production data)
+  - `22222222-…-222222222222` → **Demo** (wiped + re-seeded on every `demo`/`demo` login)
 
-## Cutover — what to run
+## Adding a workspace
 
-1. **Set env** (see `.env.example`): add `SUPABASE_JWT_SECRET`
-   (Supabase → Project Settings → API → JWT Settings → *JWT Secret*).
-   Keep `AUTH_USERNAME` / `AUTH_PASSWORD_HASH` (the bootstrap CIO admin).
-2. **Run the migration** in the Supabase SQL editor:
-   `scripts/migrations/005_multitenancy.sql` (idempotent; backfills CIO, adds
-   `tenant_id` + RLS policies + grants to every data table, creates `users` /
-   `tenants`). Run it *after* `001_enable_rls.sql`.
-3. **Deploy** the app. Log in as the CIO admin → existing data appears (CIO tenant).
-4. **Add users** from the shield icon (User Management) in the navbar. Each gets a
-   fresh, isolated, empty workspace.
+Multitenancy is live. To add an isolated workspace, log in as the CIO admin (or
+a workspace owner), open **User Management** (shield icon in the navbar), and
+create a user — each gets a fresh, isolated, empty workspace. Its config
+singletons are seeded by `seedTenantDefaults()` at creation.
 
 For CI macro-regime runs, pass the tenant via the workflow input `tenant_id`
 (blank = CIO). The route forwards it automatically when dispatching.
 
 ## Notes / follow-ups
 
-- The old `demo_*` tables are **superseded** by the Demo tenant and no longer read.
-  They're left in place (RLS-locked) so nothing is lost — drop them once you're
-  confident in the cutover. Demo now starts empty; re-seed it as a tenant if you
-  want showcase data.
-- Standalone pipeline runs (local `make analyze`, CI) must set `APP_TENANT_ID` or
-  the prism store refuses to read/write (isolation is mandatory, never implicit).
-- Storage objects are isolated by path prefix (`<tenant_id>/…`); the buckets keep
-  public read. Tightening storage RLS per tenant is a sensible follow-up.
+- There are no `demo_*` clone tables — the demo environment is the reserved
+  Demo tenant, wiped and re-seeded on every demo login.
+- Standalone macro-allocator runs (local `make`, CI) must set `APP_TENANT_ID` or
+  the run defaults to the CIO tenant (isolation is mandatory, never implicit).
+- Storage objects are isolated by path prefix (`<tenant_id>/…`) and the buckets
+  are **private** — all access goes through `src/lib/storage.js` (signed URLs,
+  no public read), which re-validates every path against the session tenant.

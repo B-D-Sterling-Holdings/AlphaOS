@@ -1,22 +1,9 @@
 # AlphaOS — Multi-Tenant Auth, RBAC & Access Control Architecture
 
-*Last verified against the live database on 2026-07-06, after the remediation
-round that landed migrations 018–020 and the F2/F4/F5/F6 code fixes.
-Supersedes the cutover-era notes in `MULTITENANCY.md`. Companion docs:
+*Last verified against the live database on 2026-07-06. Supersedes the
+cutover-era notes in `MULTITENANCY.md`. Companion docs:
 `BACKEND_ARCHITECTURE.md` (request lifecycle, API surface) and
 `DATABASE_ARCHITECTURE.md` (schema, RLS mechanics).*
-
-> **Deploy / migration state (2026-07-06, re-verified):** migrations **001–020
-> are all applied** to the live database — 019 (lock views) and 020
-> (`auth_revocations`) were confirmed by live probes: the `rag_coverage` view
-> now denies both anon *and* `authenticated`, and `auth_revocations` exists,
-> is service-role-only, and already holds a real logout stamp for `cio-admin`
-> (so the F6 wiring has fired end-to-end). The code fixes (F2 API feature
-> gate, F4 issues-purge, F5 rate-limit, F6 revocation, **F3 private-storage
-> rework**) are **deployed to production**, and migration **021** (private
-> buckets, the DB half of F3) is **applied** — the full storage cutover
-> (deploy → `migrate-storage-urls.mjs` → 021) was executed and verified live
-> in prod on 2026-07-06 (15/15 checks).
 
 This document describes the full authentication and authorization stack: how a
 request goes from a browser cookie to a row in Postgres, which role may do
@@ -66,8 +53,8 @@ the anon key is abused directly against PostgREST, no cross-tenant data moves.
 
 ### Tables (service-role only)
 
-`tenants` and `users` (migration 005, extended by 008/011/012) have RLS
-enabled + forced with **no policies** and explicit `REVOKE` from
+`tenants` and `users` have RLS enabled + forced with **no policies** and
+explicit `REVOKE` from
 anon/authenticated — only the service-role client in `src/lib/users.js` can
 touch them. A tenant = one isolated workspace (data partition). A user =
 one login belonging to exactly one tenant.
@@ -114,17 +101,14 @@ one login belonging to exactly one tenant.
     accounts get a 401 + cookie wipe; if `role`/`disabled_features` drifted
     from the JWT claims, the cookie is **re-issued** so the edge gate picks up
     admin changes without waiting out the 7 days.
-  - **Logout / sign-out-everywhere** (`auth_revocations`, migration 020):
-    logout stamps a `not_before` instant for the caller's subject; any token
-    whose `iat` predates it is rejected by `getSession()`/`me`. This makes a
-    *copied* token stop working, not just the browser cookie — and it covers
-    the bootstrap `cio-admin` (keyed by the string subject, no `users` row
-    needed). The check reuses the same 30 s cache, so it adds no per-request
-    round-trip. The comparison is second-granularity, so a re-login in the
-    same wall-clock second as the logout is never mistaken for the dead
-    session. *(fixed F6; migration 020 is applied, so this is live — verified
-    by a real `cio-admin` revocation row stamped by logout. The code would
-    still safely no-op if the table were ever missing.)*
+  - **Logout / sign-out-everywhere** (`auth_revocations`): logout stamps a
+    `not_before` instant for the caller's subject; any token whose `iat`
+    predates it is rejected by `getSession()`/`me`. This makes a *copied* token
+    stop working, not just the browser cookie — and it covers the bootstrap
+    `cio-admin` (keyed by the string subject, no `users` row needed). The check
+    reuses the same 30 s cache, so it adds no per-request round-trip. The
+    comparison is second-granularity, so a re-login in the same wall-clock
+    second as the logout is never mistaken for the dead session.
 
 ---
 
@@ -238,8 +222,8 @@ and the users-API guards.
 
 ## 6. Data layer — how RLS actually bites
 
-- `app_current_tenant()` (migration 005) reads the `tenant_id` claim from the
-  request JWT; it is also the **DEFAULT** for every `tenant_id` column, so
+- `app_current_tenant()` reads the `tenant_id` claim from the request JWT; it
+  is also the **DEFAULT** for every `tenant_id` column, so
   tenant-scoped inserts are stamped automatically.
 - Every tenant-scoped table has exactly **one** policy:
 
@@ -251,11 +235,10 @@ and the users-API guards.
 
   `FOR ALL` + `WITH CHECK` means reads, writes, and *re-stamping a row into
   another tenant* are all refused by Postgres itself.
-- RLS is `ENABLE`d **and `FORCE`d** on every public table (001, re-asserted
-  by 018), so even the table owner can't sneak past.
-- Tables **without** `tenant_id` (`rag_traces`, `scraped_content`,
-  `content_chunks`, `chat_*`, `macro_regime_signal`, `task_comments`, legacy
-  `demo_*`) are RLS-on with **no policies**: service-role/pipeline only.
+- RLS is `ENABLE`d **and `FORCE`d** on every public table, so even the table
+  owner can't sneak past.
+- Tables **without** `tenant_id` (`macro_regime_signal`, `task_comments`) are
+  RLS-on with **no policies**: service-role/pipeline only.
 - Singleton config tables are keyed on `tenant_id` (one row per tenant) while
   keeping `id = 1` so legacy `.eq('id', 1)` reads still work under RLS.
 - Business uniques are per-tenant (`(tenant_id, ticker)` etc.) so two tenants
@@ -265,7 +248,7 @@ and the users-API guards.
   `/api/cron/auto-notify` (no user session exists for a scheduler), plus the
   lib helpers that legitimately need identity/admin access.
 - **Storage** bypasses table RLS, so it gets its own enforcement layer:
-  buckets are **private** (migration 021) and every upload/read/delete goes
+  buckets are **private** and every upload/read/delete goes
   through the narrow helpers in `src/lib/storage.js`
   (`uploadTenantImage`/`uploadTenantDocument`, `getTenantSignedUrl`,
   `deleteTenantImage`/`deleteTenantDocument`). Paths are built server-side
@@ -284,46 +267,32 @@ mandatory, never implicit).
 
 ---
 
-## 7. Verified state (live probes, re-audited 2026-07-06 after applying 019/020)
+## 7. Verified state (live probes)
 
-Functional audit against all **67** PostgREST-exposed relations (66 + the new
-`auth_revocations`) — not a read of the migrations, but actual requests with
-each credential class, re-run after 019/020 were applied:
+Isolation is verified by **actual requests** with each credential class — not a
+read of the schema — against every PostgREST-exposed relation:
 
 | Probe | Result |
 |---|---|
-| Anon key, every table **and view** | **0 rows on all 67** — 63 return empty (RLS filters to nothing), 4 are hard-denied outright (`users`, `tenants`, `auth_revocations`, `rag_coverage`) |
-| Anon **and** demo-tenant JWT on `rag_coverage` (the view behind F1) | both denied — 019's REVOKE covers `authenticated` too, not just anon |
+| Anon key, every relation | **0 rows everywhere** — most filter to nothing under RLS, and `users` / `tenants` / `auth_revocations` are hard-denied outright by explicit `REVOKE` |
 | Demo-tenant JWT, every tenant-scoped table | only demo rows; **0 foreign-tenant rows** everywhere |
 | Demo-tenant JWT, `users` / `tenants` | denied (42501) |
 | Cross-tenant INSERT (demo JWT, CIO `tenant_id`, `tasks`) | rejected: *"new row violates row-level security policy"* |
-| `macro_regime_config` / `macro_regime_runs` (leaked pre-018) | clean |
-| `auth_revocations` (020) | exists, service-role-only (anon → 42501), and holds a live `cio-admin` `not_before` stamped by an actual logout |
-| `issues.complexity = 5` (017) | accepted — the 1–5 CHECK is live (017 confirmed applied along with 018–020) |
+| `macro_regime_config` / `macro_regime_runs` | tenant-isolated; no cross-tenant leakage |
+| `auth_revocations` | service-role-only (anon → 42501), and holds a live `cio-admin` `not_before` stamped by an actual logout |
+| `issues.complexity = 5` | accepted — the 1–5 CHECK is live |
 
-*(`security_invoker` on views can't be observed through PostgREST, so 019's
-verification here is the grant revocation; the setting itself is asserted by
-the migration and can be re-checked with the SQL in `019_lock_views.sql`.)*
+There are **no public views**; the standing rule is that any view added later
+must revoke anon/authenticated and set `security_invoker = true` (views bypass
+table RLS).
 
-Code-level fixes were verified out-of-band with unit checks (all passing):
-`isApiAllowed` (F2) across single/multi-owner routes and sub-paths; the
-per-username rate-limit cap under IP rotation (F5); and the second-granularity
-revocation comparison (F6).
+Code-level guarantees are covered by unit checks (all passing): `isApiAllowed`
+across single/multi-owner routes and sub-paths; the per-username rate-limit cap
+under IP rotation; and the second-granularity revocation comparison.
 
-The re-lock tooling is now three idempotent migrations — **re-run them after
-any dashboard experiment or pipeline table/view rebuild**; they fix drift
-regardless of cause:
-
-- `018_drop_stray_policies.sql` — RLS on every table, drop non-`tenant_isolation`
-  policies, recreate tenant policies.
-- `019_lock_views.sql` — revoke anon/authenticated on every public **view** +
-  `security_invoker` (views bypass table RLS — this is what 018 couldn't reach).
-- `020_session_revocation.sql` — the `auth_revocations` table behind logout /
-  sign-out-everywhere.
-
-All three are **applied** as of 2026-07-06 (verified live, table above). They
-stay useful as re-lock tooling: 018/019 are the ones to re-run after drift;
-020 is one-shot (the table persists).
+**Drift discipline:** the RLS/view-lock SQL is idempotent — re-run it after any
+dashboard experiment or pipeline table/view rebuild to restore the intended
+end-state regardless of cause.
 
 ---
 
@@ -334,13 +303,11 @@ All six findings from the first audit are addressed. ✅ = fixed & verified,
 
 ### ✅ F1 — anon-readable `rag_coverage` (was: fix now)
 
-Root cause: a **view**, which bypasses table RLS and so slipped past 018's
-table/policy loops. Migration **019** is now **applied**: it revokes
-anon/authenticated on *every* public view and sets `security_invoker = true`,
-so a re-granted view later still only shows what the caller's own RLS allows,
-and any new pipeline view is caught on the next run. Verified live:
-`rag_coverage` (the only public view) is denied for the anon key **and** for
-tenant JWTs. Closed.
+Root cause: a **view**, which bypasses table RLS. The RAG/chat pipeline tables
+and that view have since been removed from the database entirely, so the
+surface no longer exists. The standing rule remains for any view added later:
+revoke anon/authenticated and set `security_invoker = true`, so a view only
+ever shows what the caller's own RLS allows. Closed.
 
 ### ✅ F2 — feature toggles now gate data APIs (was: medium)
 
@@ -355,12 +322,11 @@ exempt. Verified with unit tests across single/multi-owner and sub-path cases.
 
 ### ✅ F3 — storage moved to private buckets + short-lived signed URLs (was: known tradeoff)
 
-Reworked 2026-07-06 and **live in production** (code deployed, data migrated,
-migration **021** applied — re-verified against prod: buckets private, old
-public URLs dead, gate enforces 401/403, signed round-trip serves):
+**Live in production** — re-verified against prod: buckets private, old public
+URLs dead, gate enforces 401/403, signed round-trip serves:
 
-- **Buckets are private** (021 flips `public = false` and drops the
-  public-read policies). Old public object URLs stop resolving entirely.
+- **Buckets are private** (`public = false`, no public-read policies). Old
+  public object URLs stop resolving entirely.
 - **Content stores a stable, session-gated app URL** —
   `/api/storage/object?bucket=…&path=…`. That's what lands in browser
   history, logs, copied links, exports, and referrers, and it is worthless
@@ -379,10 +345,9 @@ public URLs dead, gate enforces 401/403, signed round-trip serves):
   (`signStorageUrlsForTenant`) — the signing tenant comes from the DB row (or
   verified session), never the payload, so a crafted body can't exfiltrate
   another tenant's file into an email.
-- **Existing content** is migrated by `scripts/migrate-storage-urls.mjs`
-  (public URL → app URL, all content tables; verified by dry run: 12 rows).
-  `/api/documents` also re-derives every row's URL from `storage_path` at
-  read time, so that table needs no migration.
+- **Stored URLs are never trusted** — `/api/documents` re-derives every row's
+  URL from `storage_path` at read time, so a row always resolves to the
+  current session-gated app URL.
 
 Verified end-to-end (21/21 checks): upload → gated redirect → signed fetch →
 byte-identical round-trip; 401 without a session; 403 for foreign-tenant
@@ -415,9 +380,9 @@ failures against one username. *(The in-memory/per-instance nature and the
 
 ### ✅ F6 — logout invalidation + bootstrap-admin revocation (was: low)
 
-Migration **020** (now **applied**) adds `auth_revocations(subject,
-not_before)`; logout stamps `now()` for the caller's subject, and
-`getSession()` / `/api/auth/me` reject any token whose `iat` predates it — so
+`auth_revocations(subject, not_before)` backs this: logout stamps `now()` for
+the caller's subject, and `getSession()` / `/api/auth/me` reject any token
+whose `iat` predates it — so
 a *copied* token dies on logout, and the bootstrap `cio-admin` (keyed by its
 string subject) is now revocable without rotating `AUTH_JWT_SECRET`. Reuses
 the 30 s cache (no new per-request DB hit); comparison is second-granularity
@@ -429,8 +394,6 @@ button can call the same `revokeSessionsBefore(subject)` helper.
 
 ### Housekeeping (info)
 
-- 25 legacy `demo_*` tables remain (RLS-locked, unread since the demo-tenant
-  cutover was validated 2026-07-01) — safe to drop.
 - `task_comments` exists in the DB but nothing in `src/` references it.
 - Session lifetime (7 d) and cookie `maxAge` are defined in two places in
   `auth.js`/route handlers — keep them in sync if you change one.

@@ -24,7 +24,7 @@ lessons, documents, and an in-app issue tracker.
 | Data | Supabase: Postgres + PostgREST (via `@supabase/supabase-js`) + Storage; RLS-enforced multitenancy |
 | Email | Gmail SMTP via `nodemailer` (App Password) |
 | Market data | `yahoo-finance2` (quotes/charts/fundamentals), Alpha Vantage (financial statements) |
-| AI/ML sidecars | `prism_ai/` (Python: Gemini fundamental analysis, SEC filings) and `macro_regime_allocator/` (Python: sklearn regime backtest, FRED data) — both run via `uv`, spawned locally or on GitHub runners, never on Vercel |
+| AI/ML sidecars | `macro_regime_allocator/` (Python: sklearn regime backtest, FRED data) — run via `uv`, spawned locally or on GitHub runners, never on Vercel |
 | Scheduled work | GitHub Actions (`auto-notify.yml` every 30 min; `macro-regime.yml` monthly + dispatch) |
 | Exports | `docx` + `file-saver` client-side report generation (`lib/exportReport.js`) |
 
@@ -50,8 +50,8 @@ is either in Postgres or in small per-instance in-memory caches.
    │                    └────┬────────────┬───────────┘
    │                         │            │ spawn (local/CI only)
    ▼                         ▼            ▼
- Yahoo Finance          Gmail SMTP   prism_ai/ (Gemini, SEC EDGAR)
- (client never calls    (nodemailer) macro_regime_allocator/ (FRED)
+ Yahoo Finance          Gmail SMTP   macro_regime_allocator/ (FRED)
+ (client never calls    (nodemailer)
   vendors directly)
         ▲
         │ POST /api/cron/auto-notify (CRON_SECRET)     repository_dispatch
@@ -61,9 +61,9 @@ is either in Postgres or in small per-instance in-memory caches.
 
 **Environments**
 
-- **Dev**: `npm run dev` on port 3000. Python routes spawn `make`/`uv`
-  directly; env is read from `.env.local` (route handlers even re-parse it for
-  child processes).
+- **Dev**: `npm run dev` on port 3000. The macro-run route spawns `make`/`uv`
+  directly; env is read from `.env.local` (the route handler even re-parses it
+  for the child process).
 - **Local prod build**: `npm run build && npm start` — runs on port 3457 on
   the user's machine. Source edits need a rebuild to show up there.
 - **Deployed**: Vercel (Hobby). Constraints that shaped the design:
@@ -99,10 +99,10 @@ is either in Postgres or in small per-instance in-memory caches.
    the user's `is_active` flag, and the logout revocation floor (both behind a
    30 s in-memory cache); `getDb()` then mints a 1 h Supabase JWT for the
    session's tenant (`lib/supabaseTenant.js`) and returns a facade:
-   `.from()`/`.rpc()` are RLS-scoped to the tenant, `.storage` is the
-   service-role client (callers must prefix paths with `storagePrefix`),
-   plus `tenantId/role/username/userId/isAdmin`. **Fails closed** — no
-   session, no data.
+   `.from()`/`.rpc()` are RLS-scoped to the tenant, plus
+   `tenantId/role/username/userId/isAdmin`. It deliberately exposes **no**
+   storage handle — all object access goes through `src/lib/storage.js`
+   instead. **Fails closed** — no session, no data.
 5. **PostgREST/Postgres** — the `tenant_isolation` policies do the actual
    isolation; a forgotten filter cannot leak (see `DATABASE_ARCHITECTURE.md`).
 
@@ -176,9 +176,7 @@ for disabled areas) applies per `API_FEATURES` in `src/lib/features.js`.
 | `/api/notify-review` | POST | S | manual "nudge now": computes whose turn each unresolved thread is and emails each role a bundle (inline image refs re-signed for the session tenant at send time) |
 | `/api/documents` | GET/POST/PUT/DELETE | S | document library: upload via `uploadTenantDocument` + metadata row; GET re-derives each row's auth-gated URL from `storage_path`; delete removes object (validated) + row |
 | `/api/upload` | POST/DELETE | S | rich-text inline images via `uploadTenantImage` / `deleteTenantImage` (paths built + authorized in `lib/storage.js`; returns the session-gated app URL, never a public one) |
-| `/api/storage/object` | GET | S | the stable address of every stored file: validates session + tenant prefix, then 302-redirects to a 5-minute signed URL (`private, max-age=240`); `&download[=name]` forces content-disposition. Buckets are private (migration 021) — this is the only read path |
-| `/api/research/company-overview` | POST | S | spawns `prism_ai` (`uv run python -m src.main company-overview`): SEC 10-K/10-Q sections → Gemini → structured overview; returns JSON + rendered rich-text HTML with filing citations. Tenant forwarded via `APP_TENANT_ID` |
-| `/api/research/thesis-fundamentals` | POST | S | same pattern, TTM payload on stdin → Gemini → the four Thesis Structure boxes |
+| `/api/storage/object` | GET | S | the stable address of every stored file: validates session + tenant prefix, then 302-redirects to a 5-minute signed URL (`private, max-age=240`); `&download[=name]` forces content-disposition. Buckets are private — this is the only read path |
 
 ### Strategy, CRM, tasks, lessons, issues
 
@@ -211,7 +209,7 @@ for disabled areas) applies per `API_FEATURES` in `src/lib/features.js`.
 
 | Route | Methods | Auth | What it does |
 |---|---|---|---|
-| `/api/cron/auto-notify` | GET/POST | C | Draft & Review reminders across **all tenants** (service role): selects due threads per review, emails whoever should speak next, persists the dedup map via the 006 RPC. Returns 500 when any send/persist failed so the Actions run goes red. Secret accepted via `Authorization: Bearer`, `x-cron-secret`, or `?secret=` (kept for scheduler compatibility); fails closed with no secret configured |
+| `/api/cron/auto-notify` | GET/POST | C | Draft & Review reminders across **all tenants** (service role): selects due threads per review, emails whoever should speak next, persists the dedup map via the `set_draftreview_autonotify_sent` RPC. Returns 500 when any send/persist failed so the Actions run goes red. Secret accepted via `Authorization: Bearer`, `x-cron-secret`, or `?secret=` (kept for scheduler compatibility); fails closed with no secret configured |
 
 ---
 
@@ -238,8 +236,8 @@ time-of-day cadence in an IANA tz, shared dedup semantics),
 `researchProgress.js` (thesis → per-section done/partial/todo strip),
 `stageMove.js` (the only sanctioned way to move a name between pipeline
 stages; one-time research-workspace seeding; holdings backfill),
-`prismSignal.js` / `macroRegimeSignal.js` (signal history / current-signal
-derivation from DB rows), `lessons.js` (lessons enums/templates),
+`macroRegimeSignal.js` (current-signal derivation from DB rows),
+`lessons.js` (lessons enums/templates),
 `summarizer.js` (extractive summaries, no LLM), `migrateNewsImages.js`
 (legacy thesis image-shape migration).
 
@@ -267,8 +265,6 @@ unmounts, invalidates both research cache families, pub/sub completion),
 |---|---|---|---|
 | **Yahoo Finance** (`yahoo-finance2`) | quotes, charts, fundamentals, validate-ticker, fund-nav (^GSPC), realized-vol, covariance, generate-data prices, demo quote rescale | none | Batch quote first, per-ticker retry after 500 ms; quoteSummary is best-effort (price survives a fundamentals failure). Unknown symbols return empty objects from `quote()` but throw from `chart()` — `validateTicker`/`generateTickerData` translate that into listing-suggestion errors. |
 | **Alpha Vantage** | `lib/generateData.js` (INCOME_STATEMENT, BALANCE_SHEET, CASH_FLOW) | `ALPHA_VANTAGE_API_KEY` | 12 s sleeps between the 3 calls (free-tier rate limit). Uncovered symbols (OTC/foreign) return `{}` — guarded twice so the run errors instead of "succeeding" with no data. |
-| **Google Gemini** | `prism_ai` (company overview, thesis boxes, full analysis) | `GEMINI_API_KEY` (+ optional `GEMINI_MODEL`, default gemini-2.5-flash) | Reached only from the spawned Python; the route parses sentinel-wrapped JSON from stdout and maps pipeline errors to 502. |
-| **SEC EDGAR** | `prism_ai/src/data_ingestion/sec_filings.py` (10-K/10-Q sections) | `SEC_USER_AGENT` (optional) | Feeds the company-overview prompt with filing text + citation URLs. |
 | **FRED** | `macro_regime_allocator` (macro series) | `FRED_API_KEY` | Pipeline-side only; the workflow writes the key into the runner's `.env.local`. |
 | **Gmail SMTP** | `lib/email.js` (auto-notify + manual nudges) | `GMAIL_USER` + `GMAIL_APP_PASSWORD` (16-char App Password; `EMAIL_FROM` display-only) | Cached transport. Send failures surface: cron returns 500 (red Actions run) and the dedup map is *not* stamped, so failed reminders retry next tick. |
 | **GitHub API** | `/api/macro-regime/run` on Vercel | `GH_DISPATCH_TOKEN`, `GH_DISPATCH_REPO` (+ optional `GH_DISPATCH_WORKFLOW`/`GH_DISPATCH_REF`) | `workflow_dispatch` with `{command, tenant_id}` inputs; 204 → "dispatched", anything else → 502 with GitHub's message. |
@@ -320,20 +316,12 @@ subscribers (Research + Position Review pages restore spinners on mount).
 
 ---
 
-## 8. The Python sidecars
+## 8. The Python sidecar
 
-Both live in-repo, are dependency-managed by `uv`, and are **never** executed
-on Vercel (the run route detects `process.env.VERCEL` and dispatches to CI;
-the prism routes are only reachable where `uv` exists).
+`macro_regime_allocator/` lives in-repo, is dependency-managed by `uv`, and is
+**never** executed on Vercel (the run route detects `process.env.VERCEL` and
+dispatches to CI; it is only reachable where `uv` exists).
 
-- **`prism_ai/`** — LLM fundamental analysis. CSV/PDF/SEC ingestion → context
-  assembly (priority ranking, token budgeting) → Gemini → parsed
-  recommendation (`prism_recommendations` etc.). Invoked by the app for
-  `company-overview` and `thesis-fundamentals` (sentinel-wrapped JSON over
-  stdout); the full `make analyze` flow and its dashboard were archived
-  (`docs/ai-pipeline-archive.md`) but remain runnable. Tenancy contract:
-  `supabase_store.py` **refuses to run without `APP_TENANT_ID`** (or a scoped
-  tenant JWT) — isolation is never implicit.
 - **`macro_regime_allocator/`** — two-asset (SPY vs T-bills) tactical
   allocator: logistic-regression regime probability on lagged macro + market
   features, walk-forward backtest, crash overlay, plots/report/validation.
@@ -391,15 +379,11 @@ the prism routes are only reachable where `uv` exists).
 | `GH_DISPATCH_TOKEN` / `GH_DISPATCH_REPO` (+ `GH_DISPATCH_WORKFLOW`, `GH_DISPATCH_REF`) | Vercel → GitHub Actions macro-run dispatch |
 | `GMAIL_USER` / `GMAIL_APP_PASSWORD` / `EMAIL_FROM` | reminder email transport |
 | `CRON_SECRET` | shared secret for `/api/cron/*` (also an Actions secret, with `APP_URL` as the target origin) |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | prism_ai LLM calls |
 | `APP_TENANT_ID` | tenancy scope for standalone pipeline/CI runs (never set for the web app itself) |
 
 Operational scripts: `scripts/generate-hash.mjs` (bcrypt hash for the
 bootstrap admin), `scripts/provision-demo.mjs` (create/reseed the demo login),
-`scripts/macro-sync.mjs` (CI ⇄ Supabase bridge), `scripts/seed-prism*.mjs`
-(import prism outputs/data/docs into Supabase),
-`scripts/migrate-storage-urls.mjs` (one-time public-URL → app-URL rewrite for
-the private-storage cutover; supports `--dry-run`).
+`scripts/macro-sync.mjs` (CI ⇄ Supabase bridge).
 
 ---
 
