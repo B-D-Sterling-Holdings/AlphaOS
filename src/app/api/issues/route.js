@@ -10,8 +10,11 @@ import { getDb } from '@/lib/db';
 
   Authorization split:
     - Any authenticated user may open an issue (POST) or comment (PUT action=comment).
-    - Only an admin (the CIO login) may resolve, reopen, or delete. Those are gated
-      HERE, from the verified session — RLS only enforces tenant isolation, not roles.
+    - Non-admins only ever see (and may only comment on / relabel) issues THEY
+      authored — the board is not shared; it reads as "my open/closed tickets".
+    - Only an admin (the CIO login) sees every issue and may resolve, reopen, or
+      delete. All of this is gated HERE, from the verified session — RLS only
+      enforces tenant isolation, not roles.
 
   Author/attribution is always taken from the session (db.username), never from the
   client body — a user can't post as someone else.
@@ -47,20 +50,23 @@ function normalizeLabels(value) {
     .filter(Boolean))].slice(0, 10);
 }
 
-// GET — every issue for the tenant (newest activity first). The client splits
-// open vs. resolved into the Open / Closed tabs. Priority and dev notes are the
-// admin's private triage state — stripped for everyone else.
+// GET — the caller's visible issues (newest activity first). Admins see the whole
+// tenant board; everyone else sees only the tickets they authored. The client
+// splits open vs. resolved into the Open / Closed tabs. Priority and dev notes
+// are the admin's private triage state — stripped for everyone else.
 export async function GET() {
   try {
     const db = await getDb();
-    const { data, error } = await db
+    let query = db
       .from(TABLE)
       .select('*')
       .order('updated_at', { ascending: false });
+    if (!db.isAdmin) query = query.eq('author', db.username || '');
+    const { data, error } = await query;
     if (error) throw new Error(error.message);
     const rows = db.isAdmin
       ? (data || [])
-      : (data || []).map(({ priority, dev_notes, ...rest }) => rest);
+      : (data || []).map(({ priority, dev_notes, sort_order, complexity, ...rest }) => rest);
     return NextResponse.json(rows);
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
@@ -109,7 +115,9 @@ export async function POST(req) {
 //   labels           (any user)  replace the label list
 //   resolve / reopen (admin only) change status / archive
 //   priority         (admin only) set triage priority (1..4 or null)
+//   complexity       (admin only) set triage complexity (1..5 or null)
 //   dev-notes        (admin only) set the triage note
+//   sort-order       (admin only) set the manual rank within a priority band
 export async function PUT(req) {
   try {
     const db = await getDb();
@@ -117,15 +125,19 @@ export async function PUT(req) {
     const { id, action } = body;
     if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
 
-    // Comment — open to every user in the tenant.
+    // Comment — admins anywhere; everyone else only on their own tickets
+    // (mirrors GET visibility, so you can't comment on an issue you can't see).
     if (action === 'comment') {
       if (isBodyEmpty(body.body)) {
         return NextResponse.json({ error: 'Comment is empty' }, { status: 400 });
       }
       // Read-modify-write the comments array (RLS scopes both to this tenant).
       const { data: existing, error: readErr } = await db
-        .from(TABLE).select('comments').eq('id', id).single();
+        .from(TABLE).select('author, comments').eq('id', id).single();
       if (readErr) throw new Error(readErr.message);
+      if (!db.isAdmin && existing?.author !== db.username) {
+        return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
+      }
       const comment = {
         id: randomUUID(),
         author: db.username || '',
@@ -141,24 +153,32 @@ export async function PUT(req) {
       return NextResponse.json(data);
     }
 
-    // Labels — open to every user in the tenant (only closing is admin-locked).
+    // Labels — admins anywhere; everyone else only on their own tickets.
     if (action === 'labels') {
-      const { data, error } = await db
+      let update = db
         .from(TABLE)
         .update({ labels: normalizeLabels(body.labels), updated_at: new Date().toISOString() })
-        .eq('id', id).select().single();
+        .eq('id', id);
+      if (!db.isAdmin) update = update.eq('author', db.username || '');
+      const { data, error } = await update.select().maybeSingle();
       if (error) throw new Error(error.message);
+      if (!data) return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
       return NextResponse.json(data);
     }
 
-    // Priority / dev notes — the admin's triage state for the Dev tab.
-    if (action === 'priority' || action === 'dev-notes') {
+    // Priority / complexity / dev notes / manual order — the admin's triage
+    // state for the Dev tab.
+    if (action === 'priority' || action === 'complexity' || action === 'dev-notes' || action === 'sort-order') {
       if (!db.isAdmin) {
         return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
       }
       const updates = action === 'priority'
         ? { priority: [1, 2, 3, 4].includes(body.priority) ? body.priority : null }
-        : { dev_notes: typeof body.notes === 'string' ? body.notes.slice(0, 2000) : '' };
+        : action === 'complexity'
+          ? { complexity: [1, 2, 3, 4, 5].includes(body.complexity) ? body.complexity : null }
+          : action === 'sort-order'
+            ? { sort_order: Number.isFinite(Number(body.sort_order)) ? Math.trunc(Number(body.sort_order)) : 0 }
+            : { dev_notes: typeof body.notes === 'string' ? body.notes.slice(0, 2000) : '' };
       // Triage doesn't touch updated_at — reprioritizing shouldn't bump an issue
       // to the top of "Recently updated" for the whole team.
       const { data, error } = await db

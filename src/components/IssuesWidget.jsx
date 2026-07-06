@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   CircleDot, CheckCircle2, X, Plus, ArrowLeft, Trash2, MessageSquare,
-  Search, ChevronDown, ChevronRight, Check, ShieldCheck, Loader2, RotateCcw,
-  MessageSquarePlus, Tag, Wrench,
+  Search, ChevronDown, ChevronRight, ChevronUp, Check, ShieldCheck, Loader2,
+  RotateCcw, MessageSquarePlus, Tag, Wrench,
 } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import RichTextArea from '@/components/RichTextArea';
@@ -19,8 +19,11 @@ import RichTextArea from '@/components/RichTextArea';
  * and a detail view with a comment timeline.
  *
  * Permissions mirror the API (src/app/api/issues/route.js): every user can open an
- * issue, comment, and edit labels; only an admin (the CIO login) sees
- * Close / Reopen / Delete.
+ * issue, comment, and edit labels — but non-admins are served ONLY the tickets
+ * they authored (open + previously closed), so for them this reads as a personal
+ * "my tickets" panel rather than a team board (the list chrome — label filter,
+ * sort — is hidden too). Only an admin (the CIO login) sees everyone's issues
+ * and Close / Reopen / Delete.
  */
 
 const EMPTY_BODY = [{ type: 'text', value: '' }];
@@ -34,8 +37,6 @@ const LABELS = [
   { name: 'documentation', dot: 'bg-blue-500',   chip: 'bg-blue-50 text-blue-700 ring-blue-200' },
   { name: 'ui/ux',         dot: 'bg-pink-500',   chip: 'bg-pink-50 text-pink-700 ring-pink-200' },
   { name: 'performance',   dot: 'bg-amber-500',  chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
-  { name: 'help wanted',   dot: 'bg-teal-500',   chip: 'bg-teal-50 text-teal-700 ring-teal-200' },
-  { name: 'wontfix',       dot: 'bg-gray-400',   chip: 'bg-gray-100 text-gray-600 ring-gray-300' },
 ];
 const labelDef = (name) => LABELS.find(l => l.name === name)
   || { name, dot: 'bg-gray-400', chip: 'bg-gray-100 text-gray-600 ring-gray-300' };
@@ -45,7 +46,18 @@ const PRIORITIES = [
   { value: 1, label: 'Urgent', dot: 'bg-red-500',    chip: 'bg-red-50 text-red-700 ring-red-200' },
   { value: 2, label: 'High',   dot: 'bg-orange-500', chip: 'bg-orange-50 text-orange-700 ring-orange-200' },
   { value: 3, label: 'Medium', dot: 'bg-amber-400',  chip: 'bg-amber-50 text-amber-800 ring-amber-200' },
-  { value: 4, label: 'Low',    dot: 'bg-sky-500',    chip: 'bg-sky-50 text-sky-700 ring-sky-200' },
+  { value: 4, label: 'Low',    dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+];
+
+// Admin triage complexity — how hard the fix looks (issues.complexity: 1..5,
+// null = unset). Red→green reads as effort: very hard is a project, trivial
+// is a quick win. Listed hardest-first — that's the dropdown's display order.
+const COMPLEXITIES = [
+  { value: 5, label: 'Very hard', dot: 'bg-red-500',     chip: 'bg-red-50 text-red-700 ring-red-200' },
+  { value: 4, label: 'Hard',      dot: 'bg-orange-500',  chip: 'bg-orange-50 text-orange-700 ring-orange-200' },
+  { value: 3, label: 'Moderate',  dot: 'bg-yellow-400',  chip: 'bg-yellow-50 text-yellow-800 ring-yellow-200' },
+  { value: 2, label: 'Easy',      dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  { value: 1, label: 'Trivial',   dot: 'bg-sky-500',     chip: 'bg-sky-50 text-sky-700 ring-sky-200' },
 ];
 
 const SORTS = [
@@ -118,19 +130,47 @@ function LabelChip({ name }) {
   );
 }
 
-function PriorityPill({ value, onClick }) {
-  const def = PRIORITIES.find(p => p.value === value);
+// One triage pill + its dropdown (Priority / Complexity share the exact same
+// chrome — a ghost pill until a value is set, then the def's colored chip).
+// Caller owns the menu state so only one dropdown is ever open panel-wide.
+function TriageControl({ defs, placeholder, title, value, menuKey, menu, setMenu, onSelect }) {
+  const def = defs.find(p => p.value === value);
   return (
-    <button
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold ring-1 ring-inset transition-colors ${
-        def ? def.chip : 'bg-white text-gray-400 ring-gray-300 hover:text-gray-600'
-      }`}
-    >
-      <span className={`w-2 h-2 rounded-full ${def ? def.dot : 'bg-gray-300'}`} />
-      {def ? def.label : 'Set priority'}
-      <ChevronDown size={11} />
-    </button>
+    <div className="relative">
+      <button
+        onClick={() => setMenu(m => (m === menuKey ? null : menuKey))}
+        title={title}
+        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold ring-1 ring-inset transition-colors ${
+          def ? def.chip : 'bg-white text-gray-400 ring-gray-300 hover:text-gray-600'
+        }`}
+      >
+        <span className={`w-2 h-2 rounded-full ${def ? def.dot : 'bg-gray-300'}`} />
+        {/* Once a value is set the chip alone ("High" / "Hard") doesn't say
+            which triage axis it is — a tiny muted prefix disambiguates. */}
+        {def && <span className="text-[8.5px] font-bold uppercase tracking-wider opacity-60">{title}</span>}
+        {def ? def.label : placeholder}
+        <ChevronDown size={11} />
+      </button>
+      <Menu open={menu === menuKey} onClose={() => setMenu(null)} title={title} align="left" width="w-44">
+        {defs.map(p => (
+          <button
+            key={p.value}
+            onClick={() => onSelect(p.value)}
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
+          >
+            <span className="w-3.5 shrink-0">{value === p.value && <Check size={13} className="text-emerald-600" />}</span>
+            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${p.dot}`} />
+            {p.label}
+          </button>
+        ))}
+        <button
+          onClick={() => onSelect(null)}
+          className="w-full px-3 py-1.5 mt-1 border-t border-gray-100 text-left text-[12px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-50"
+        >
+          Clear {title.toLowerCase()}
+        </button>
+      </Menu>
+    </div>
   );
 }
 
@@ -282,12 +322,15 @@ export default function IssuesWidget() {
 
   const visible = useMemo(() => {
     // Dev tab: open issues only (closed = done, nothing left to triage),
-    // highest priority first, unprioritized at the bottom; ties newest-first.
+    // highest priority first, unprioritized at the bottom; inside a priority
+    // band the admin's manual order (the row chevrons) wins, ties newest-first.
     if (effTab === 'dev') {
       const prio = i => i.priority || 99;
+      const ord = i => i.sort_order ?? 0;
       return filtered
         .filter(i => i.status !== 'resolved')
         .sort((a, b) => prio(a) - prio(b)
+          || ord(a) - ord(b)
           || (new Date(b.created_at || 0) - new Date(a.created_at || 0)));
     }
     const list = filtered.filter(i => (effTab === 'closed' ? i.status === 'resolved' : i.status !== 'resolved'));
@@ -386,11 +429,90 @@ export default function IssuesWidget() {
     }
   };
 
+  // Manual ordering in the Dev tab — same pattern as Strategic Hub's Position
+  // Overview: the chevrons swap a row with its nearest neighbor of the SAME
+  // priority band and persist both rows' sort_order (admin-only on the API).
+  const rowRefs = useRef({});
+  const moveIssue = async (issue, direction) => {
+    const list = visible;
+    const prio = i => i.priority || 99;
+    const idx = list.findIndex(i => i.id === issue.id);
+    if (idx < 0) return;
+    let swapIdx = -1;
+    if (direction === 'up') {
+      for (let i = idx - 1; i >= 0; i--) if (prio(list[i]) === prio(issue)) { swapIdx = i; break; }
+    } else {
+      for (let i = idx + 1; i < list.length; i++) if (prio(list[i]) === prio(issue)) { swapIdx = i; break; }
+    }
+    if (swapIdx < 0) return;
+    const other = list[swapIdx];
+    const a = issue.sort_order ?? 0;
+    const b = other.sort_order ?? 0;
+    const newA = b === a ? (direction === 'up' ? a - 1 : a + 1) : b;
+    const newB = a;
+
+    // Animate the swap (same feel as Strategic Hub)
+    const curEl = rowRefs.current[issue.id];
+    const otherEl = rowRefs.current[other.id];
+    if (curEl && otherEl) {
+      const dy = otherEl.getBoundingClientRect().top - curEl.getBoundingClientRect().top;
+      curEl.style.transition = 'transform 380ms cubic-bezier(0.34, 1.56, 0.64, 1)';
+      otherEl.style.transition = 'transform 320ms ease-out';
+      curEl.style.transform = `translateY(${dy * 0.6}px) scale(1.02)`;
+      otherEl.style.transform = `translateY(${-dy}px)`;
+      curEl.style.zIndex = '5';
+      curEl.style.position = 'relative';
+      curEl.style.boxShadow = '0 6px 16px -8px rgba(16,185,129,0.4)';
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    setIssues(prev => prev.map(i => (
+      i.id === issue.id ? { ...i, sort_order: newA }
+        : i.id === other.id ? { ...i, sort_order: newB }
+          : i
+    )));
+
+    // Reset styles next tick after re-render
+    requestAnimationFrame(() => {
+      if (curEl) {
+        curEl.style.transition = '';
+        curEl.style.transform = '';
+        curEl.style.zIndex = '';
+        curEl.style.position = '';
+        curEl.style.boxShadow = '';
+      }
+      if (otherEl) {
+        otherEl.style.transition = '';
+        otherEl.style.transform = '';
+      }
+    });
+
+    setError('');
+    try {
+      await Promise.all([
+        mutate({ id: issue.id, action: 'sort-order', sort_order: newA }),
+        mutate({ id: other.id, action: 'sort-order', sort_order: newB }),
+      ]);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const setPriority = async (issue, priority) => {
     setMenu(null);
     setError('');
     try {
       await mutate({ id: issue.id, action: 'priority', priority });
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const setComplexity = async (issue, complexity) => {
+    setMenu(null);
+    setError('');
+    try {
+      await mutate({ id: issue.id, action: 'complexity', complexity });
     } catch (e) {
       setError(e.message);
     }
@@ -531,8 +653,10 @@ export default function IssuesWidget() {
                       <CircleDot size={16} />
                     </div>
                     <div className="min-w-0">
-                      <h2 className="text-[15px] font-bold text-gray-900 leading-tight">Issues</h2>
-                      <p className="text-[11px] text-gray-400">Report bugs & discuss with the team</p>
+                      <h2 className="text-[15px] font-bold text-gray-900 leading-tight">{isAdmin ? 'Issues' : 'Your tickets'}</h2>
+                      <p className="text-[11px] text-gray-400">
+                        {isAdmin ? 'Report bugs & discuss with the team' : 'Report a bug or request and track its status'}
+                      </p>
                     </div>
                   </>
                 )}
@@ -558,7 +682,7 @@ export default function IssuesWidget() {
                     <input
                       value={query}
                       onChange={e => setQuery(e.target.value)}
-                      placeholder="Search all issues"
+                      placeholder={isAdmin ? 'Search all issues' : 'Search your tickets'}
                       className="w-full bg-gray-50 border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-[13.5px] text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                     />
                   </div>
@@ -610,6 +734,9 @@ export default function IssuesWidget() {
                       )}
                     </div>
 
+                    {/* Filter/sort chrome is a team-board affordance — a non-admin's
+                        personal ticket list is short enough not to need it. */}
+                    {isAdmin && (
                     <div className="flex items-center gap-1">
                       <div className="relative">
                         <button
@@ -671,6 +798,7 @@ export default function IssuesWidget() {
                         </div>
                       )}
                     </div>
+                    )}
                   </div>
 
                   {/* Rows */}
@@ -688,16 +816,16 @@ export default function IssuesWidget() {
                       <p className="text-[14px] font-bold text-gray-600">
                         {query.trim() || labelFilter.length
                           ? 'No results matched your search.'
-                          : effTab === 'closed' ? "There aren't any closed issues."
+                          : effTab === 'closed' ? (isAdmin ? "There aren't any closed issues." : "You don't have any closed tickets.")
                             : effTab === 'dev' ? 'Nothing to triage yet.'
-                              : "There aren't any open issues."}
+                              : (isAdmin ? "There aren't any open issues." : "You haven't opened any tickets yet.")}
                       </p>
                       <p className="text-[12px] text-gray-400 mt-1">
                         {query.trim() || labelFilter.length
                           ? 'Try clearing the search or label filters.'
-                          : effTab === 'closed' ? 'Closed issues will appear here.'
+                          : effTab === 'closed' ? (isAdmin ? 'Closed issues will appear here.' : 'Tickets the team resolves will appear here.')
                             : effTab === 'dev' ? 'Every open issue shows up here with your priority and notes.'
-                              : 'Open one with the New issue button.'}
+                              : (isAdmin ? 'Open one with the New issue button.' : 'Report a bug or request with the New issue button.')}
                       </p>
                     </div>
                   ) : (
@@ -709,9 +837,33 @@ export default function IssuesWidget() {
                         // would flatten the nested triage controls out of the a11y tree.
                         <div
                           key={issue.id}
+                          ref={el => { if (el) rowRefs.current[issue.id] = el; }}
                           onClick={() => openDetail(issue.id)}
                           className={`w-full group text-left flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50/80 transition-colors ${idx < visible.length - 1 ? 'border-b border-gray-100' : 'rounded-b-xl'}`}
                         >
+                          {/* Dev tab: reorder chevrons — move the issue up/down
+                              within its priority band, as in Strategic Hub. */}
+                          {effTab === 'dev' && (
+                            <div
+                              className="flex flex-col -my-1 -ml-1 self-center opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                              onClick={e => e.stopPropagation()}
+                            >
+                              <button
+                                onClick={() => moveIssue(issue, 'up')}
+                                title="Move up within priority"
+                                className="p-0.5 text-gray-400 hover:text-gray-700"
+                              >
+                                <ChevronUp size={12} />
+                              </button>
+                              <button
+                                onClick={() => moveIssue(issue, 'down')}
+                                title="Move down within priority"
+                                className="p-0.5 text-gray-400 hover:text-gray-700"
+                              >
+                                <ChevronDown size={12} />
+                              </button>
+                            </div>
+                          )}
                           {closed
                             ? <CheckCircle2 size={16} className="text-purple-600 mt-0.5 shrink-0" />
                             : <CircleDot size={16} className="text-emerald-600 mt-0.5 shrink-0" />}
@@ -738,37 +890,34 @@ export default function IssuesWidget() {
                             </span>
                           )}
 
-                          {/* Dev tab: admin triage rail — priority + quick-glance note.
-                              stopPropagation so triaging never opens the issue. */}
+                          {/* Dev tab: admin triage rail — priority + complexity + quick-glance
+                              note. stopPropagation so triaging never opens the issue. */}
                           {effTab === 'dev' && (
                             <div
                               className="w-60 shrink-0 flex flex-col items-start gap-1.5 pl-3 border-l border-gray-100"
                               onClick={e => e.stopPropagation()}
                             >
-                              <div className="relative">
-                                <PriorityPill
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <TriageControl
+                                  defs={PRIORITIES}
+                                  placeholder="Set priority"
+                                  title="Priority"
                                   value={issue.priority}
-                                  onClick={() => setMenu(m => (m === `prio-${issue.id}` ? null : `prio-${issue.id}`))}
+                                  menuKey={`prio-${issue.id}`}
+                                  menu={menu}
+                                  setMenu={setMenu}
+                                  onSelect={v => setPriority(issue, v)}
                                 />
-                                <Menu open={menu === `prio-${issue.id}`} onClose={() => setMenu(null)} title="Priority" align="left" width="w-44">
-                                  {PRIORITIES.map(p => (
-                                    <button
-                                      key={p.value}
-                                      onClick={() => setPriority(issue, p.value)}
-                                      className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
-                                    >
-                                      <span className="w-3.5 shrink-0">{issue.priority === p.value && <Check size={13} className="text-emerald-600" />}</span>
-                                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${p.dot}`} />
-                                      {p.label}
-                                    </button>
-                                  ))}
-                                  <button
-                                    onClick={() => setPriority(issue, null)}
-                                    className="w-full px-3 py-1.5 mt-1 border-t border-gray-100 text-left text-[12px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-50"
-                                  >
-                                    Clear priority
-                                  </button>
-                                </Menu>
+                                <TriageControl
+                                  defs={COMPLEXITIES}
+                                  placeholder="Set complexity"
+                                  title="Complexity"
+                                  value={issue.complexity}
+                                  menuKey={`cplx-${issue.id}`}
+                                  menu={menu}
+                                  setMenu={setMenu}
+                                  onSelect={v => setComplexity(issue, v)}
+                                />
                               </div>
                               {editingNoteId === issue.id ? (
                                 <textarea
@@ -1050,30 +1199,27 @@ export default function IssuesWidget() {
                         <p className="flex items-center gap-1.5 text-[12px] font-bold text-gray-500 uppercase tracking-wide mb-2">
                           <Wrench size={12} /> Dev triage
                         </p>
-                        <div className="relative mb-2">
-                          <PriorityPill
+                        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                          <TriageControl
+                            defs={PRIORITIES}
+                            placeholder="Set priority"
+                            title="Priority"
                             value={selected.priority}
-                            onClick={() => setMenu(m => (m === 'detail-prio' ? null : 'detail-prio'))}
+                            menuKey="detail-prio"
+                            menu={menu}
+                            setMenu={setMenu}
+                            onSelect={v => setPriority(selected, v)}
                           />
-                          <Menu open={menu === 'detail-prio'} onClose={() => setMenu(null)} title="Priority" align="left" width="w-44">
-                            {PRIORITIES.map(p => (
-                              <button
-                                key={p.value}
-                                onClick={() => setPriority(selected, p.value)}
-                                className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] text-gray-700 hover:bg-gray-50"
-                              >
-                                <span className="w-3.5 shrink-0">{selected.priority === p.value && <Check size={13} className="text-emerald-600" />}</span>
-                                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${p.dot}`} />
-                                {p.label}
-                              </button>
-                            ))}
-                            <button
-                              onClick={() => setPriority(selected, null)}
-                              className="w-full px-3 py-1.5 mt-1 border-t border-gray-100 text-left text-[12px] font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-50"
-                            >
-                              Clear priority
-                            </button>
-                          </Menu>
+                          <TriageControl
+                            defs={COMPLEXITIES}
+                            placeholder="Set complexity"
+                            title="Complexity"
+                            value={selected.complexity}
+                            menuKey="detail-cplx"
+                            menu={menu}
+                            setMenu={setMenu}
+                            onSelect={v => setComplexity(selected, v)}
+                          />
                         </div>
                         <textarea
                           value={detailNotes}
