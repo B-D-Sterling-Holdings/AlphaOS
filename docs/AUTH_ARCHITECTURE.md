@@ -83,11 +83,17 @@ one login belonging to exactly one tenant.
 ## 3. Session layer (`src/lib/auth.js`, login/me/logout routes)
 
 - **Token**: app-signed JWT (`jose`), **HS256 pinned** on verify (a token
-  signed any other way is rejected), 7-day expiry, secret `AUTH_JWT_SECRET`.
-  Claims: `userId, username, tenantId, role, disabledFeatures`.
+  signed any other way is rejected), secret `AUTH_JWT_SECRET`. Claims:
+  `userId, username, tenantId, role, disabledFeatures`.
 - **Cookie**: `session_token`, `httpOnly`, `secure` in production,
-  `sameSite: 'lax'` (blocks cross-site POSTs → CSRF mitigation), `path: '/'`,
-  7-day `maxAge` matching the JWT.
+  `sameSite: 'lax'` (blocks cross-site POSTs → CSRF mitigation), `path: '/'`.
+- **Lifetime, defined once** (`src/lib/auth.js`): `SESSION_TTL_SECONDS` (7 d)
+  is the single source for **both** the JWT `exp` and the cookie `maxAge`, and
+  `createSession` pins `iat`/`exp` to the same instant so token and cookie
+  expire together to the second. Every write of the cookie goes through
+  `setSessionCookie` / `clearSessionCookie` (login, `me` reissue, logout), so
+  the cookie attributes live in exactly one place — no route hand-builds a
+  `Set-Cookie`.
 - **Login** (`/api/auth/login`): brute-force guard first (§5), then managed
   users (bcrypt, cost 10), then the env bootstrap admin, then the dev
   fallback. All failures return the same `Invalid credentials` 401 — except
@@ -118,7 +124,7 @@ one login belonging to exactly one tenant.
 |---|---|---|---|
 | See data outside own tenant | ❌ (data access is still tenant-JWT-scoped)¹ | ❌ | ❌ |
 | Feature-restricted (§5) | never | yes (by admin only)² | yes |
-| Open `/admin` + users API | ✅ | ✅ (scoped) | ❌ (redirected + 403) |
+| Open `/admin` page + `/api/admin/*` | ✅ | ✅ (scoped) | ❌ (page → redirect; API → **403 at the edge**) |
 | Create isolated workspaces | ✅ (any role) | ❌ | ❌ |
 | Add members | to any workspace | own workspace only, forced `role:'user'`, inherits the owner's restrictions | ❌ |
 | Edit feature toggles | any user | own members only, and **only within its own enabled set** | ❌ |
@@ -137,11 +143,18 @@ for members it creates. (A stale comment in `src/proxy.js`'s page-gate branch
 says owners are never restricted — the code restricts them; only the *page
 `/admin` role gate* admits owners.)
 
-Server-side enforcement lives in `/api/admin/users/route.js`:
-`requireManager()` gates entry by verified session role (never a
-client-supplied role), and `requireOwnedSubUser()` confines owners to
-`role='user'` rows of their own `tenant_id` — an owner can never touch admins,
-other owners, or anyone outside its tenant (no sideways escalation).
+The users API is gated at **two** levels, both from the verified session role
+(never a client-supplied role):
+- **Edge** (`src/proxy.js`): `/api/admin/*` is refused (403) unless
+  `canManageUsers(role)` — a plain `user` never reaches the handler. This
+  mirrors the `/admin` *page* gate and is why `/api/admin` is classified
+  `ROLE_GATED_API_ROUTES`, not feature-gated (there is no feature key for user
+  management).
+- **Handler** (`/api/admin/users/route.js`): `requireManager()` re-checks the
+  role, and `requireOwnedSubUser()` confines owners to `role='user'` rows of
+  their own `tenant_id` — an owner can never touch admins, other owners, or
+  anyone outside its tenant (no sideways escalation). Admins additionally see
+  every workspace; owners see only their own (`listUsers({ tenantId })`).
 
 Role changes only move between `owner` and `user`; `admin` rows are
 unreachable from the management API (`setUserRole` refuses them).
@@ -203,9 +216,20 @@ prefix to `config.matcher` in `src/proxy.js`, and map every one of its
 `/api/...` prefixes in `API_FEATURES`. Because the API gate is default-deny,
 forgetting the `API_FEATURES` entry now **fails closed** (403) instead of
 leaking — and `tests/apiAccess.test.mjs` (run via `npm test`) walks the whole
-`src/app/api` tree and fails CI until the route is classified as feature-owned
-or common. A `matcher` miss still silently skips the *page* gate, so keep that
-in sync too. Unknown keys in the DB are dropped by `sanitizeFeatureKeys`.
+`src/app/api` tree and fails CI until the route is classified. A `matcher` miss
+still silently skips the *page* gate, so keep that in sync too. Unknown keys in
+the DB are dropped by `sanitizeFeatureKeys`.
+
+**To add a new API route** (even one that isn't feature-specific): it must land
+in exactly one of the three buckets in `features.js`, or `npm test` fails and
+the proxy 403s it. Choose deliberately:
+- `API_FEATURES` — the route serves a feature's tenant data (the common case).
+  Map it to every feature whose pages consume it.
+- `ROLE_GATED_API_ROUTES` — access is decided by *role*, not a feature toggle
+  (today only `/api/admin`; add the matching edge check in `src/proxy.js`).
+- `COMMON_API_ROUTES` — no per-feature/role restriction beyond a valid session
+  (public data, or something gated by its own stronger check). Keep this list
+  short; every entry is a deliberate hole and should be justifiable inline.
 
 ### Roles
 
@@ -311,9 +335,13 @@ There are **no public views**; the standing rule is that any view added later
 must revoke anon/authenticated and set `security_invoker = true` (views bypass
 table RLS).
 
-Code-level guarantees are covered by unit checks (all passing): `isApiAllowed`
-across single/multi-owner routes and sub-paths; the per-username rate-limit cap
-under IP rotation; and the second-granularity revocation comparison.
+Code-level guarantees are covered by unit checks (all passing, `npm test` →
+`node --test`). `tests/apiAccess.test.mjs` is the load-bearing one: it **walks
+the real `src/app/api` tree and fails if any route is unclassified**, so the
+default-deny gate can't silently regress, plus cases for the historical leaks,
+multi-owner routes, sub-paths, role-gated `/api/admin`, and common routes.
+Other checks cover the per-username rate-limit cap under IP rotation and the
+second-granularity revocation comparison.
 
 **Drift discipline:** the RLS/view-lock SQL is idempotent — re-run it after any
 dashboard experiment or pipeline table/view rebuild to restore the intended
