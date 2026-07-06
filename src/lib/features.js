@@ -82,3 +82,66 @@ export function isHrefAllowed(href, disabled) {
   const set = disabled instanceof Set ? disabled : new Set(disabled || []);
   return !set.has(feature.key);
 }
+
+/*
+  API routes owned by a feature — the data-side twin of `hrefs`, enforced in
+  the proxy's API branch so a restricted user can't fetch a disabled area's
+  data directly with their cookie.
+
+  An API maps to EVERY feature whose pages consume it, and is blocked only
+  when ALL of them are disabled (e.g. /api/thesis serves both Equity Research
+  and Strategic Hub — losing one must not break the other). Routes consumed by
+  ungated surfaces (the dashboard home, command palette, issues widget, rich
+  text uploads) are deliberately absent: gating them would break pages every
+  user may open. Keys are route prefixes; sub-paths match like `hrefs` do.
+*/
+export const API_FEATURES = {
+  '/api/holdings': ['holdings'],
+  '/api/cash': ['holdings'],
+  '/api/risk': ['holdings'],
+  '/api/fundamentals': ['holdings'],
+  '/api/sector-labels': ['holdings'],
+  '/api/factor-config': ['holdings'],
+  '/api/return-covariance': ['allocation'],
+  '/api/realized-vol': ['allocation', 'macro-regime'],
+  '/api/contacts': ['relationships'],
+  '/api/contact-files': ['relationships'],
+  '/api/interactions': ['relationships'],
+  '/api/strategic-hub': ['strategic-hub'],
+  '/api/strategic-notes': ['strategic-hub'],
+  '/api/assignees': ['tasks'],
+  '/api/ideas': ['workspace'],
+  '/api/lessons': ['lessons'],
+  '/api/lesson-patterns': ['lessons'],
+  '/api/watchlist': ['research', 'strategic-hub'],
+  '/api/thesis': ['research', 'strategic-hub'],
+  '/api/model': ['research'],
+  '/api/research': ['research'],
+  '/api/notify-review': ['research'],
+  '/api/period-changes': ['research'],
+  '/api/saved-emails': ['research'],
+  '/api/validate-ticker': ['research'],
+  '/api/documents': ['documents'],
+  '/api/links': ['link-database'],
+  '/api/accounting-state': ['financials'],
+};
+
+/**
+ * Is this API path callable for a user with these disabled feature keys?
+ * Unmapped paths are always allowed; mapped paths are refused only when every
+ * feature that owns them is disabled. `disabled` may be an array or Set.
+ */
+export function isApiAllowed(pathname, disabled) {
+  if (!pathname) return true;
+  let owners = null;
+  let bestLen = -1;
+  for (const [prefix, features] of Object.entries(API_FEATURES)) {
+    if ((pathname === prefix || pathname.startsWith(prefix + '/')) && prefix.length > bestLen) {
+      owners = features;
+      bestLen = prefix.length;
+    }
+  }
+  if (!owners) return true;
+  const set = disabled instanceof Set ? disabled : new Set(disabled || []);
+  return !owners.every((key) => set.has(key));
+}

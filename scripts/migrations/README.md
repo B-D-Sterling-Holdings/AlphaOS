@@ -47,3 +47,14 @@ here AND is folded into `supabase-schema.sql` so fresh setups stay correct.
 | `012_promote_legacy_owners.sql` | Promote pre-011 single logins to workspace owners. |
 | `013_issue_numbers_labels.sql` | GitHub-style Issues UI: per-tenant sequential `issues.number` (#12) and `issues.labels` (label-name array). |
 | `014_issue_dev_triage.sql` | Admin "Dev" tab in Issues: `issues.priority` (1–4) and `issues.dev_notes` (admin-only triage note). |
+| `015_issue_sort_order.sql` | `issues.sort_order` — manual up/down reordering within a priority band in the Dev tab. |
+| `016_issue_complexity.sql` | `issues.complexity` (1–4) — admin triage sizing pill in the Dev tab. |
+| `017_issue_complexity_scale.sql` | Widen `issues.complexity` CHECK to 1–5 (adds "Very hard"). |
+| `018_drop_stray_policies.sql` | Re-lock RLS on every public table, drop stray (non-`tenant_isolation`) policies, recreate tenant policies — fixes the anon/cross-tenant read leak on `macro_regime_config`, `macro_regime_runs`, `rag_coverage`. |
+| `019_lock_views.sql` | Revoke anon/authenticated from every public VIEW + set `security_invoker` — views bypass table RLS, which is how `rag_coverage` stayed anon-readable after 018. |
+| `020_session_revocation.sql` | `auth_revocations(subject, not_before)` — session-revocation floor behind logout / "sign out everywhere"; also makes the bootstrap `cio-admin` revocable. Service-role-only (RLS forced, no grants). |
+| `021_private_storage.sql` | Flip the `documents` / `research-images` buckets to **private** + drop the public-read policies (closes audit finding F3). Reads now go through `/api/storage/object` → short-lived signed URLs. ⚠️ Deploy order: ship the app code and run `scripts/migrate-storage-urls.mjs` first — see the header of the migration file. |
+
+All of 001–020 are applied to the live database (verified by probe 2026-07-06).
+**021 is written but NOT yet applied** — it must wait until the `auth_design`
+branch (which serves `/api/storage/object`) is deployed.

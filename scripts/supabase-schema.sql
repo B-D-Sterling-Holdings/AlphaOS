@@ -496,48 +496,39 @@ CREATE INDEX IF NOT EXISTS idx_macro_regime_results_created ON macro_regime_resu
 
 
 -- ============================================================
--- STORAGE BUCKETS
+-- STORAGE BUCKETS (PRIVATE — see scripts/migrations/021_private_storage.sql)
 -- Run these separately or create via the Supabase dashboard
 -- Dashboard > Storage > New Bucket
 -- ============================================================
 
 -- Bucket: documents
 -- Used for: uploaded research documents (PDFs, Word, Excel, etc.)
--- Path format: {category}/{timestamp}_{filename}
--- Public: Yes
-INSERT INTO storage.buckets (id, name, public) VALUES ('documents', 'documents', true)
-  ON CONFLICT (id) DO NOTHING;
+-- Path format: {tenant_id}/{category}/{timestamp}_{filename}
+-- Public: NO — reads go through /api/storage/object (session + tenant check,
+-- then a short-lived signed URL). See src/lib/storage.js.
+INSERT INTO storage.buckets (id, name, public) VALUES ('documents', 'documents', false)
+  ON CONFLICT (id) DO UPDATE SET public = false;
 
 -- Bucket: research-images
 -- Used for: inline images in rich text editors
--- Path format: {ticker}/{timestamp}_{filename}
--- Public: Yes
-INSERT INTO storage.buckets (id, name, public) VALUES ('research-images', 'research-images', true)
-  ON CONFLICT (id) DO NOTHING;
+-- Path format: {tenant_id}/{ticker}/{timestamp}_{filename}
+-- Public: NO (same signed-URL flow as documents)
+INSERT INTO storage.buckets (id, name, public) VALUES ('research-images', 'research-images', false)
+  ON CONFLICT (id) DO UPDATE SET public = false;
 
 
 -- ============================================================
--- STORAGE POLICIES (public READ only)
--- Uploads and deletes go through the server's service-role client (see
--- src/lib/db.js), which bypasses storage RLS — so NO public INSERT/DELETE
--- policies are needed. Public READ stays so getPublicUrl() links resolve.
--- DROP-then-CREATE so the file is safe to re-run (CREATE POLICY has no
--- IF NOT EXISTS); the DROPs also clean up the old public write policies.
+-- STORAGE POLICIES: none.
+-- Buckets are private and hold NO policies for anon/authenticated — every
+-- upload/read/delete goes through the server's service-role client behind the
+-- narrow helpers in src/lib/storage.js, which validate the session and the
+-- `<tenant_id>/` path prefix and mint short-lived signed URLs for reads.
+-- The DROPs clean up the pre-021 public policies on older databases.
 -- ============================================================
-
--- documents bucket
 DROP POLICY IF EXISTS "Allow public read on documents" ON storage.objects;
-CREATE POLICY "Allow public read on documents" ON storage.objects
-  FOR SELECT USING (bucket_id = 'documents');
-
 DROP POLICY IF EXISTS "Allow public insert on documents" ON storage.objects;
 DROP POLICY IF EXISTS "Allow public delete on documents" ON storage.objects;
-
--- research-images bucket
 DROP POLICY IF EXISTS "Allow public read on research-images" ON storage.objects;
-CREATE POLICY "Allow public read on research-images" ON storage.objects
-  FOR SELECT USING (bucket_id = 'research-images');
-
 DROP POLICY IF EXISTS "Allow public insert on research-images" ON storage.objects;
 DROP POLICY IF EXISTS "Allow public delete on research-images" ON storage.objects;
 

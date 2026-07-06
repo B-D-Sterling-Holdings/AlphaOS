@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { verifySession, SESSION_COOKIE_NAME } from '@/lib/auth';
-import { featureForPath, sanitizeFeatureKeys } from '@/lib/features';
+import { featureForPath, isApiAllowed, sanitizeFeatureKeys } from '@/lib/features';
 import { canManageUsers, isUnrestrictedRole } from '@/lib/roles';
 
 // Next.js proxy (formerly "middleware"). Runs on the edge for both API routes
@@ -84,6 +84,16 @@ export async function proxy(request) {
   const session = await verifySession(token);
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Feature suppression applies to data, not just pages: a restricted user
+  // must not be able to fetch a disabled area's API directly with their
+  // cookie. Same signed-JWT denylist as the page gate above; admins exempt.
+  if (
+    !isUnrestrictedRole(session.role) &&
+    !isApiAllowed(pathname, sanitizeFeatureKeys(session.disabledFeatures))
+  ) {
+    return NextResponse.json({ error: 'Feature disabled for this account' }, { status: 403 });
   }
 
   return NextResponse.next();

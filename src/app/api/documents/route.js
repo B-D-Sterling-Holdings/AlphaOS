@@ -1,18 +1,22 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import {
+  uploadTenantDocument,
+  deleteTenantDocument,
+  appStorageUrl,
+  DOCUMENT_BUCKET,
+} from '@/lib/storage';
 
-const BUCKET = 'documents';
+/*
+  Document library. Bytes live in the private `documents` bucket (uploaded /
+  deleted through src/lib/storage.js, which owns path construction and tenant
+  authorization); metadata lives in the tenant-scoped `documents` table.
 
-// Storage isolation is by the `<tenant_id>/` path prefix (storage bypasses
-// table RLS), so user-supplied values that land in an object path must not be
-// able to introduce separators or dot-dot segments.
-function safeSegment(value, fallback) {
-  const clean = String(value ?? '')
-    .replace(/[/\\]/g, '_')
-    .replace(/\.{2,}/g, '.')
-    .trim();
-  return clean || fallback;
-}
+  Rows store — and GET always (re)derives — the app-relative, auth-gated URL
+  for each file (`/api/storage/object?...`). Deriving on read means rows
+  written before the private-bucket cutover (which stored public object URLs)
+  serve correctly with no data migration for this table.
+*/
 
 export async function GET(request) {
   const supabase = await getDb();
@@ -28,7 +32,11 @@ export async function GET(request) {
     const { data, error } = await query;
     if (error) throw new Error(error.message);
 
-    return NextResponse.json({ documents: data || [] });
+    const documents = (data || []).map((doc) =>
+      doc.storage_path ? { ...doc, url: appStorageUrl(DOCUMENT_BUCKET, doc.storage_path) } : doc
+    );
+
+    return NextResponse.json({ documents });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
@@ -48,19 +56,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'file is required' }, { status: 400 });
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const path = `${supabase.storagePrefix}${safeSegment(category, 'other')}/${Date.now()}_${safeSegment(file.name, 'file')}`;
-
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from(BUCKET)
-      .upload(path, buffer, {
-        contentType: file.type,
-        upsert: false,
-      });
-
-    if (uploadError) throw new Error(uploadError.message);
-
-    const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(uploadData.path);
+    const { path, url } = await uploadTenantDocument({ category, file });
 
     const { data: doc, error: dbError } = await supabase.from('documents').insert({
       title: title || file.name,
@@ -70,15 +66,15 @@ export async function POST(request) {
       file_name: file.name,
       file_type: file.type,
       file_size: file.size,
-      storage_path: uploadData.path,
-      url: urlData.publicUrl,
+      storage_path: path,
+      url,
     }).select().single();
 
     if (dbError) throw new Error(dbError.message);
 
     return NextResponse.json({ success: true, document: doc });
   } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json({ error: e.message }, { status: e.status || 500 });
   }
 }
 
@@ -122,11 +118,12 @@ export async function DELETE(request) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    // Get the document to find storage path
+    // The row is RLS-scoped to this tenant, and deleteTenantDocument
+    // re-authorizes the path against the session tenant anyway.
     const { data: doc } = await supabase.from('documents').select('storage_path').eq('id', id).single();
 
     if (doc?.storage_path) {
-      await supabase.storage.from(BUCKET).remove([doc.storage_path]);
+      await deleteTenantDocument(doc.storage_path);
     }
 
     const { error } = await supabase.from('documents').delete().eq('id', id);
@@ -134,6 +131,6 @@ export async function DELETE(request) {
 
     return NextResponse.json({ success: true });
   } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json({ error: e.message }, { status: e.status || 500 });
   }
 }
