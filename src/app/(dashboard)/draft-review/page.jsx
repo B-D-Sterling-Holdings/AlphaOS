@@ -19,7 +19,7 @@ import {
   fetchQuote,
   fetchThesis,
   fetchWatchlist,
-  saveThesis as saveThesisData,
+  saveThesisReconciled,
 } from '@/lib/researchApi';
 
 // --- thesis.underwriting.draftReview shaping (kept local to this page) -------
@@ -234,14 +234,29 @@ export default function DraftReviewPage() {
     startGeneration(selectedTicker, cache);
   };
 
+  // Save with optimistic-concurrency reconciliation: on a version conflict (a
+  // teammate saved the same thesis first) the reviewer's in-flight comments/edits
+  // are merged on top of the fresh server copy and retried, so no one's Draft &
+  // Review work is silently overwritten. See saveThesisReconciled / mergeThesis.
   const saveThesis = useCallback(async (data) => {
     if (!selectedTicker || (!thesisDirty && !data)) return;
     setThesisSaving(true);
     try {
-      const result = await saveThesisData(selectedTicker, data || thesis);
-      if (result.success) {
+      const result = await saveThesisReconciled(selectedTicker, data || thesis);
+      if (result.ok) {
         setThesisDirty(false);
-        setToast({ message: 'Draft & review saved', type: 'success' });
+        // Surface the merged document on a reconciled save; otherwise just stamp
+        // the new version so the next save guards against the right row (without
+        // clobbering keystrokes typed while this save was in flight).
+        if (result.reloaded) setThesis(result.thesis);
+        else setThesis(prev => (prev ? { ...prev, version: result.thesis.version } : prev));
+        setToast({ message: result.reloaded ? 'Merged a teammate’s changes and saved' : 'Draft & review saved', type: 'success' });
+      } else if (result.conflict) {
+        setThesis(result.thesis);
+        setThesisDirty(true);
+        setToast({ message: 'Loaded a teammate’s latest changes — review and save again', type: 'info' });
+      } else {
+        setToast({ message: 'Failed to save', type: 'error' });
       }
     } catch {
       setToast({ message: 'Failed to save', type: 'error' });

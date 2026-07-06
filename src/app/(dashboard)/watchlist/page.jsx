@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCache } from '@/lib/CacheContext';
-import { writeWatchlistCache, routeForStage } from '@/lib/stageMove';
+import { writeWatchlistCache, routeForStage, postWatchlist } from '@/lib/stageMove';
+import Toast from '@/components/Toast';
 import { formatMoneyPrecise, formatPct, formatLargeNumber } from '@/lib/formatters';
 import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft, RefreshCw } from 'lucide-react';
 import { Bar } from 'react-chartjs-2';
@@ -585,6 +586,7 @@ export default function WatchlistPage() {
   const [addChecking, setAddChecking] = useState(false);
   const [addError, setAddError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
   const stockAreaRef = useRef(null);
   const prevPositionsRef = useRef(new Map());
   const movedTickersRef = useRef(new Set());
@@ -622,15 +624,19 @@ export default function WatchlistPage() {
     }
   }, [cache]);
 
-  // Save all data
+  // Save all data. Guarded by optimistic concurrency: if someone else changed the
+  // watchlist first, the server returns the fresh state and we reload it — so their
+  // edit is never silently lost. The local change is reverted (visibly, with a
+  // notice) and can be redone against the up-to-date list.
   const saveData = useCallback(async (updatedData) => {
     setAllData(updatedData);
     writeWatchlistCache(cache, updatedData);
-    await fetch('/api/watchlist', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updatedData),
-    });
+    const res = await postWatchlist(updatedData);
+    if (res.conflict && res.current) {
+      setAllData(res.current);
+      writeWatchlistCache(cache, res.current);
+      setToast({ message: 'The watchlist was updated in another session — reloaded the latest. Please redo your change.', type: 'info' });
+    }
   }, [cache]);
 
   // Helper: update active watchlist's stocks and save
@@ -1080,6 +1086,7 @@ export default function WatchlistPage() {
           )}
         </div>
       </div>
+      {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
     </div>
   );
 }

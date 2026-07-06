@@ -5,21 +5,25 @@ const jsonHeaders = { 'Content-Type': 'application/json' };
 export async function fetchAccountingStateValue() {
   const res = await fetch('/api/accounting-state');
   const data = await res.json();
-  return { ok: res.ok, value: data.value, error: data.error, status: res.status };
+  return { ok: res.ok, value: data.value, version: data.version, error: data.error, status: res.status };
 }
 
-export async function saveAccountingStateValue(value) {
+// Saves the accounting blob with an optimistic-concurrency guard. Pass the
+// `baseVersion` the client last loaded; a stale save comes back as
+// { conflict: true, current: { value }, version } (HTTP 409) instead of silently
+// overwriting another admin's concurrent edit. On success returns { ok, version }.
+export async function saveAccountingStateValue(value, baseVersion) {
   const res = await fetch('/api/accounting-state', {
     method: 'PUT',
     headers: jsonHeaders,
-    body: JSON.stringify({ value }),
+    body: JSON.stringify({ value, baseVersion }),
   });
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, ...data, status: res.status };
 }
 
-export async function saveAccountingState(state) {
-  return saveAccountingStateValue(JSON.stringify(state));
+export async function saveAccountingState(state, baseVersion) {
+  return saveAccountingStateValue(JSON.stringify(state), baseVersion);
 }
 
 async function fetchPortfolio() {

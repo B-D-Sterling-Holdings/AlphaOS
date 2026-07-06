@@ -1219,6 +1219,10 @@ export default function AccountingTool() {
   const [state, setState] = useState(null);
   const [activeTab, setActiveTab] = useState('accounting'); // 'accounting' | 'investor-performance' | 'nav-converter'
   const [activeQuarter, setActiveQuarter] = useState(0);
+  // Optimistic-concurrency token for the fund-accounting-state row (migration 030).
+  // Echoed on every autosave; a mismatch means another admin saved first, so we
+  // reload their state rather than silently overwriting it. See the persist effect.
+  const versionRef = useRef(0);
 
   // Default the selected tab to the most recent quarter. Called at each data-load
   // point (below) instead of via an effect that watches quarters.length, which
@@ -1257,26 +1261,32 @@ export default function AccountingTool() {
         const local = localStorage.getItem(ACCOUNTING_STORAGE_KEY);
         if (local) {
           const parsed = backfillBenchmarkData(JSON.parse(local));
-          await saveAccountingState(parsed);
+          const res = await saveAccountingState(parsed, versionRef.current);
+          versionRef.current = res.version ?? versionRef.current;
           localStorage.removeItem(ACCOUNTING_STORAGE_KEY);
           if (!cancelled) loadState(parsed);
           return;
         }
       } catch {}
 
-      // Normal load (account-aware on the server: demo sessions read demo_app_settings)
+      // Normal load (account-aware on the server: demo sessions read demo_app_settings).
+      // Keep `version` as-is: a number post-migration, 0 for no row, or undefined for
+      // a pre-migration row (which routes saves to the legacy unguarded path).
       try {
-        const { ok, value } = await fetchAccountingStateValue();
+        const { ok, value, version } = await fetchAccountingStateValue();
         if (ok && value) {
+          versionRef.current = version;
           const parsed = JSON.parse(value);
           if (!cancelled) loadState(backfillBenchmarkData(parsed));
           return;
         }
+        if (ok) versionRef.current = version; // no row yet → next save inserts
       } catch {}
 
       // Nothing anywhere — use seed
       const seed = createSeedState();
-      await saveAccountingState(seed);
+      const res = await saveAccountingState(seed, versionRef.current);
+      versionRef.current = res.version ?? versionRef.current;
       if (!cancelled) loadState(seed);
     }
 
@@ -1299,8 +1309,25 @@ export default function AccountingTool() {
     if (state === prevStateRef.current) return;
     prevStateRef.current = state;
 
-    saveAccountingState(state).then((res) => {
-      if (!res.ok) {
+    saveAccountingState(state, versionRef.current).then((res) => {
+      if (res.conflict) {
+        // Another admin saved first. Don't overwrite them — adopt their version and
+        // reload their state. Set prevStateRef to the reloaded object first so this
+        // effect's own guard skips re-saving it (no echo loop).
+        versionRef.current = res.version;
+        const remote = res.current?.value;
+        if (remote) {
+          try {
+            const parsed = backfillBenchmarkData(JSON.parse(remote));
+            prevStateRef.current = parsed;
+            loadState(parsed);
+          } catch {}
+        }
+        return;
+      }
+      if (res.ok) {
+        versionRef.current = res.version ?? versionRef.current;
+      } else {
         console.error('Failed to persist accounting state:', res.error || res.status);
       }
     });

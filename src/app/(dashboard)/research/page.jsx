@@ -21,7 +21,7 @@ import {
   fetchThesis,
   fetchTickerFundamentals,
   fetchWatchlist,
-  saveThesis as saveThesisData,
+  saveThesisReconciled,
 } from '@/lib/researchApi';
 
 const FUNDAMENTALS_BOXES = [
@@ -694,14 +694,26 @@ export default function ResearchPage() {
     });
   }, [selectedTicker, loadTickerData]);
 
+  // Save with optimistic-concurrency reconciliation: if the same thesis was saved
+  // elsewhere first (another analyst, or Draft & Review in another tab), the local
+  // edits are merged on top of the fresh server copy and retried instead of
+  // silently overwriting it. See saveThesisReconciled / mergeThesis.
   const saveThesis = useCallback(async (data) => {
     if (!selectedTicker || (!thesisDirty && !data)) return;
     setThesisSaving(true);
     try {
-      const result = await saveThesisData(selectedTicker, data || thesis);
-      if (result.success) {
+      const result = await saveThesisReconciled(selectedTicker, data || thesis);
+      if (result.ok) {
         setThesisDirty(false);
-        setToast({ message: 'Research notes saved', type: 'success' });
+        if (result.reloaded) setThesis(result.thesis);
+        else setThesis(prev => (prev ? { ...prev, version: result.thesis.version } : prev));
+        setToast({ message: result.reloaded ? 'Merged newer changes and saved' : 'Research notes saved', type: 'success' });
+      } else if (result.conflict) {
+        setThesis(result.thesis);
+        setThesisDirty(true);
+        setToast({ message: 'Loaded newer changes — review and save again', type: 'info' });
+      } else {
+        setToast({ message: 'Failed to save research notes', type: 'error' });
       }
     } catch {
       setToast({ message: 'Failed to save research notes', type: 'error' });
