@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, CornerDownLeft, TrendingUp } from 'lucide-react';
 import { ALL_PAGES } from '@/lib/navigation';
-import { isHrefAllowed } from '@/lib/features';
+import { isHrefAllowed, isApiAllowed } from '@/lib/features';
 import { useAuth } from '@/lib/AuthContext';
 
 // How each ticker context maps to a destination. Ordered by deep-link quality:
@@ -61,10 +61,17 @@ export default function CommandPalette() {
     if (tickersLoaded) return;
     setTickersLoaded(true);
     try {
+      // The palette is mounted app-wide, so only pull ticker sources this user
+      // may actually reach — same gate the edge enforces, so restricted areas
+      // never leak into the palette (and don't 403 in the console).
+      const pull = (path) =>
+        isApiAllowed(path, disabledFeatures)
+          ? fetch(path).then(r => r.json()).catch(() => null)
+          : Promise.resolve(null);
       const [portfolioRes, watchlistRes, candidatesRes] = await Promise.all([
-        fetch('/api/portfolio').then(r => r.json()).catch(() => null),
-        fetch('/api/watchlist').then(r => r.json()).catch(() => null),
-        fetch('/api/strategic-candidates').then(r => r.json()).catch(() => null),
+        pull('/api/portfolio'),
+        pull('/api/watchlist'),
+        pull('/api/strategic-candidates'),
       ]);
 
       const map = new Map(); // ticker -> { contexts:Set, name }
@@ -100,7 +107,7 @@ export default function CommandPalette() {
     } catch {
       // Pages-only search still works if ticker fetch fails.
     }
-  }, [tickersLoaded]);
+  }, [tickersLoaded, disabledFeatures]);
 
   // Mirror `open` into a ref so the keydown handler can read it without
   // re-subscribing the listener on every toggle.

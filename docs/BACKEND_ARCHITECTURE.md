@@ -90,8 +90,11 @@ is either in Postgres or in small per-instance in-memory caches.
      (no DB call) and redirect restricted users home.
    - *APIs*: `/api/auth/*` and `/api/cron/*` pass through (they authenticate
      themselves); everything else requires a verifiable session JWT (from the
-     `Authorization: Bearer` header or the cookie) → 401, then applies the
-     feature denylist via `isApiAllowed()` → 403. Admins are exempt.
+     `Authorization: Bearer` header or the cookie) → 401. Then `/api/admin/*`
+     is **role-gated** (`canManageUsers` → 403 for a plain user); everything
+     else runs the **default-deny** feature gate (`isApiAllowed()` → 403 for a
+     disabled area, *and* for any route not classified in `features.js`).
+     Admins are exempt from the feature gate.
 3. **Route handler** (`src/app/api/**/route.js`) — thin: parse/validate,
    delegate to a lib module or query via `getDb()`, return
    `NextResponse.json`.
@@ -126,15 +129,19 @@ are set globally in `next.config.mjs`.
 ## 4. API catalog
 
 Auth column: **S** = session required by the proxy (the default), **S+A** =
-session + admin/owner enforcement inside the route, **C** = `CRON_SECRET`,
-**–** = open (auth endpoints manage their own session). Feature gating (403
-for disabled areas) applies per `API_FEATURES` in `src/lib/features.js`.
+session + admin/owner enforcement (now at the edge *and* in the route for
+`/api/admin/*`), **C** = `CRON_SECRET`, **–** = open (auth endpoints manage
+their own session). The API gate is **default-deny**: every `/api/*` route is
+classified in `src/lib/features.js` as feature-owned (`API_FEATURES`, 403 when
+all owning features are disabled), role-gated (`ROLE_GATED_API_ROUTES`), or
+common (`COMMON_API_ROUTES`); an unclassified route is refused. Admins are
+exempt from the feature gate.
 
 ### Auth & administration
 
 | Route | Methods | Auth | What it does |
 |---|---|---|---|
-| `/api/auth/login` | POST | – | rate-limit guard → managed users (bcrypt) → env bootstrap admin → dev fallback; demo logins trigger the tenant reseed; sets the 7-day session cookie |
+| `/api/auth/login` | POST | – | rate-limit guard → managed users (bcrypt) → env bootstrap admin → dev fallback; demo logins trigger the tenant reseed; sets the session cookie via `setSessionCookie` (lifetime = `SESSION_TTL_SECONDS`, 7 d) |
 | `/api/auth/logout` | POST | – | stamps the `auth_revocations` floor for the subject (best-effort), clears the cookie |
 | `/api/auth/me` | GET | – | live session probe: enforces revocation floor + `is_active`, refreshes role/features from the DB, re-issues the cookie when claims drifted |
 | `/api/admin/users` | GET/POST/PATCH/DELETE | S+A | user & workspace management; global admins see everything, owners are confined to `role='user'` rows of their own tenant (`requireOwnedSubUser`); handles create (workspace or sub-user), rename login/workspace, password reset, role owner⇄user, feature toggles, enable/disable, delete user/workspace |
@@ -358,7 +365,10 @@ dispatches to CI; it is only reachable where `uv` exists).
 - **Framework-neutral registries** (`roles.js`, `features.js`) are imported by
   edge, server, and client — keep them free of `server-only`/node/React
   imports. Adding a feature touches `FEATURES`, the proxy `matcher`, and
-  `API_FEATURES` together.
+  `API_FEATURES` together. **Every new `/api/*` route must be classified** in
+  `features.js` (feature / role-gated / common) — the API gate is default-deny,
+  so an unregistered route 403s, and `tests/apiAccess.test.mjs` (`npm test`)
+  fails until it's registered.
 - **In-memory server state** (rate-limit counters, revocation caches, macro
   status file) is per-instance by design — acceptable at this deployment's
   scale; noted as a tradeoff in the auth doc.

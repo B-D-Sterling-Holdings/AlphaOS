@@ -86,6 +86,19 @@ export async function proxy(request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // /api/admin/* is ROLE-gated at the edge, mirroring the /admin page gate
+  // above: only admins and workspace owners may reach the user-management API.
+  // The handler re-checks this (requireManager) and additionally scopes owners
+  // to their own workspace, so this is defense-in-depth — it bounces a plain
+  // user before the request ever touches the handler. Role-gated, not
+  // feature-gated: there is no feature key for user management.
+  if (pathname === '/api/admin' || pathname.startsWith('/api/admin/')) {
+    if (!canManageUsers(session.role)) {
+      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+    }
+    return NextResponse.next();
+  }
+
   // Feature suppression applies to data, not just pages: a restricted user
   // must not be able to fetch a disabled area's API directly with their
   // cookie. Same signed-JWT denylist as the page gate above; admins exempt.
