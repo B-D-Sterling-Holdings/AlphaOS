@@ -121,7 +121,14 @@ async function handle(request) {
   }
   try {
     const summary = await runAutoNotify();
-    return NextResponse.json({ ok: true, ranAt: new Date().toISOString(), ...summary });
+    // Send/persist failures (dead SMTP creds, RPC errors…) must not hide behind a
+    // 200 — the Actions workflow only alarms on non-2xx, and a reminder that
+    // silently never sends is worse than a red cron run.
+    const ok = summary.errors.length === 0;
+    return NextResponse.json(
+      { ok, ranAt: new Date().toISOString(), ...summary },
+      { status: ok ? 200 : 500 },
+    );
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

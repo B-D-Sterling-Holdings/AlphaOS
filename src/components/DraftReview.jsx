@@ -514,11 +514,19 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
     if (!c?.enabled || !notify || autoBusyRef.current) return;
     const now = Date.now();
     const due = selectDueReminders({ threads: th, autoNotify: c, emails, now });
-    const remindedIds = [...due.reviewer, ...due.author].map(t => t.id);
-    if (!remindedIds.length) return;
+    const dueIds = [...due.reviewer, ...due.author].map(t => t.id);
+    if (!dueIds.length) return;
     autoBusyRef.current = true;
     try {
-      await notify(remindedIds);
+      // Stamp the dedup map only for roles whose email actually sent — a failed
+      // send (dead SMTP creds, network…) must stay unstamped so both this timer
+      // and the server cron retry it instead of marking it silently "done".
+      const result = await notify(dueIds);
+      const sentRoles = new Set((result?.sent || []).map(s => s.role));
+      const remindedIds = ['reviewer', 'author']
+        .filter(role => sentRoles.has(role))
+        .flatMap(role => due[role].map(t => t.id));
+      if (!remindedIds.length) return;
       const nextSent = computeNextSent({ threads: th, prevSent: c.sent, remindedIds, nowIso: new Date(now).toISOString() });
       saveCfg?.({ ...c, sent: nextSent }, true);
     } finally {

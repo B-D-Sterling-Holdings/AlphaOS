@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   CircleDot, CheckCircle2, X, Plus, ArrowLeft, Trash2, MessageSquare,
-  Archive, Send, ShieldCheck, Loader2, RotateCcw, Check,
+  Archive, Send, ShieldCheck, Loader2, RotateCcw, Check, MessageSquarePlus,
 } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import RichTextArea from '@/components/RichTextArea';
@@ -11,9 +11,10 @@ import RichTextArea from '@/components/RichTextArea';
 /**
  * IssuesWidget — an in-app issue tracker (a small GitHub-issues clone).
  *
- * Rendered once in the dashboard layout; opened by dispatching an `open-issues`
- * window event (the navbar button does this, mirroring the command palette). Slides
- * in as a right-hand drawer with an Open tab and an Archived (resolved) tab.
+ * Rendered once in the dashboard layout. Opened by the floating "Feedback" button
+ * this component pins to the bottom-right corner of every page, or by dispatching
+ * an `open-issues` window event (the command-palette pattern). Slides in as a
+ * right-hand drawer with an Open tab and an Archived (resolved) tab.
  *
  * Permissions mirror the API (src/app/api/issues/route.js): every user can open an
  * issue and comment; only an admin (the CIO login) sees Resolve / Reopen / Delete.
@@ -117,6 +118,10 @@ export default function IssuesWidget() {
 
   // Refresh the list whenever the drawer opens.
   useEffect(() => { if (open) load(); }, [open, load]);
+
+  // Load once on mount too, so the FAB's open-count badge is right before the
+  // drawer is ever opened.
+  useEffect(() => { if (authenticated) load(); }, [authenticated, load]);
 
   // Close on Escape.
   useEffect(() => {
@@ -240,6 +245,29 @@ export default function IssuesWidget() {
         .issue-rt ol { list-style: decimal; margin: 6px 0; padding-left: 22px; }
         .issue-rt li { margin: 2px 0; }
       `}</style>
+
+      {/* Floating feedback button — pinned bottom-right on every page so there is
+          always one obvious place to report a bug or leave feedback. z-40 keeps it
+          under toasts (z-50) and the drawer backdrop. */}
+      {!open && (
+        <button
+          onClick={() => { setOpen(true); setView('list'); }}
+          aria-label="Open feedback"
+          title="Report a bug or share feedback"
+          className="fixed bottom-6 right-6 z-40 group flex items-center gap-2.5 pl-4 pr-5 py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/30 hover:shadow-xl hover:shadow-emerald-600/40 hover:-translate-y-0.5 transition-all duration-200"
+        >
+          <MessageSquarePlus size={20} className="shrink-0" />
+          <span className="text-[15px] font-bold leading-none">Feedback</span>
+          <span className="hidden sm:block text-[11px] font-medium text-emerald-100/90 leading-none -ml-0.5 pl-2.5 border-l border-emerald-400/50">
+            Spotted a bug? Tell us
+          </span>
+          {openCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center rounded-full bg-white text-emerald-700 text-[11px] font-bold shadow ring-2 ring-emerald-600 tabular-nums">
+              {openCount}
+            </span>
+          )}
+        </button>
+      )}
 
       {open && (
         <div className="fixed inset-0 z-[10002]">

@@ -3,15 +3,18 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { RefreshCw, Save, CheckCircle, MessagesSquare, ArrowLeft, ArrowRight, User } from 'lucide-react';
+import { RefreshCw, Save, CheckCircle, MessagesSquare, ArrowLeft, ArrowRight, User, AlertTriangle } from 'lucide-react';
 import Card from '@/components/Card';
 import Toast from '@/components/Toast';
 import DraftReview from '@/components/DraftReview';
 import ValuationModel from '@/components/ValuationModel';
+import CompanyFundamentals from '@/components/CompanyFundamentals';
 import TickerSearchSelect from '@/components/TickerSearchSelect';
 import { useCache } from '@/lib/CacheContext';
 import { normalizeAutoNotify } from '@/lib/autoNotify';
+import { useTickerData } from '@/lib/useTickerData';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
+import { startGeneration, isGenerating, subscribeGeneration } from '@/lib/generateTickerJob';
 
 // --- thesis.underwriting.draftReview shaping (kept local to this page) -------
 
@@ -78,9 +81,21 @@ export default function DraftReviewPage() {
   // Review). The valuation itself (rows, assumptions) lives in /api/model/<ticker>,
   // shared across the pipeline, so work started here follows the name into Research.
   const [liveQuote, setLiveQuote] = useState(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
   // Which stage a promote/demote is currently persisting to (null = idle). Drives the
   // per-button spinner so the click has immediate feedback while the move resolves.
   const [movingTo, setMovingTo] = useState(null);
+  // 'draft' (paper + threads) | 'fundamentals' (the company data view shared with
+  // Research). Consolidation of the two pages: the discussion happens with the
+  // numbers one tab away instead of one stage away.
+  const [activeTab, setActiveTab] = useState(() => cache.get('draft_review_activeTab') || 'draft');
+  const [generating, setGenerating] = useState(false);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+
+  // Company fundamentals for the Fundamentals tab. Same cache slots + generation
+  // job as the Research page, so data loaded (or generated) on either page is
+  // immediately available on the other.
+  const { tickerData, tickerLoading, reload: reloadTickerData } = useTickerData(selectedTicker);
 
   // Only names actively in the Draft & Review stage. Research is its own page now;
   // a name's paper/threads are preserved in its thesis and reappear here untouched
@@ -165,18 +180,56 @@ export default function DraftReviewPage() {
     return () => { cancelled = true; };
   }, [selectedTicker]);
 
-  // Live quote for the valuation model's share price. Cleared up front and guarded so
-  // a slow response can't leak the prior name's price onto the new selection.
+  // Live quote for the valuation model's share price and the Fundamentals stat
+  // tiles. Cleared up front and guarded so a slow response can't leak the prior
+  // name's price onto the new selection.
   useEffect(() => {
     if (!selectedTicker) { setLiveQuote(null); return; }
     let cancelled = false;
     setLiveQuote(null);
+    setQuoteLoading(true);
     fetch(`/api/quotes?tickers=${selectedTicker}`)
       .then(r => r.json())
       .then(data => { if (!cancelled && data.quotes?.[selectedTicker]) setLiveQuote(data.quotes[selectedTicker]); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setQuoteLoading(false); });
     return () => { cancelled = true; };
   }, [selectedTicker]);
+
+  useEffect(() => {
+    cache.set('draft_review_activeTab', activeTab);
+  }, [activeTab, cache]);
+
+  // "Generate Data" runs in the module-scope job (src/lib/generateTickerJob) so
+  // navigating away doesn't orphan it. Mirrors the Research page: restore the
+  // spinner on mount / company change, and on completion reload only if the
+  // finished name is the one on screen.
+  useEffect(() => {
+    setGenerating(isGenerating(selectedTicker));
+    return subscribeGeneration(({ ticker, ok, error }) => {
+      if (ticker === selectedTicker) {
+        setGenerating(false);
+        if (ok) {
+          setToast({ message: `Data generated for ${ticker}`, type: 'success' });
+          reloadTickerData();
+        } else {
+          setToast({ message: `Error: ${error}`, type: 'error' });
+        }
+      } else {
+        setToast(ok
+          ? { message: `Data generated for ${ticker}`, type: 'success' }
+          : { message: `${ticker}: ${error}`, type: 'error' });
+      }
+    });
+  }, [selectedTicker, reloadTickerData]);
+
+  const generateData = () => {
+    setShowGenerateModal(false);
+    if (!selectedTicker || isGenerating(selectedTicker)) return;
+    setGenerating(true);
+    setToast({ message: `Generating data for ${selectedTicker}... This may take ~30 seconds.`, type: 'info' });
+    startGeneration(selectedTicker, cache);
+  };
 
   const saveThesis = useCallback(async (data) => {
     if (!selectedTicker || (!thesisDirty && !data)) return;
@@ -232,11 +285,11 @@ export default function DraftReviewPage() {
     const result = await res.json();
     if (!res.ok) {
       setToast({ message: result.error || 'Failed to send notifications', type: 'error' });
-      return;
+      return null;
     }
     if (result.message) {
       setToast({ message: result.message, type: 'info' });
-      return;
+      return result;
     }
     const sentMsg = (result.sent || [])
       .map(s => `${s.role === 'author' ? 'Author' : 'Reviewer'} (${s.count})`)
@@ -252,6 +305,7 @@ export default function DraftReviewPage() {
     } else {
       setToast({ message: `Notified ${sentMsg}`, type: 'success' });
     }
+    return result;
   }, [thesis, selectedTicker]);
 
   // Promote/demote the selected name. Data-safe: only the stage flips; the paper,
@@ -376,28 +430,118 @@ export default function DraftReviewPage() {
           <p className="text-lg text-gray-400 mb-2">Select a ticker to open its draft &amp; review</p>
           <p className="text-sm text-gray-300">Only companies in the Draft &amp; Review stage appear here</p>
         </div>
-      ) : thesisLoading ? (
-        <div className="space-y-6">
-          <div className="skeleton h-48 rounded-2xl" />
-          <div className="skeleton h-64 rounded-2xl" />
+      ) : (
+        <>
+          {/* Same tab pattern as Research: the discussion and the company data are
+              two tabs on one page, so referencing the numbers mid-review never
+              means leaving the page. */}
+          <div className="flex items-center justify-between mb-8 animate-fade-in-up stagger-3">
+            <div className="flex flex-wrap gap-1 bg-gray-100/80 rounded-2xl p-1">
+              {[
+                { key: 'fundamentals', label: 'Fundamentals' },
+                { key: 'draft', label: 'Draft & Review' },
+              ].map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`px-4 py-2.5 text-sm font-semibold rounded-xl transition-all duration-200 ${
+                    activeTab === tab.key
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {activeTab === 'fundamentals' && tickerData?.dataExists && (
+              <button
+                onClick={() => setShowGenerateModal(true)}
+                disabled={generating}
+                className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold bg-white border border-gray-200 rounded-2xl text-gray-700 hover:border-emerald-300 hover:bg-emerald-50/50 hover:shadow-md transition-all duration-200 disabled:opacity-40"
+              >
+                <RefreshCw size={14} className={generating ? 'animate-spin' : ''} />
+                Update Data
+              </button>
+            )}
+          </div>
+
+          {activeTab === 'fundamentals' ? (
+            tickerLoading ? (
+              <div className="space-y-6">
+                <div className="skeleton h-28 rounded-2xl" />
+                <div className="skeleton h-72 rounded-3xl" />
+              </div>
+            ) : !tickerData?.dataExists ? (
+              <Card className="text-center py-16">
+                <div className="w-16 h-16 rounded-2xl bg-amber-50 flex items-center justify-center mx-auto mb-5">
+                  <AlertTriangle size={28} className="text-amber-500" />
+                </div>
+                <h2 className="text-xl font-bold text-gray-900 mb-2">No data generated for {selectedTicker}</h2>
+                <p className="text-sm text-gray-500 mb-8 max-w-md mx-auto leading-relaxed">
+                  Generate fundamentals and price history for this company to reference its numbers right here while you draft and review.
+                </p>
+                <button
+                  onClick={() => setShowGenerateModal(true)}
+                  disabled={generating}
+                  className="px-8 py-3 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-semibold rounded-2xl hover:from-emerald-700 hover:to-emerald-600 shadow-lg shadow-emerald-200/50 hover:shadow-xl transition-all duration-200 disabled:opacity-40"
+                >
+                  {generating ? 'Generating...' : 'Generate Data'}
+                </button>
+              </Card>
+            ) : (
+              <CompanyFundamentals tickerData={tickerData} liveQuote={liveQuote} quoteLoading={quoteLoading} />
+            )
+          ) : thesisLoading ? (
+            <div className="space-y-6">
+              <div className="skeleton h-48 rounded-2xl" />
+              <div className="skeleton h-64 rounded-2xl" />
+            </div>
+          ) : !thesis ? null : (
+            <DraftReview
+              key={selectedTicker}
+              ticker={selectedTicker}
+              paper={draftReview.paper}
+              threads={draftReview.threads}
+              author={draftReview.author}
+              reviewer={draftReview.reviewer}
+              autoNotify={draftReview.autoNotify}
+              onPaperChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, paper: value }), persist)}
+              onThreadsChange={(threads, persist = false) => updateDraftReview(dr => ({ ...dr, threads }), persist)}
+              onAuthorChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, author: value }), persist)}
+              onReviewerChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, reviewer: value }), persist)}
+              onAutoNotifyChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, autoNotify: value }), persist)}
+              onNotify={notifyReview}
+              valuationSlot={<ValuationModel ticker={selectedTicker} livePrice={liveQuote?.price || null} embedded />}
+            />
+          )}
+        </>
+      )}
+
+      {showGenerateModal && (
+        <div className="modal-overlay" onClick={() => setShowGenerateModal(false)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-gray-900 mb-3">
+              {tickerData?.dataExists ? `Update Data for ${selectedTicker}` : `Generate Data for ${selectedTicker}`}
+            </h3>
+            <p className="text-sm text-gray-500 mb-4 leading-relaxed">
+              {tickerData?.dataExists
+                ? 'This will re-fetch the latest fundamental and price data, overwriting the existing data. Use this after an earnings release or if the data is stale.'
+                : 'This will fetch fundamental data from Alpha Vantage and price data from Yahoo Finance. The data will be saved locally so you only need to do this once.'}
+            </p>
+            <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-xl px-4 py-2 mb-5">
+              Note: Alpha Vantage free tier allows 5 API calls/minute. Generation takes ~30 seconds.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setShowGenerateModal(false)} className="px-5 py-2.5 text-sm border border-gray-200 rounded-xl text-gray-600 hover:text-gray-900 hover:border-gray-300 transition-all duration-200">
+                Cancel
+              </button>
+              <button onClick={generateData} className="px-5 py-2.5 text-sm bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-semibold rounded-xl hover:from-emerald-700 hover:to-emerald-600 shadow-md hover:shadow-lg hover:shadow-emerald-200/50 transition-all duration-200">
+                {tickerData?.dataExists ? 'Update Data' : 'Generate Data'}
+              </button>
+            </div>
+          </div>
         </div>
-      ) : !thesis ? null : (
-        <DraftReview
-          key={selectedTicker}
-          ticker={selectedTicker}
-          paper={draftReview.paper}
-          threads={draftReview.threads}
-          author={draftReview.author}
-          reviewer={draftReview.reviewer}
-          autoNotify={draftReview.autoNotify}
-          onPaperChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, paper: value }), persist)}
-          onThreadsChange={(threads, persist = false) => updateDraftReview(dr => ({ ...dr, threads }), persist)}
-          onAuthorChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, author: value }), persist)}
-          onReviewerChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, reviewer: value }), persist)}
-          onAutoNotifyChange={(value, persist = false) => updateDraftReview(dr => ({ ...dr, autoNotify: value }), persist)}
-          onNotify={notifyReview}
-          valuationSlot={<ValuationModel ticker={selectedTicker} livePrice={liveQuote?.price || null} embedded />}
-        />
       )}
 
       {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
