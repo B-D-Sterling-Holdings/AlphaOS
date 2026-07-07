@@ -43,6 +43,46 @@ export const createRebalanceRow = (overrides = {}) => ({
 // Start the rebalancer empty when there is nothing to load.
 export const createDefaultRebalanceHoldings = () => [createRebalanceRow()];
 
+// --- Allocation schemes ---------------------------------------------------
+// A "scheme" is the shared spine of the allocation workflow: the target weights
+// the analyst types in the Optimizer, carried through Market Confidence (where a
+// regime overlay may adjust them) into the Rebalancer, and surfaced as a dated,
+// read-only history on the Strategic Hub.
+
+// Pull the Weight column (userWeight) into a { TICKER: pct } map, incl CASH.
+export const buildSchemeWeights = (allocations) => {
+  const weights = {};
+  for (const row of allocations || []) {
+    const ticker = (row.ticker || '').trim().toUpperCase();
+    if (!ticker) continue;
+    weights[ticker] = parseNumber(row.userWeight);
+  }
+  return weights;
+};
+
+// Build a fresh scheme snapshot from the Optimizer's typed weights.
+export const createAllocationScheme = (allocations, overrides = {}) => ({
+  id: createId(),
+  createdAt: new Date().toISOString(),
+  baseWeights: buildSchemeWeights(allocations),
+  adjustedWeights: null,
+  regimeScore: null,
+  stage: 'confidence',
+  ...overrides,
+});
+
+// The weights to display / rebalance against: regime-adjusted if present, else base.
+export const schemeEffectiveWeights = (scheme) =>
+  (scheme && (scheme.adjustedWeights || scheme.baseWeights)) || {};
+
+// Top-N weights (desc) for the minimal Strategic Hub card.
+export const schemeTopWeights = (scheme, n = 5) =>
+  Object.entries(schemeEffectiveWeights(scheme))
+    .map(([ticker, weight]) => ({ ticker, weight: Number(weight) || 0 }))
+    .filter((w) => w.weight > 0)
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, n);
+
 export const rebalanceExecutionPlan = ({
   currentValues,
   targetWeights,

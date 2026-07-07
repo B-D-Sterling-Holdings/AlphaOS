@@ -11,9 +11,7 @@ import {
   Legend,
 } from 'chart.js';
 import { Scatter } from 'react-chartjs-2';
-import { Settings, Target, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2 } from 'lucide-react';
-import katex from 'katex';
-import 'katex/dist/katex.min.css';
+import { Settings, Target, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2, ArrowRight } from 'lucide-react';
 import {
   DEFAULT_RISK_FACTOR_WEIGHTS,
   RISK_FACTORS,
@@ -21,6 +19,7 @@ import {
   calculateVolatilityScores,
   calculateRebalanceTaxBreakdown,
   createAllocationRow,
+  createAllocationScheme,
   createDefaultAllocations,
   createDefaultRebalanceHoldings,
   createRebalanceRow,
@@ -28,24 +27,12 @@ import {
   formatCurrency,
   parseNumber,
   runAllocationSimulation,
+  schemeEffectiveWeights,
   updateRebalanceTaxInputValue,
 } from '@/lib/allocationEngine';
+import ConfidenceTab from './ConfidenceTab';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
-
-// KaTeX rendering helpers
-const Tex = ({ children, display = false }) => (
-  <span
-    dangerouslySetInnerHTML={{
-      __html: katex.renderToString(children, { displayMode: display, throwOnError: false }),
-    }}
-  />
-);
-const D = ({ children }) => (
-  <div className="my-2 overflow-x-auto">
-    <Tex display>{children}</Tex>
-  </div>
-);
 
 const riskFactors = RISK_FACTORS;
 const defaultRiskFactorWeights = DEFAULT_RISK_FACTOR_WEIGHTS;
@@ -76,6 +63,9 @@ export default function AllocationPage() {
   const [rbTaxInputs, setRbTaxInputs] = useState({});
   const [rbLoadingPortfolio, setRbLoadingPortfolio] = useState(false);
   const [syncingWeights, setSyncingWeights] = useState(false);
+  // Shared allocation scheme — the spine that flows Optimizer → Confidence → Rebalancer.
+  const [scheme, setScheme] = useState(null);
+  const [schemeError, setSchemeError] = useState('');
   const rbCostBasisRef = useRef({});
   const rbSavedTargetsRef = useRef(null);
   const saveTimer = useRef(null);
@@ -171,6 +161,14 @@ export default function AllocationPage() {
           if (config.covLambda !== undefined) setCovLambda(config.covLambda);
           if (config.rbTargetWeights) rbSavedTargetsRef.current = config.rbTargetWeights;
           if (config.rbTargetCashPercent !== undefined) setRbTargetCashPercent(config.rbTargetCashPercent);
+          // Re-open the in-progress scheme so a refresh mid-workflow doesn't lose it.
+          if (config.activeSchemeId) {
+            try {
+              const { schemes } = await fetch('/api/allocation/schemes').then((r) => r.json());
+              const found = (schemes || []).find((s) => s.id === config.activeSchemeId);
+              if (found) setScheme(found);
+            } catch { /* non-fatal */ }
+          }
         }
       } catch (err) {
         console.error('Failed to load allocation config:', err);
@@ -233,6 +231,72 @@ export default function AllocationPage() {
     loadPortfolioIntoRebalancer();
   }, [loadPortfolioIntoRebalancer]);
 
+  // --- Scheme workflow ---
+  // Optimizer → save the typed weights as a scheme and move to Market Confidence.
+  const handleSaveSchemeAndContinue = async () => {
+    setSchemeError('');
+    const newScheme = createAllocationScheme(allocations);
+    const totalW = Object.values(newScheme.baseWeights).reduce((s, v) => s + (Number(v) || 0), 0);
+    if (totalW <= 0) {
+      setSchemeError('Enter target weights in the Weight column before saving a scheme.');
+      return;
+    }
+    setScheme(newScheme);
+    setActiveSubTab('confidence');
+    try {
+      await fetch('/api/allocation/schemes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scheme: newScheme }),
+      });
+    } catch (err) {
+      console.error('Failed to save allocation scheme:', err);
+    }
+  };
+
+  // Confidence → persist the regime-adjusted weights onto the scheme and move to Rebalancer.
+  const handleConfidenceSaveContinue = async ({ baseWeights, adjustedWeights, regimeScore }) => {
+    const updated = { ...scheme, baseWeights, adjustedWeights, regimeScore, stage: 'rebalancer' };
+    setScheme(updated);
+    setActiveSubTab('rebalancer');
+    try {
+      await fetch('/api/allocation/schemes', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scheme: updated }),
+      });
+    } catch (err) {
+      console.error('Failed to update allocation scheme:', err);
+    }
+  };
+
+  // Clear the active scheme and start over. Non-destructive: any saved snapshot stays
+  // in the Strategic Hub history (delete those from the card there).
+  const handleClearScheme = () => {
+    setScheme(null);
+    setSchemeError('');
+    setActiveSubTab('optimizer');
+  };
+
+  // Overlay the active scheme's target weights onto the rebalancer rows (and add any
+  // scheme-only tickers you don't yet hold, so they can be bought from zero).
+  useEffect(() => {
+    if (!scheme) return;
+    const eff = schemeEffectiveWeights(scheme);
+    setRbHoldings((prev) => {
+      const rows = prev.map((row) => {
+        const t = row.ticker.trim().toUpperCase();
+        return eff[t] != null ? { ...row, targetWeight: String(eff[t]) } : row;
+      });
+      const present = new Set(rows.map((r) => r.ticker.trim().toUpperCase()));
+      const extras = Object.keys(eff)
+        .filter((t) => t !== 'CASH' && !present.has(t) && (Number(eff[t]) || 0) > 0)
+        .map((t) => createRebalanceRow({ ticker: t, currentValue: '', targetWeight: String(eff[t]) }));
+      return extras.length ? [...rows, ...extras] : rows;
+    });
+    if (eff.CASH != null) setRbTargetCashPercent(String(eff.CASH));
+  }, [scheme]);
+
   // Auto-save with debounce whenever config changes
   const saveConfig = useCallback((config) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -272,8 +336,9 @@ export default function AllocationPage() {
       covLambda,
       rbTargetWeights: rbTargetWeightsMap,
       rbTargetCashPercent,
+      activeSchemeId: scheme?.id ?? null,
     });
-  }, [loaded, allocations, riskFactorWeights, riskFreeRate, minWeight, maxWeight, cashMinWeight, cashMaxWeight, numPortfolios, covLambda, rbTargetWeightsMap, rbTargetCashPercent, saveConfig]);
+  }, [loaded, allocations, riskFactorWeights, riskFreeRate, minWeight, maxWeight, cashMinWeight, cashMaxWeight, numPortfolios, covLambda, rbTargetWeightsMap, rbTargetCashPercent, scheme?.id, saveConfig]);
 
   const simulationChartOptions = useMemo(
     () => ({
@@ -397,6 +462,12 @@ export default function AllocationPage() {
     const holdingsTotal = rbHoldings.reduce((sum, row) => sum + parseNumber(row.targetWeight), 0);
     return holdingsTotal + parseNumber(rbTargetCashPercent);
   }, [rbHoldings, rbTargetCashPercent]);
+
+  // Current allocation (taken from holdings) so you can see current-vs-target per row.
+  const rbCurrentAum = useMemo(() => {
+    const held = rbHoldings.reduce((sum, row) => sum + parseNumber(row.currentValue), 0);
+    return held + parseNumber(rbCash);
+  }, [rbHoldings, rbCash]);
 
   useEffect(() => {
     if (!rbPlan) { setRbTaxInputs({}); return; }
@@ -570,6 +641,7 @@ export default function AllocationPage() {
           <div className="flex items-center gap-1 bg-gray-100/80 rounded-xl p-1 w-fit">
             {[
               { key: 'optimizer', label: 'Optimizer' },
+              { key: 'confidence', label: 'Market Confidence' },
               { key: 'rebalancer', label: 'Rebalancer' },
             ].map(tab => (
               <button
@@ -585,8 +657,18 @@ export default function AllocationPage() {
               </button>
             ))}
           </div>
-          {activeSubTab === 'optimizer' && (
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
+            {scheme && (
+              <button
+                onClick={handleClearScheme}
+                className="flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-red-600 bg-gray-50 hover:bg-red-50 border border-gray-200 px-4 py-2 rounded-xl transition-colors"
+                title="Clear the active scheme and start over — saved snapshots stay in the Strategic Hub"
+              >
+                <X size={15} />
+                Clear scheme
+              </button>
+            )}
+            {activeSubTab === 'optimizer' && (<>
               <button
                 onClick={syncWeightsFromPortfolio}
                 disabled={syncingWeights}
@@ -603,8 +685,8 @@ export default function AllocationPage() {
                 <SlidersHorizontal size={15} />
                 Settings
               </button>
-            </div>
-          )}
+            </>)}
+          </div>
         </div>
 
         {activeSubTab === 'optimizer' && (<>
@@ -883,322 +965,41 @@ export default function AllocationPage() {
           </div>
         )}
 
-        {/* Math diagnostics — full step-by-step computation with LaTeX */}
-        {simulationResult?.mathDiagnostics && (() => {
-          const d = simulationResult.mathDiagnostics;
-          const n = d.assets.length;
-          const nonCashIdx = d.assets.map((t, i) => ({ t, i })).filter(x => x.t !== 'CASH');
-          const best = d.bestPortfolio;
-          const bestRet = best.weights.reduce((s, w, i) => s + w * d.expectedReturns[i], 0);
-          let bestVar = 0;
-          for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) bestVar += best.weights[i] * d.sigmaHybrid[i][j] * best.weights[j];
-          const bestRisk = Math.sqrt(Math.max(bestVar, 0));
-          const bestSharpe = bestRisk > 0 ? (bestRet - d.riskFree) / bestRisk : 0;
+        {/* Save scheme & continue → Market Confidence */}
+        <div className="mt-8 flex flex-col gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Happy with these weights?</p>
+            <p className="text-xs text-gray-500">Save them as an allocation scheme and carry them into Market Confidence.</p>
+          </div>
+          <button onClick={handleSaveSchemeAndContinue}
+            className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700">
+            Save scheme &amp; continue <ArrowRight className="h-4 w-4" />
+          </button>
+        </div>
+        {schemeError && <p className="mt-3 text-sm font-medium text-red-600">{schemeError}</p>}
 
-          // Helper: render a matrix as LaTeX bmatrix (showing subset of rows/cols)
-          const matTex = (mat, rowIdx, colIdx, prec = 4) => {
-            const rows = rowIdx.map(ri =>
-              colIdx.map(ci => mat[ri][ci].toFixed(prec)).join(' & ')
-            ).join(' \\\\ ');
-            return `\\begin{bmatrix} ${rows} \\end{bmatrix}`;
-          };
-
-          // Show first 5 non-cash assets in matrix previews
-          const prev = nonCashIdx.slice(0, 5);
-          const prevI = prev.map(x => x.i);
-          const prevLabels = prev.map(x => x.t).join(',\\;');
-          const dots = nonCashIdx.length > 5 ? '\\;\\cdots' : '';
-
-          return (
-            <div className="mt-6 bg-white border border-gray-200 rounded-2xl p-5 animate-fade-in-up">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-gray-900">Optimization Math Breakdown</h3>
-                <span className="text-[10px] text-gray-400">Step-by-step computation audit</span>
-              </div>
-
-              <div className="space-y-6 text-[12px] leading-relaxed text-gray-700">
-
-                {/* Step 1: Inputs */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 1 — Inputs</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-2">
-                    <D>{`n = ${n} \\text{ assets},\\quad m = ${d.factorCount} \\text{ factors}`}</D>
-                    <D>{`\\boldsymbol{\\mu} = \\begin{bmatrix} ${d.assets.map((t, i) => `${(d.expectedReturns[i] * 100).toFixed(2)}\\%`).join(' \\\\ ')} \\end{bmatrix} \\quad \\text{(expected returns: ${d.assets.join(', ')})}`}</D>
-                    <D>{`\\mathbf{d} = \\begin{bmatrix} ${d.factorWeights.map(w => w.toFixed(2)).join(' \\\\ ')} \\end{bmatrix} \\quad \\text{(factor importance: ${d.factorNames.join(', ')})}`}</D>
-                    <D>{`r_f = ${(d.riskFree * 100).toFixed(2)}\\%, \\quad \\lambda = ${d.lambda.toFixed(2)}`}</D>
-                  </div>
-                </div>
-
-                {/* Step 2: Exposure matrix E (CASH zeroed) */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 2 — Factor Exposure Matrix E (CASH row = 0)</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{'E_{ik} \\in [0, 1] \\quad \\text{(raw exposures used directly, CASH row} = 0\\text{)}'}</D>
-                    <p className="text-[11px] text-gray-500 font-medium mt-2">Full E matrix ({n} × {d.factorCount}):</p>
-                    <div className="overflow-x-auto">
-                      <table className="text-[10px] font-mono border-collapse">
-                        <thead>
-                          <tr>
-                            <th className="pr-2 text-left text-gray-400" />
-                            {d.factorNames.map(f => <th key={f} className="px-1.5 text-center text-gray-400">{f}</th>)}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {d.assets.map((t, i) => (
-                            <tr key={t} className={t === 'CASH' ? 'text-gray-300' : ''}>
-                              <td className="pr-2 text-gray-400">{t}</td>
-                              {d.exposureMatrix[i].map((v, k) => (
-                                <td key={k} className="px-1.5 text-center">{v.toFixed(4)}</td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Step 3: Factor covariance C */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 3 — Cross-Sectional Factor Covariance → C matrix</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{`C_{kl} = \\frac{1}{n-1} \\sum_{i=1}^{n} \\left(E_{ik} - \\bar{E}_k\\right)\\left(E_{il} - \\bar{E}_l\\right)`}</D>
-                    <D>{`C = ${matTex(d.covarianceFactors, d.factorNames.map((_, i) => i), d.factorNames.map((_, i) => i), 6)}`}</D>
-                  </div>
-                </div>
-
-                {/* Step 4: Weighted D C D */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 4 — Apply Importance Weights → W = D · C · D</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{`D = \\text{diag}(${d.factorWeights.map(w => w.toFixed(2)).join(',\\;')})`}</D>
-                    <D>{'W_{kl} = d_k \\cdot C_{kl} \\cdot d_l'}</D>
-                    <p className="text-[11px] text-gray-500 font-medium">Example — W[{d.factorNames[0]},{d.factorNames[0]}]:</p>
-                    <D>{`W_{11} = ${d.factorWeights[0].toFixed(2)} \\times ${d.covarianceFactors[0][0].toFixed(6)} \\times ${d.factorWeights[0].toFixed(2)} = ${d.weightedFactors[0][0].toFixed(6)}`}</D>
-                    <D>{`W = ${matTex(d.weightedFactors, d.factorNames.map((_, i) => i), d.factorNames.map((_, i) => i), 6)}`}</D>
-                  </div>
-                </div>
-
-                {/* Step 5: Sigma_composite */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 5 — Synthetic Covariance → Σ_composite = E · W · E<sup>T</sup></p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{`\\Sigma_{\\text{composite}}[i,j] = \\sum_{k=1}^{m} \\sum_{l=1}^{m} E_{ik} \\cdot W_{kl} \\cdot E_{jl}`}</D>
-                    {nonCashIdx.length >= 2 && (() => {
-                      const a = nonCashIdx[0], b = nonCashIdx[1];
-                      const terms = [];
-                      for (let k = 0; k < d.factorCount; k++) {
-                        for (let l = 0; l < d.factorCount; l++) {
-                          const val = d.exposureMatrix[a.i][k] * d.weightedFactors[k][l] * d.exposureMatrix[b.i][l];
-                          if (Math.abs(val) > 1e-8) terms.push(val);
-                        }
-                      }
-                      return (
-                        <>
-                          <p className="text-[11px] text-gray-500 font-medium">Example — Σ_composite[{a.t},{b.t}]:</p>
-                          <D>{`\\Sigma_{\\text{comp}}[\\text{${a.t}},\\text{${b.t}}] = ${terms.map(v => v.toFixed(6)).join(' + ')} = ${d.compositeOnlyMatrix[a.i][b.i].toFixed(6)}`}</D>
-                        </>
-                      );
-                    })()}
-                    <p className="text-[11px] text-gray-500 font-medium">Preview ({prev.length}×{prev.length} of {n}×{n}) — rows: {prevLabels}{dots}:</p>
-                    <D>{`\\Sigma_{\\text{composite}} = ${matTex(d.compositeOnlyMatrix, prevI, prevI, 6)}`}</D>
-                    <D>{`\\text{tr}(\\Sigma_{\\text{composite}}) = ${d.traceComposite.toFixed(8)}`}</D>
-                  </div>
-                </div>
-
-                {/* Step 6: Sigma_return */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 6 — Empirical Return Covariance → Σ_return</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{'\\Sigma_{\\text{return}} = \\frac{1}{T-1}(R - \\bar{R})^\\top (R - \\bar{R}) \\times 252'}</D>
-                    <p className="text-[11px] text-gray-500">Where R is the (T × n) daily return matrix from ~252 trading days of Yahoo Finance price data, annualized by × 252.</p>
-                    <p className="text-[11px] text-gray-500 font-medium">Preview ({prev.length}×{prev.length}) — rows: {prevLabels}{dots}:</p>
-                    <D>{`\\Sigma_{\\text{return}} = ${matTex(d.sigmaReturn, prevI, prevI, 6)}`}</D>
-                    <D>{`\\text{tr}(\\Sigma_{\\text{return}}) = ${d.traceReturn.toFixed(8)}`}</D>
-                    <D>{`\\frac{\\text{tr}(\\Sigma_{\\text{return}})}{\\text{tr}(\\Sigma_{\\text{composite}})} = \\frac{${d.traceReturn.toFixed(6)}}{${d.traceComposite.toFixed(6)}} = ${d.traceComposite > 1e-12 ? (d.traceReturn / d.traceComposite).toFixed(1) + '\\times' : '\\text{N/A}'} \\quad \\text{(why trace normalization is needed)}`}</D>
-                  </div>
-                </div>
-
-                {/* Step 7: Trace normalization */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 7 — Trace Normalization</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{'\\tilde{\\Sigma} = \\frac{\\Sigma}{\\text{tr}(\\Sigma)} \\quad \\Rightarrow \\quad \\text{tr}(\\tilde{\\Sigma}) = 1'}</D>
-                    <p className="text-[11px] text-gray-500">Each matrix is divided by the sum of its diagonal (total variance mass). This preserves internal structure while removing scale differences.</p>
-                    <D>{`\\tilde{\\Sigma}_{\\text{return}} = \\frac{1}{${d.traceReturn.toFixed(6)}} \\cdot \\Sigma_{\\text{return}} = ${matTex(d.sigmaReturnTilde, prevI, prevI, 6)}`}</D>
-                    <D>{`\\text{tr}(\\tilde{\\Sigma}_{\\text{return}}) = ${d.sigmaReturnTilde.reduce((s, r, i) => s + r[i], 0).toFixed(10)}`}</D>
-                    <D>{`\\tilde{\\Sigma}_{\\text{composite}} = \\frac{1}{${d.traceComposite.toFixed(6)}} \\cdot \\Sigma_{\\text{composite}} = ${matTex(d.sigmaCompositeTilde, prevI, prevI, 6)}`}</D>
-                    <D>{`\\text{tr}(\\tilde{\\Sigma}_{\\text{composite}}) = ${d.sigmaCompositeTilde.reduce((s, r, i) => s + r[i], 0).toFixed(10)}`}</D>
-                  </div>
-                </div>
-
-                {/* Step 8: Hybrid blend */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 8 — Hybrid Blend</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{`\\Sigma_{\\text{hybrid}} = \\lambda \\, \\tilde{\\Sigma}_{\\text{return}} + (1 - \\lambda) \\, \\tilde{\\Sigma}_{\\text{composite}}`}</D>
-                    <D>{`= ${d.lambda.toFixed(2)} \\cdot \\tilde{\\Sigma}_{\\text{return}} \\;+\\; ${(1 - d.lambda).toFixed(2)} \\cdot \\tilde{\\Sigma}_{\\text{composite}}`}</D>
-                    <p className="text-[11px] text-gray-500 font-medium">Preview ({prev.length}×{prev.length}):</p>
-                    <D>{`\\Sigma_{\\text{hybrid}} = ${matTex(d.sigmaHybrid, prevI, prevI, 6)}`}</D>
-                    <D>{`\\text{tr}(\\Sigma_{\\text{hybrid}}) = ${d.traceHybrid.toFixed(10)} \\approx 1.0 \\;\\checkmark`}</D>
-                  </div>
-                </div>
-
-                {/* Step 9: Best portfolio evaluation */}
-                <div>
-                  <p className="text-xs font-semibold text-gray-800 mb-3">Step 9 — Max Sharpe Portfolio Evaluation</p>
-                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                    <D>{`\\mathbf{w}^* = \\begin{bmatrix} ${d.assets.map((t, i) => `${(best.weights[i] * 100).toFixed(2)}\\%`).join(' \\\\ ')} \\end{bmatrix} \\quad \\text{(${d.assets.join(', ')})}`}</D>
-
-                    <p className="text-[11px] text-gray-500 font-medium">Expected return:</p>
-                    <D>{`\\mathbb{E}[R] = \\mathbf{w}^\\top \\boldsymbol{\\mu} = ${d.assets.map((t, i) => `${best.weights[i].toFixed(4)} \\times ${(d.expectedReturns[i] * 100).toFixed(2)}\\%`).join(' + ')}`}</D>
-                    <D>{`= \\boxed{${(bestRet * 100).toFixed(4)}\\%}`}</D>
-
-                    <p className="text-[11px] text-gray-500 font-medium">Hybrid variance and risk:</p>
-                    <D>{`\\sigma^2_{\\text{hybrid}} = \\mathbf{w}^\\top \\Sigma_{\\text{hybrid}} \\, \\mathbf{w} = ${bestVar.toFixed(8)}`}</D>
-                    <D>{`\\sigma_{\\text{hybrid}} = \\sqrt{${bestVar.toFixed(8)}} = \\boxed{${(bestRisk * 100).toFixed(4)}\\%}`}</D>
-                    <p className="text-[10px] text-gray-400 italic">This is hybrid covariance risk, not pure historical volatility.</p>
-
-                    <p className="text-[11px] text-gray-500 font-medium">Sharpe-like score:</p>
-                    <D>{`S = \\frac{\\mathbb{E}[R] - r_f}{\\sigma_{\\text{hybrid}}} = \\frac{${(bestRet * 100).toFixed(2)}\\% - ${(d.riskFree * 100).toFixed(2)}\\%}{${(bestRisk * 100).toFixed(4)}\\%} = \\boxed{${bestSharpe.toFixed(4)}}`}</D>
-                    <p className="text-[10px] text-gray-400 italic">Interpreted as expected excess return per unit of hybrid risk.</p>
-                  </div>
-                </div>
-
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* Empirical return covariance (Sigma_return) — annualized vols & correlation matrix */}
-        {simulationResult?.marketCov && (() => {
-          const { assets: mcAssets, sigmaReturn, vols, correlations } = simulationResult.marketCov;
-          const nonCash = mcAssets.map((t, i) => ({ t, i })).filter(x => x.t !== 'CASH');
-          if (nonCash.length === 0) return null;
-          return (
-            <div className="mt-6 bg-white border border-gray-200 rounded-2xl p-5 animate-fade-in-up">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-gray-900">Market Return Covariance</h3>
-                <span className="text-[10px] text-gray-400">Empirical &middot; ~252 trading days &middot; annualized</span>
-              </div>
-
-              {/* Per-asset annualized volatilities */}
-              <div className="mb-5">
-                <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-2">Annualized Volatility</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-                  {nonCash
-                    .sort((a, b) => vols[b.i] - vols[a.i])
-                    .map(({ t, i }) => {
-                      const volPct = vols[i] * 100;
-                      const barW = Math.min(volPct / 60 * 100, 100);
-                      const color = volPct > 40 ? 'bg-red-400' : volPct > 30 ? 'bg-amber-400' : 'bg-emerald-400';
-                      return (
-                        <div key={t} className="border border-gray-100 rounded-xl px-3 py-2.5">
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-xs font-bold text-gray-800">{t}</span>
-                            <span className="text-[11px] font-mono text-gray-500">{volPct.toFixed(1)}%</span>
-                          </div>
-                          <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${color}`} style={{ width: `${barW}%` }} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
-
-              {/* Correlation & Covariance matrices stacked, compact to fit screen */}
-              <div className="space-y-4">
-                {/* Correlation matrix */}
-                <div>
-                  <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-2">Correlation Matrix</p>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-[10px] font-mono border-collapse" style={{ tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr>
-                          <th className="px-1 py-0.5 text-left text-gray-400 w-10" />
-                          {nonCash.map(({ t }) => (
-                            <th key={t} className="px-1 py-0.5 text-center text-gray-500 font-semibold truncate">{t}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {nonCash.map(({ t: rowT, i: ri }) => (
-                          <tr key={rowT}>
-                            <td className="px-1 py-0.5 text-gray-500 font-semibold truncate">{rowT}</td>
-                            {nonCash.map(({ t: colT, i: ci }) => {
-                              const corr = correlations[ri][ci];
-                              const bg = ri === ci ? 'bg-gray-50'
-                                : corr > 0.3 ? 'bg-emerald-100'
-                                : corr > 0.1 ? 'bg-emerald-50/50'
-                                : corr >= -0.1 ? 'bg-amber-50'
-                                : corr >= -0.3 ? 'bg-red-50/50'
-                                : 'bg-red-100';
-                              const tc = ri === ci ? ''
-                                : corr > 0.3 ? 'text-emerald-800'
-                                : corr > 0.1 ? 'text-emerald-600'
-                                : corr >= -0.1 ? 'text-amber-600'
-                                : corr >= -0.3 ? 'text-red-600'
-                                : 'text-red-800';
-                              return (
-                                <td key={colT} className={`px-1 py-0.5 text-center ${bg} ${tc}`}>
-                                  {ri === ci ? <span className="text-gray-300">—</span> : corr.toFixed(2)}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Covariance matrix (raw annualized) */}
-                <div>
-                  <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-2">Covariance Matrix <span className="normal-case">(annualized)</span></p>
-                  <div className="overflow-x-auto">
-                    {(() => {
-                      const maxDiag = Math.max(...nonCash.map(({ i: k }) => sigmaReturn[k][k]), 1e-14);
-                      return (
-                        <table className="w-full text-[10px] font-mono border-collapse" style={{ tableLayout: 'fixed' }}>
-                          <thead>
-                            <tr>
-                              <th className="px-1 py-0.5 text-left text-gray-400 w-10" />
-                              {nonCash.map(({ t }) => (
-                                <th key={t} className="px-1 py-0.5 text-center text-gray-500 font-semibold truncate">{t}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {nonCash.map(({ t: rowT, i: ri }) => (
-                              <tr key={rowT}>
-                                <td className="px-1 py-0.5 text-gray-500 font-semibold truncate">{rowT}</td>
-                                {nonCash.map(({ t: colT, i: ci }) => {
-                                  const cov = sigmaReturn[ri][ci];
-                                  const intensity = Math.abs(cov) / maxDiag;
-                                  const bg = ri === ci ? 'bg-gray-50'
-                                    : intensity > 0.6 ? 'bg-red-50'
-                                    : intensity > 0.3 ? 'bg-amber-50'
-                                    : 'bg-white';
-                                  return (
-                                    <td key={colT} className={`px-1 py-0.5 text-center ${bg}`}>
-                                      {cov.toFixed(4)}
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
         </>)}
+
+        {activeSubTab === 'confidence' && (
+          scheme ? (
+            <ConfidenceTab
+              scheme={scheme}
+              allocations={allocations}
+              riskFactorWeights={riskFactorWeights}
+              maxWeight={maxWeight}
+              onSaveContinue={handleConfidenceSaveContinue}
+            />
+          ) : (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/50 px-6 py-16 text-center animate-fade-in-up">
+              <p className="text-sm font-medium text-gray-600">No allocation scheme yet.</p>
+              <p className="mt-1 text-xs text-gray-400">Set your target weights in the Optimizer, then hit &ldquo;Save scheme &amp; continue&rdquo;.</p>
+              <button onClick={() => setActiveSubTab('optimizer')}
+                className="mt-4 inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800">
+                Go to Optimizer
+              </button>
+            </div>
+          )
+        )}
 
         {activeSubTab === 'rebalancer' && (
           <div className="animate-fade-in-up">
@@ -1255,6 +1056,12 @@ export default function AllocationPage() {
                         className="w-24 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
                         placeholder="0"
                       />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Current</span>
+                      <span className="w-12 text-right text-sm font-mono tabular-nums text-gray-500">
+                        {rbCurrentAum > 0 ? ((parseNumber(row.currentValue) / rbCurrentAum) * 100).toFixed(1) : '0.0'}%
+                      </span>
                     </div>
                     <div className="flex items-center gap-1.5 ml-auto">
                       <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Target</span>

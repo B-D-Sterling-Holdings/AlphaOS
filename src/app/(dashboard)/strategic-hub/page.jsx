@@ -14,6 +14,7 @@ import {
   normalizeStage, persistStageMove, postWatchlist, withStageChange, writeWatchlistCache,
 } from '@/lib/stageMove';
 import { computeResearchProgress, draftReviewStatus, checklistStatus } from '@/lib/researchProgress';
+import { schemeTopWeights } from '@/lib/allocationEngine';
 import { useCache } from '@/lib/CacheContext';
 
 /* ── helpers ── */
@@ -521,8 +522,23 @@ export default function StrategicHubPage() {
   const [theses, setTheses] = useState(() => cache.get('workflow_theses') || {});
   const [notesRows, setNotesRows] = useState([]); // raw strategic_notes — judgment overlay
   const [notesSaved, setNotesSaved] = useState(false);
+  const [allocSchemes, setAllocSchemes] = useState([]); // saved allocation schemes (read-only history)
   const notesTimer = useRef(null);
   const portfolioNotesRef = useRef(null);
+
+  useEffect(() => {
+    fetch('/api/allocation/schemes')
+      .then(r => r.json())
+      .then(d => setAllocSchemes(Array.isArray(d.schemes) ? d.schemes : []))
+      .catch(() => {});
+  }, []);
+
+  const deleteScheme = useCallback(async (id) => {
+    setAllocSchemes(prev => prev.filter(s => s.id !== id));
+    try {
+      await fetch(`/api/allocation/schemes?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch { /* optimistic; already removed from view */ }
+  }, []);
 
   const loadNotes = useCallback(async () => {
     try {
@@ -1042,6 +1058,50 @@ export default function StrategicHubPage() {
     </div>
   );
 
+  // ── Saved Allocation Schemes card (minimal, dated, read-only) ──
+  const savedSchemesCard = (
+    <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">Saved Allocation Schemes</h2>
+        <Link href="/allocation" className="text-[11px] font-medium text-gray-400 hover:text-emerald-600 transition-colors">Open Allocation →</Link>
+      </div>
+      {allocSchemes.length === 0 ? (
+        <p className="py-6 text-center text-sm text-gray-400">No allocation schemes yet. Build one in Allocation → Optimizer.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {allocSchemes.map(scheme => {
+            const top = schemeTopWeights(scheme, 6);
+            const d = scheme.createdAt ? new Date(scheme.createdAt) : null;
+            const dateLabel = d && !isNaN(d) ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+            return (
+              <div key={scheme.id} className="group flex items-center gap-4 rounded-xl border border-gray-50 px-3 py-2.5 hover:bg-gray-50/50 transition-colors">
+                <span className="w-12 shrink-0 text-[11px] font-semibold text-gray-500 tabular-nums">{dateLabel}</span>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-600 min-w-0">
+                  {top.length === 0 ? (
+                    <span className="text-gray-300">—</span>
+                  ) : top.map((w, i) => (
+                    <span key={w.ticker} className="whitespace-nowrap">
+                      {i > 0 && <span className="mr-2 text-gray-300">·</span>}
+                      <span className="font-semibold text-gray-800">{w.ticker}</span>{' '}
+                      <span className="tabular-nums text-gray-500">{w.weight.toFixed(0)}</span>
+                    </span>
+                  ))}
+                </div>
+                <button
+                  onClick={() => deleteScheme(scheme.id)}
+                  title="Delete this scheme"
+                  className="ml-auto shrink-0 rounded-md p-1 text-gray-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
   // ── Research Pipeline card (Draft & Review → Research, as a two-lane board) ──
   const researchPipelineCard = (
     <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-sm">
@@ -1075,9 +1135,9 @@ export default function StrategicHubPage() {
       {/* When there's work in the pipeline, surface Research above the book;
           otherwise keep Position Overview first and the pipeline below. */}
       {hasPipeline ? (
-        <>{researchPipelineCard}{positionOverviewCard}</>
+        <>{researchPipelineCard}{positionOverviewCard}{savedSchemesCard}</>
       ) : (
-        <>{positionOverviewCard}{researchPipelineCard}</>
+        <>{positionOverviewCard}{savedSchemesCard}{researchPipelineCard}</>
       )}
 
       {/* ── Portfolio Notes ── */}
