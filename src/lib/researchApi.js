@@ -1,5 +1,6 @@
 import { computeValuationModel } from './valuationModel.js';
 import { mergeThesis } from './thesisMerge.js';
+import { saveWithOCC } from './occClient.js';
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
 
@@ -46,11 +47,10 @@ async function postThesis(ticker, thesis) {
 }
 
 /**
- * Save a thesis with optimistic-concurrency reconciliation.
- *
- * On a version conflict (a teammate saved first) it merges the local edits on top
- * of the fresh server document (see mergeThesis) and retries, so concurrent Draft
- * & Review comments are never silently lost. Returns:
+ * Save a thesis with optimistic-concurrency reconciliation. A thin adapter over the
+ * shared saveWithOCC (src/lib/occClient.js): the only thesis-specific parts are the
+ * payload shaping and the merge policy (mergeThesis unions Draft & Review threads so
+ * concurrent comments are never lost). Returns:
  *   { ok: true,  thesis, reloaded }              — saved (reloaded=true if a merge happened)
  *   { ok: false, conflict: true, thesis }        — merged a teammate's changes but
  *                                                  couldn't win the race; caller shows
@@ -60,25 +60,27 @@ async function postThesis(ticker, thesis) {
  * `thesis` (when present) carries the up-to-date `version` for the next save.
  */
 export async function saveThesisReconciled(ticker, localThesis, { retries = 1 } = {}) {
-  let attempt = localThesis;
-  for (let i = 0; ; i++) {
-    let res;
-    try {
-      res = await postThesis(ticker, attempt);
-    } catch (e) {
-      return { ok: false, error: e?.message || 'network error', thesis: attempt };
-    }
-    if (!res.conflict) {
-      if (!res.ok) return { ok: false, error: res.data?.error || 'save failed', thesis: attempt };
-      // Stamp the new version so the next save compares against the right row.
-      return { ok: true, thesis: { ...attempt, version: res.version }, reloaded: i > 0 };
-    }
-    // Conflict: fuse the teammate's server state under our in-flight edits.
-    attempt = mergeThesis(attempt, res.current);
-    if (i >= retries) {
-      return { ok: false, conflict: true, thesis: attempt };
-    }
+  const res = await saveWithOCC({
+    url: `/api/thesis/${ticker}`,
+    method: 'POST',
+    local: localThesis,
+    buildBody: (t) => {
+      const { version, ...payload } = stripTransientThesisFields(t) || {};
+      return { ...payload, baseVersion: version };
+    },
+    merge: (local, server) => mergeThesis(local, server),
+    retries,
+  });
+  if (res.ok) {
+    // Stamp the persisted version onto whatever we actually sent (merged or not).
+    return { ok: true, thesis: { ...res.sent, version: res.data.version }, reloaded: res.reconciled };
   }
+  if (res.conflict) {
+    // Merged the teammate's state but couldn't land within the retry budget; hand
+    // the merged doc back so the caller can show it for a manual re-save.
+    return { ok: false, conflict: true, thesis: res.merged };
+  }
+  return { ok: false, error: res.error };
 }
 
 // Back-compat thin wrapper (kept for any caller that only needs a fire-and-forget

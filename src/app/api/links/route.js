@@ -3,6 +3,8 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { getDb } from '@/lib/db';
 import { summarizeByType } from '@/lib/summarizer';
+import { versionedWrite, VersionConflictError } from '@/lib/concurrency';
+import { conflictResponse } from '@/lib/apiResponses';
 
 /*
   Supabase table required — run this SQL in the Supabase SQL Editor:
@@ -270,15 +272,19 @@ export async function PUT(request) {
     }
   }
 
-  const { data, error } = await supabase
-    .from(TABLE)
-    .update(updateData)
-    .eq('id', id)
-    .select()
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ link: data });
+  // Version-guarded edit of a saved link (notes, summary, is_read, …). A stale
+  // write → canonical 409 so a concurrent edit isn't overwritten. (The regenerate
+  // branch above only rewrites derived summary fields no human edits, so it stays
+  // unguarded.)
+  try {
+    const data = await versionedWrite(supabase, TABLE, {
+      match: { id }, values: updateData, baseVersion: body.baseVersion, onConflict: 'id',
+    });
+    return NextResponse.json({ link: data });
+  } catch (e) {
+    if (e instanceof VersionConflictError) return conflictResponse(e.current);
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }
 
 /* ── DELETE — remove a link ──────────────────────────────────── */

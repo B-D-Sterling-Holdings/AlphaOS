@@ -249,6 +249,7 @@ export default function DocumentsPage() {
   };
 
   const handleSaveEdit = async (id) => {
+    const baseVersion = documents.find(d => d.id === id)?.version;
     try {
       const res = await fetch('/api/documents', {
         method: 'PUT',
@@ -259,13 +260,21 @@ export default function DocumentsPage() {
           category: editForm.category,
           ticker: editForm.ticker.trim().toUpperCase(),
           notes: editForm.notes.trim(),
+          baseVersion,
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && data.conflict) {
+        // Another session edited this document's metadata first — adopt its version
+        // and keep the editor open so the reloaded values are visible for re-edit.
+        if (data.current) setDocuments(prev => prev.map(d => d.id === id ? data.current : d));
+        return;
+      }
       if (data.document) {
         setDocuments(prev => prev.map(d => d.id === id ? data.document : d));
       }
-    } catch {} finally {
+      setEditingId(null);
+    } catch {
       setEditingId(null);
     }
   };

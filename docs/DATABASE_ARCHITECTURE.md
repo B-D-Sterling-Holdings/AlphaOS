@@ -394,10 +394,13 @@ Everything else is kept indefinitely; there are no other TTLs.
 4. If it has `updated_at`, include the `set_updated_at` trigger in your
    migration (copy an existing table's block, or re-run `003`'s DO loop, which
    attaches it to any table that has the column).
-5. If it stores **document-shaped state read/written whole** (like a thesis or a
-   watchlist), give it a `version integer NOT NULL DEFAULT 1` column so the
-   `bump_version` trigger picks it up and its saves can be version-guarded (§11);
-   write through `versionedWrite` (`src/lib/concurrency.js`).
+5. If it has **any user-facing edit (UPDATE) path**, give it a `version integer
+   NOT NULL DEFAULT 1` column so the `bump_version` trigger picks it up, write
+   through `versionedWrite` / `versionedMutate` (`src/lib/concurrency.js`) in the
+   route, and save from the client through `saveWithOCC` / `saveRow`
+   (`src/lib/occClient.js`). Every editable table is expected to be OCC-guarded —
+   see §11. (Append-only logs and machine-generated tables are the only
+   exceptions; 031's header lists them.)
 6. Record the change in `scripts/migrations/README.md`. (There is no
    separate schema file to mirror into — the migrations are the source of
    truth; see §3.)
@@ -408,12 +411,25 @@ Everything else is kept indefinitely; there are no other TTLs.
 
 ## 11. Optimistic concurrency (no lost updates)
 
-The document-shaped tables — `theses`, `watchlists`, `valuation_models`, and the
-single-blob `app_settings` rows (e.g. `fund-accounting-state`) — are read whole
-into the browser, edited, and written back whole. A blind upsert is
-last-write-wins: two people (or one person in two tabs) editing the same row
-silently overwrite each other. These rows are guarded by **optimistic
-concurrency control (OCC)** instead.
+**Every user-editable row in the database is guarded against lost updates by
+optimistic concurrency control (OCC)** — not just the big documents. A blind
+`update`/`upsert` is last-write-wins: two people (or one person in two tabs)
+editing the same row silently overwrite each other. OCC makes that impossible.
+
+Coverage (migrations 030 + 031 add the `version` column; the trigger is generic):
+
+| Kind | Tables | Client policy on conflict |
+|---|---|---|
+| Collaborative documents | `theses`, `watchlists` | **merge + retry** — union Draft & Review threads / re-apply stage moves (no edit lost) |
+| Autosaved documents | `lessons`, `fund-accounting-state` (`app_settings`) | merge comment threads + retry (lessons) / reload latest (accounting) |
+| Per-row records | `ideas`, `research_links`, `documents`, `tasks`, `contacts`, `lesson_patterns`, `strategic_notes`, `candidate_positions`, `holdings`, `valuation_models` | **reload-and-redo** — adopt the server's fresh row + notify |
+| Server-side read-modify-write | `issues.comments`, `factor_config`/`sector_config` exposures | **server-side guarded retry** — the append/patch always lands, never 409s the user |
+| Single-writer config | `allocation_config`, `macro_regime_config`/`_weights`, `task_boards`, `assignees`, `saved_emails` | last-write-wins retained deliberately (the `version` column exists; wire `baseVersion` if they become multi-writer) |
+| UI pointers | `activeWatchlistId`, `activeTaskBoardId` | unguarded by design (a scalar cursor, no document to lose) |
+
+The mechanism below is identical for all of them — one `version` counter, one
+server helper, one client helper. What differs per surface is only the *policy*
+in the table above.
 
 - **The token.** Each such table carries a monotonic **`version integer`**,
   advanced on every UPDATE by the `bump_version` trigger (§5). Every document GET
@@ -425,23 +441,32 @@ concurrency control (OCC)** instead.
   server row) rather than being allowed to clobber. All of this is centralized in
   **`versionedWrite`** (`src/lib/concurrency.js`); routes translate a
   `VersionConflictError` into the 409.
-- **Client reconciliation.** On a 409 the client does **not** silently lose work:
-  - *Theses* (the collaborative Draft & Review / Research surface) merge the local
-    edits on top of the fresh server document and retry — Draft & Review comment
-    threads and their message chains, plus todos and news, are **unioned by id**,
-    so two reviewers commenting at once both survive (`mergeThesis` in
-    `src/lib/thesisMerge.js`). A genuine same-field edit is last-write-wins **but
-    visible**.
-  - *Watchlist stage moves* re-apply the single stage flip onto the server's fresh
-    state and retry (`persistStageMove`), so a concurrent move of a different name
-    is preserved. Direct watchlist edits reload the latest and prompt a redo.
-  - *Accounting / valuation* adopt the server version and reload the latest rather
-    than overwrite it.
+- **Server-side read-modify-write.** For mutations the server performs itself —
+  appending a comment to `issues.comments`, patching one field of the
+  `factor_config`/`sector_config` blob — there is nothing to 409 the user with, so
+  **`versionedMutate`** (`src/lib/concurrency.js`) reads the row, applies the
+  change, and commits under the guard, **retrying on a concurrent change**. Two
+  people commenting on the same issue at once therefore both land.
+- **Client reconciliation is one helper.** The browser never hand-writes 409
+  handling: **`saveWithOCC`** (`src/lib/occClient.js`) owns the fetch → detect-409
+  → merge → retry loop, and each surface passes only a `merge(local, server)`
+  policy (or none, for reload-and-redo). Concretely:
+  - *Theses* union Draft & Review comment threads/messages, todos and news **by id**
+    and retry, so two reviewers commenting at once both survive (`mergeThesis`,
+    `src/lib/thesisMerge.js`); a genuine same-field edit is last-write-wins **but
+    visible**. *Lessons* do the same for their comment threads.
+  - *Watchlist stage moves* re-apply the single flip onto the server's fresh state
+    and retry (`persistStageMove`); direct watchlist edits reload + prompt a redo.
+  - *Per-row records* (ideas, links, documents, tasks, contacts, notes, holdings, …)
+    adopt the server's fresh row and prompt the user to re-apply — the safe default
+    when two people edit the same scalar field.
+  - *Accounting* adopts the server version and reloads the latest.
 - **Row lifecycle.** New rows start at `version = 1`; the client represents "no row
   yet" as base **0**, which routes to an INSERT (a losing INSERT trips the
   per-tenant unique key and is reported as a conflict, so a create race can't lose
   data either).
 - **Back-compatible rollout.** `versionedWrite` treats a missing base version
-  (`undefined`) as the legacy unguarded upsert, and every document GET selects
-  `*` (never a bare `version` column), so the app behaves exactly as before until
-  the `version` columns exist and then upgrades itself with no hard cutover.
+  (`undefined`) as the legacy unguarded write, and every GET selects `*` (never a
+  bare `version` column), so the app behaves exactly as before until the `version`
+  columns exist and then upgrades itself with no hard cutover. This is why 030/031
+  can ship code-first and be applied later.

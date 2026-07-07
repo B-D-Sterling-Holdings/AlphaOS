@@ -139,11 +139,20 @@ export default function WorkspacePage() {
   /* ── Actions ─────────────────────────────────────── */
 
   const updateIdea = async (id, patch, opts = {}) => {
+    // Guard the save on the version we currently hold (optimistic-concurrency).
+    const current = ideas.find(i => i.id === id);
     setIdeas(prev => prev.map(i => i.id === id ? { ...i, ...patch } : i));
     if (opts.closeEditor) setEditing(null);
     try {
-      const res = await fetch('/api/ideas', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...patch }) });
+      const res = await fetch('/api/ideas', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...patch, baseVersion: current?.version }) });
       const data = await res.json();
+      if (res.status === 409 && data.conflict) {
+        // Someone edited this note in another session — adopt their version rather
+        // than clobber it, and tell the user their change didn't apply.
+        if (data.current) setIdeas(prev => prev.map(i => i.id === id ? data.current : i));
+        setLoadError('This note was changed elsewhere — reloaded the latest. Re-apply your change.');
+        return;
+      }
       if (data.idea) {
         setIdeas(prev => prev.map(i => i.id === id ? data.idea : i));
       } else if (data.error) {

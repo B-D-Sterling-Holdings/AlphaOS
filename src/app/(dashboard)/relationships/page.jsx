@@ -342,13 +342,21 @@ export default function RelationshipsPage() {
 
     try {
       const isCreate = drawer.mode === 'create';
+      // Guard edits on the version we loaded (optimistic concurrency).
+      const baseVersion = isCreate ? undefined : contacts.find((c) => c.id === drawer.id)?.version;
       const response = await fetch('/api/contacts', {
         method: isCreate ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(isCreate ? payload : { id: drawer.id, ...payload }),
+        body: JSON.stringify(isCreate ? payload : { id: drawer.id, ...payload, baseVersion }),
       });
+      const saved = await response.json().catch(() => ({}));
+      if (response.status === 409 && saved.conflict) {
+        // Someone edited this contact first — adopt their version, don't clobber it.
+        if (saved.current) applySavedContact(saved.current);
+        setToast({ message: 'This contact was changed elsewhere — reloaded the latest. Re-apply your edit.', type: 'info' });
+        return;
+      }
       if (!response.ok) throw new Error('Save failed');
-      const saved = await response.json();
       applySavedContact(saved);
       setToast({ message: isCreate ? 'Contact added' : 'Contact updated', type: 'success' });
     } catch {

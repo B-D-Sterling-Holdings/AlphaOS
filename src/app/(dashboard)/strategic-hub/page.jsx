@@ -541,11 +541,18 @@ export default function StrategicHubPage() {
     setNotesSaved(false);
     if (notesTimer.current) clearTimeout(notesTimer.current);
     notesTimer.current = setTimeout(async () => {
-      await fetch('/api/strategic-notes', {
+      const baseVersion = notesRows.find(r => r.ticker === '_PORTFOLIO')?.version;
+      const res = await fetch('/api/strategic-notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: '_PORTFOLIO', notes: val }),
+        body: JSON.stringify({ ticker: '_PORTFOLIO', notes: val, baseVersion }),
       });
+      if (res.status === 409) {
+        // Portfolio notes changed in another session — reload the latest rather than
+        // overwrite it (the debounced write started from a now-stale copy).
+        loadNotes();
+        return;
+      }
       setNotesSaved(true);
       setTimeout(() => setNotesSaved(false), 1500);
     }, 600);
@@ -685,16 +692,20 @@ export default function StrategicHubPage() {
   }, [watchlistData, cache, loadNotes]);
 
   const handleSaveNote = useCallback(async (ticker, form) => {
+    // Guard on the version we loaded for this ticker's note (optimistic concurrency).
+    // If a teammate saved first the server rejects the stale write (409); the refetch
+    // below then reloads the latest, so their change is never clobbered.
+    const baseVersion = notesRows.find(r => r.ticker === ticker)?.version;
     await fetch('/api/strategic-notes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker, ...form }),
+      body: JSON.stringify({ ticker, ...form, baseVersion }),
     });
     await Promise.all([
       fetch('/api/strategic-hub').then(r => r.json()).then(setData).catch(() => {}),
       loadNotes(),
     ]);
-  }, [loadNotes]);
+  }, [loadNotes, notesRows]);
 
   const moveRef = useRef({ displayed: [] });
   const rowRefs = useRef({});

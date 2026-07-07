@@ -71,6 +71,7 @@ re-seeded on every `demo`/`demo` login (see `docs/DATABASE_ARCHITECTURE.md` §8)
 | `028_results_run_fk.sql` | Make `macro_regime_results.run_id → macro_regime_runs(id)` a hard FK with **ON DELETE SET NULL**, removing the delete-order fragility. |
 | `029_theses_assumptions_jsonb.sql` | Convert `theses.assumptions` TEXT → JSONB (rich-text block array or bare string, stored natively; drops the route's serialize/deserialize dance). |
 | `030_optimistic_concurrency.sql` | Add a monotonic `version integer` + a `bump_version()` BEFORE UPDATE trigger to the document-shaped tables (`theses`, `watchlists`, `valuation_models`, `app_settings`) so saves can compare-and-swap (`UPDATE … WHERE version = <base>`) instead of last-write-wins. Stops two people (or one in two tabs) silently overwriting each other. Carries a deploy-order note in its header (ship the app code first; it falls back to the old unguarded upsert until applied, so there's no hard cutover). See `docs/DATABASE_ARCHITECTURE.md` §11 and `src/lib/concurrency.js`. |
+| `031_occ_all_tables.sql` | Extend the **same** OCC mechanism to every remaining table with a user-facing UPDATE path (`holdings`, `research_links`, `documents`, `strategic_notes`, `candidate_positions`, `ideas`, `contacts`, `tasks`, `lessons`, `lesson_patterns`, `issues`) — just adds the `version` column and re-runs 030's generic trigger loop. Append-only/machine tables are intentionally excluded (listed in the file header). Same code-first deploy story as 030. |
 
 All of 001–021 are applied to the live database (001–020 verified by probe
 2026-07-06; 021 applied and verified live in prod the same day, after the
@@ -90,10 +91,12 @@ data was verified to conform before writing them. 029 (assumptions → JSONB)
 carries a deploy-order note in its header (ship the app code first); the reader
 tolerates both shapes so ordering is low-risk.
 
-030 (optimistic concurrency) carries a deploy-order note in its header: **ship
-the app code first**, then apply it. Until it runs, document GETs omit `version`,
-clients send no base version, and every save takes the historical unguarded
-upsert path — behaviour identical to before. Once applied, every document save is
-a version-guarded compare-and-swap, so a stale write is rejected (409 → the
-client reloads/merges) instead of silently clobbering a concurrent editor. No
-data backfill beyond the column default; no hard cutover.
+030 and 031 (optimistic concurrency) carry a deploy-order note in their headers:
+**ship the app code first**, then apply them (031 after 030). Until they run, GETs
+omit `version`, clients send no base version, and every save takes the historical
+unguarded path — behaviour identical to before. Once applied, every editable row
+save is a version-guarded compare-and-swap, so a stale write is rejected (409 →
+the client reloads/merges) instead of silently clobbering a concurrent editor. No
+data backfill beyond the column default; no hard cutover. 031 is a pure superset
+of 030's approach (same trigger, more tables) and can be applied immediately after
+030 in the same session.

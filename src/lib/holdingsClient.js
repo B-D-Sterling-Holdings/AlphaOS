@@ -62,13 +62,17 @@ export async function saveFactorConfigData(updates) {
   return res.json();
 }
 
-export async function saveHolding({ ticker, shares, costBasis }) {
+// `baseVersion` is the optimistic-concurrency token for an existing holding being
+// edited in place (omit it when adding a brand-new ticker). A stale edit comes back
+// as { conflict, current } (HTTP 409) so the caller can reload rather than clobber.
+export async function saveHolding({ ticker, shares, costBasis, baseVersion }) {
   const res = await fetch('/api/holdings', {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify({ ticker, shares: Number(shares), cost_basis: Number(costBasis) }),
+    body: JSON.stringify({ ticker, shares: Number(shares), cost_basis: Number(costBasis), baseVersion }),
   });
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, ...data };
 }
 
 export async function deleteHolding(ticker) {

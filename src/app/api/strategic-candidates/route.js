@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { versionedWrite, VersionConflictError } from '@/lib/concurrency';
+import { conflictResponse } from '@/lib/apiResponses';
 
 // Research pipeline — names being researched or with potential to enter the
 // portfolio (not yet held). Drives the "Research Pipeline" section of the
@@ -22,7 +24,7 @@ export async function GET() {
 export async function POST(request) {
   const supabase = await getDb();
   const body = await request.json();
-  const { id, ticker, status, sentiment, conviction, priority, target_weight, notes, sort_order } = body;
+  const { id, ticker, status, sentiment, conviction, priority, target_weight, notes, sort_order, baseVersion } = body;
 
   if (!ticker || !ticker.trim()) {
     return NextResponse.json({ error: 'ticker required' }, { status: 400 });
@@ -42,16 +44,22 @@ export async function POST(request) {
   };
   if (sort_order != null && !isNaN(Number(sort_order))) row.sort_order = Number(sort_order);
 
-  let query;
-  if (id) {
-    query = supabase.from('candidate_positions').update(row).eq('id', id).select().single();
-  } else {
-    query = supabase.from('candidate_positions').insert(row).select().single();
+  // New candidate → plain insert. Existing (id) → version-guarded update so two
+  // people editing the same pipeline candidate don't clobber each other.
+  if (!id) {
+    const { data, error } = await supabase.from('candidate_positions').insert(row).select().single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(data);
   }
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  try {
+    const data = await versionedWrite(supabase, 'candidate_positions', {
+      match: { id }, values: row, baseVersion, onConflict: 'id',
+    });
+    return NextResponse.json(data);
+  } catch (e) {
+    if (e instanceof VersionConflictError) return conflictResponse(e.current);
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }
 
 // DELETE — remove a candidate by id

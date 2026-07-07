@@ -107,6 +107,48 @@ export async function versionedWrite(client, table, { match, values, baseVersion
 }
 
 /**
+ * Server-side read-modify-write with a version-guarded retry loop. For appends and
+ * other JSONB mutations the server performs itself (e.g. adding a comment to an
+ * issue's `comments` array): read the row, compute the new values from it, and
+ * commit under the version guard — retrying on a concurrent change so the mutation
+ * is never lost (an append should ALWAYS land, never 409 the user).
+ *
+ * @param client   tenant-scoped client
+ * @param table    table name
+ * @param match    equality key identifying the row, e.g. { id }
+ * @param mutate   (currentRow) => valuesToWrite | null  (null aborts, e.g. auth fail)
+ * @param retries  max attempts (default 4)
+ * @returns the persisted row, or null when `mutate` aborts or the row is missing.
+ */
+export async function versionedMutate(client, table, { match, mutate, retries = 4 }) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const current = await fetchCurrent(client, table, match);
+    if (!current) return null;
+    const values = mutate(current);
+    if (values == null) return null;
+    try {
+      return await versionedWrite(client, table, {
+        match,
+        values,
+        // Guard on the version we just read. undefined (pre-migration, no column)
+        // falls back to an unguarded update — same as everywhere else.
+        baseVersion: typeof current.version === 'number' ? current.version : undefined,
+      });
+    } catch (e) {
+      if (e instanceof VersionConflictError) continue; // someone else wrote — re-read and retry
+      throw e;
+    }
+  }
+  // Exhausted retries under sustained contention: one last unguarded write so the
+  // user's action still lands (worst case degrades to last-write-wins, never an error).
+  const current = await fetchCurrent(client, table, match);
+  if (!current) return null;
+  const values = mutate(current);
+  if (values == null) return null;
+  return versionedWrite(client, table, { match, values, baseVersion: undefined });
+}
+
+/**
  * Normalize a value read from a `.select('*')` row into a base version the client
  * can echo back. Returns:
  *   - the numeric version when the column exists (post-migration),

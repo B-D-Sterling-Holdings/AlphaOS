@@ -1,5 +1,5 @@
 import 'server-only';
-import { versionedWrite, versionOf } from './concurrency';
+import { versionedWrite, versionedMutate, versionOf } from './concurrency';
 
 /*
   Per-tenant key/value config: the `app_settings` table, one row per
@@ -104,4 +104,27 @@ export async function writeSettingWithVersion(supabase, key, value, baseVersion)
     onConflict: 'tenant_id,key',
   });
   return { value, version: versionOf(row) };
+}
+
+/**
+ * Server-side read-modify-write of one app_settings value under the version guard,
+ * with automatic retry on a concurrent change. Use this for the config blobs the
+ * SERVER patches in place (read the whole object, change one field, write it back)
+ * — factor exposures, sector labels — so two people patching different fields at
+ * once don't lose each other's change. `mutate(currentValue) => nextValue`.
+ */
+export async function mutateSetting(supabase, key, mutate, fallback = null) {
+  const row = await versionedMutate(supabase, 'app_settings', {
+    match: { key },
+    // versionedMutate hands us the raw row; coerce the JSONB value, apply the
+    // caller's patch, and hand back the column update. A missing row starts from
+    // `fallback` (versionedMutate only calls us when a row exists, so seed via an
+    // initial write below when absent).
+    mutate: (current) => ({ value: mutate(coerce(current.value, fallback)) }),
+  });
+  if (row) return coerce(row.value, fallback);
+  // No row yet → create it from the fallback-seeded patch (first write, no contention).
+  const seeded = mutate(fallback);
+  await writeSetting(supabase, key, seeded);
+  return seeded;
 }
