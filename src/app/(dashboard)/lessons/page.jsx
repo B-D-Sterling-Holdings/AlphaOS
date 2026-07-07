@@ -14,9 +14,19 @@ import {
   LESSON_TYPES, OUTCOMES, CATEGORIES, SEVERITY,
   DETAIL_SECTIONS, LESSON_TEMPLATES, optionsFrom, labelOf, emptyDetail, blocksToPlain,
 } from '@/lib/lessons';
+import { saveWithOCC } from '@/lib/occClient';
 
 const TEMPLATE_ICONS = { AlertTriangle, CheckCircle2, TrendingUp, BookOpen };
 const todayISO = () => new Date().toISOString().slice(0, 10);
+
+// Union two comment-thread arrays by id (local first, then server-only), so a
+// concurrent comment on the same lesson is never lost when reconciling a conflict.
+function unionCommentsById(localArr = [], serverArr = []) {
+  const byId = new Map();
+  for (const c of localArr || []) if (c?.id != null) byId.set(c.id, c);
+  for (const c of serverArr || []) if (c?.id != null && !byId.has(c.id)) byId.set(c.id, c);
+  return [...byId.values()];
+}
 
 /* ── Small shared UI ───────────────────────────────────────────── */
 
@@ -473,7 +483,16 @@ export default function LessonsPage() {
     return () => document.removeEventListener('mousedown', h);
   }, [quickOpen]);
 
-  /* ── Debounced persistence ── */
+  /* ── Debounced persistence (optimistic-concurrency guarded) ── */
+  // Stamp the server's new version onto a row in state without disturbing edits the
+  // user may have typed since the save was dispatched (content is local, version is
+  // the server's) — so the next autosave guards against the right row.
+  const stampVersion = useCallback((kind, id, version) => {
+    if (typeof version !== 'number') return;
+    const setter = kind === 'lesson' ? setLessons : setPatterns;
+    setter(prev => prev.map(r => (r.id === id ? { ...r, version } : r)));
+  }, []);
+
   const scheduleSave = useCallback((kind, id) => {
     const tkey = `${kind}:${id}`;
     clearTimeout(saveTimers.current[tkey]);
@@ -482,21 +501,35 @@ export default function LessonsPage() {
       const url = kind === 'lesson' ? '/api/lessons' : '/api/lesson-patterns';
       const row = (kind === 'lesson' ? lessonsRef.current : patternsRef.current).find(r => r.id === id);
       if (!row) return;
-      try {
-        const res = await fetch(url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(row),
-        });
-        if (!res.ok) throw new Error();
+      // On a version conflict, keep the local scalar edits but UNION the comment
+      // threads (lessons) so a teammate's concurrent comment survives, then retry.
+      const result = await saveWithOCC({
+        url,
+        method: 'PUT',
+        local: row,
+        buildBody: (r) => ({ ...r, baseVersion: r.version }),
+        merge: (local, server) => (kind === 'lesson'
+          ? { ...server, ...local, comments: unionCommentsById(local.comments, server.comments), version: server.version }
+          : { ...server, ...local, version: server.version }),
+        retries: 3,
+      });
+      if (result.ok) {
+        stampVersion(kind, id, result.data?.version);
         setSaveState('saved');
         setTimeout(() => setSaveState(s => (s === 'saved' ? 'idle' : s)), 1500);
-      } catch {
+      } else if (result.conflict) {
+        // Couldn't land within the retry budget under heavy contention: apply the
+        // merged row (nothing lost) and let the next edit/save flush it.
+        const setter = kind === 'lesson' ? setLessons : setPatterns;
+        if (result.merged) setter(prev => prev.map(r => (r.id === id ? { ...result.merged } : r)));
+        setSaveState('idle');
+        showToast('Merged a concurrent edit — save again to confirm', 'info');
+      } else {
         setSaveState('idle');
         showToast('Save failed', 'error');
       }
     }, 700);
-  }, [showToast]);
+  }, [showToast, stampVersion]);
 
   /* ── Lesson mutations ── */
   const patchLesson = useCallback((id, patch) => {

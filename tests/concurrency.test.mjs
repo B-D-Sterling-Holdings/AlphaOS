@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { versionedWrite, versionOf, VersionConflictError } from '../src/lib/concurrency.js';
+import { versionedWrite, versionedMutate, versionOf, VersionConflictError } from '../src/lib/concurrency.js';
 
 // Minimal chainable stand-in for a supabase-js query builder. Each `.from()` call
 // starts a fresh context; the terminal `.maybeSingle()`/`.single()` resolves the
@@ -110,4 +110,51 @@ test('guarded UPDATE that matches zero rows (stale base) → VersionConflictErro
       return true;
     }
   );
+});
+
+// --- versionedMutate: server-side read-modify-write with retry ------------------
+
+test('versionedMutate reads, applies the patch, and commits under the version guard', async () => {
+  const current = { id: 'i1', version: 2, comments: [{ id: 'c1' }] };
+  const client = makeClient({
+    select: () => ({ data: current }),          // fetchCurrent
+    update: (ctx) => {
+      assert.ok(ctx.eqs.some(([k, v]) => k === 'version' && v === 2)); // guarded on read version
+      return { data: { ...current, ...ctx.payload, version: 3 }, error: null };
+    },
+  });
+  const row = await versionedMutate(client, 'issues', {
+    match: { id: 'i1' },
+    mutate: (cur) => ({ comments: [...cur.comments, { id: 'c2' }] }),
+  });
+  assert.equal(row.version, 3);
+  assert.equal(row.comments.length, 2);
+});
+
+test('versionedMutate retries on a concurrent change so an append is never lost', async () => {
+  let reads = 0;
+  const rowV2 = { id: 'i1', version: 2, comments: [{ id: 'c1' }] };
+  const rowV3 = { id: 'i1', version: 3, comments: [{ id: 'c1' }, { id: 'teammate' }] };
+  const client = makeClient({
+    select: () => ({ data: reads++ === 0 ? rowV2 : rowV3 }), // first read stale, then fresh
+    update: (ctx) => {
+      const guard = ctx.eqs.find(([k]) => k === 'version')[1];
+      if (guard === 2) return { data: null, error: null };   // lost the race on the first try
+      return { data: { ...rowV3, ...ctx.payload, version: 4 }, error: null }; // wins on retry
+    },
+  });
+  const row = await versionedMutate(client, 'issues', {
+    match: { id: 'i1' },
+    mutate: (cur) => ({ comments: [...cur.comments, { id: 'mine' }] }),
+  });
+  assert.equal(row.version, 4);
+  // Retried against the fresh row, so the teammate's comment is still present.
+  assert.ok(row.comments.some((c) => c.id === 'teammate'));
+  assert.ok(row.comments.some((c) => c.id === 'mine'));
+});
+
+test('versionedMutate returns null when the mutate aborts (e.g. auth fail)', async () => {
+  const client = makeClient({ select: () => ({ data: { id: 'i1', version: 1 } }) });
+  const row = await versionedMutate(client, 'issues', { match: { id: 'i1' }, mutate: () => null });
+  assert.equal(row, null);
 });

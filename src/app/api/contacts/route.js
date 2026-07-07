@@ -1,5 +1,6 @@
 import { getDb } from '@/lib/db';
-import { apiBadRequest, apiCreated, apiError, apiJson, apiOk } from '@/lib/apiResponses';
+import { apiBadRequest, apiCreated, apiError, apiJson, apiOk, conflictResponse } from '@/lib/apiResponses';
+import { versionedWrite, VersionConflictError } from '@/lib/concurrency';
 
 /*
   Supabase tables required — run this SQL in the Supabase SQL Editor:
@@ -91,21 +92,22 @@ export async function POST(req) {
 export async function PUT(req) {
   const supabase = await getDb();
   const body = await req.json();
-  const { id, ...updates } = body;
+  const { id, baseVersion, ...updates } = body;
 
   if (!id) return apiBadRequest('id is required');
 
   updates.updated_at = new Date().toISOString();
 
-  const { data, error } = await supabase
-    .from(TABLE)
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .single();
-
-  if (error) return apiError(error);
-  return apiJson(data);
+  // Version-guarded edit → canonical 409 if the contact changed under us.
+  try {
+    const data = await versionedWrite(supabase, TABLE, {
+      match: { id }, values: updates, baseVersion, onConflict: 'id',
+    });
+    return apiJson(data);
+  } catch (e) {
+    if (e instanceof VersionConflictError) return conflictResponse(e.current);
+    return apiError(e);
+  }
 }
 
 export async function DELETE(req) {

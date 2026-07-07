@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { getDb } from '@/lib/db';
+import { versionedMutate } from '@/lib/concurrency';
 
 /*
   In-app issue tracker (the Issues widget in the navbar).
@@ -131,25 +132,23 @@ export async function PUT(req) {
       if (isBodyEmpty(body.body)) {
         return NextResponse.json({ error: 'Comment is empty' }, { status: 400 });
       }
-      // Read-modify-write the comments array (RLS scopes both to this tenant).
-      const { data: existing, error: readErr } = await db
-        .from(TABLE).select('author, comments').eq('id', id).single();
-      if (readErr) throw new Error(readErr.message);
-      if (!db.isAdmin && existing?.author !== db.username) {
-        return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
-      }
-      const comment = {
-        id: randomUUID(),
-        author: db.username || '',
-        body: normalizeBody(body.body),
-        createdAt: new Date().toISOString(),
-      };
-      const comments = [...(existing?.comments || []), comment];
-      const { data, error } = await db
-        .from(TABLE)
-        .update({ comments, updated_at: new Date().toISOString() })
-        .eq('id', id).select().single();
-      if (error) throw new Error(error.message);
+      // Version-guarded read-modify-write with retry, so two people commenting on
+      // the same issue at once BOTH land (an append must never be lost or 409'd).
+      const data = await versionedMutate(db, TABLE, {
+        match: { id },
+        mutate: (existing) => {
+          // Non-admins can only comment on their own tickets (mirrors GET visibility).
+          if (!db.isAdmin && existing.author !== db.username) return null;
+          const comment = {
+            id: randomUUID(),
+            author: db.username || '',
+            body: normalizeBody(body.body),
+            createdAt: new Date().toISOString(),
+          };
+          return { comments: [...(existing.comments || []), comment], updated_at: new Date().toISOString() };
+        },
+      });
+      if (!data) return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
       return NextResponse.json(data);
     }
 
@@ -222,15 +221,16 @@ export async function DELETE(req) {
     if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
 
     if (commentId) {
-      const { data: existing, error: readErr } = await db
-        .from(TABLE).select('comments').eq('id', id).single();
-      if (readErr) throw new Error(readErr.message);
-      const comments = (existing?.comments || []).filter(c => c.id !== commentId);
-      const { data, error } = await db
-        .from(TABLE)
-        .update({ comments, updated_at: new Date().toISOString() })
-        .eq('id', id).select().single();
-      if (error) throw new Error(error.message);
+      // Same guarded read-modify-write as the append, so deleting a comment can't
+      // clobber a concurrent comment on the same issue.
+      const data = await versionedMutate(db, TABLE, {
+        match: { id },
+        mutate: (existing) => ({
+          comments: (existing.comments || []).filter(c => c.id !== commentId),
+          updated_at: new Date().toISOString(),
+        }),
+      });
+      if (!data) return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
       return NextResponse.json(data);
     }
 

@@ -34,13 +34,21 @@ export async function createTask({ title, priority, boardId }) {
   return { ok: res.ok, data: await readJson(res) };
 }
 
-export async function updateTask(taskId, updates) {
+// `baseVersion` is the optimistic-concurrency token the caller loaded for this
+// task. On a stale write the server returns 409 { conflict, current } — surfaced
+// here as { ok:false, conflict:true, current } so the caller can adopt the fresh
+// row instead of clobbering a concurrent edit.
+export async function updateTask(taskId, updates, baseVersion) {
   const res = await fetch('/api/tasks', {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ id: taskId, ...updates }),
+    body: JSON.stringify({ id: taskId, ...updates, baseVersion }),
   });
-  return { ok: res.ok, data: await readJson(res) };
+  const data = await readJson(res);
+  if (res.status === 409 && data.conflict) {
+    return { ok: false, conflict: true, current: data.current, data };
+  }
+  return { ok: res.ok, data };
 }
 
 export async function deleteTask(taskId) {

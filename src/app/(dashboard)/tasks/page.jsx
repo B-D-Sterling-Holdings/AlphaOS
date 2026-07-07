@@ -756,13 +756,33 @@ export default function TaskBoardPage() {
     }
   };
 
+  // Version-guarded task save shared by every edit path. Looks up the task's loaded
+  // version, sends it, and on a conflict adopts the server's fresh row (incl. its
+  // new version) instead of clobbering a concurrent edit; on a plain failure runs
+  // the caller's revert; on success stamps the new version so the next edit guards
+  // against the right row.
+  const persistTask = useCallback(async (id, updates, revert) => {
+    const base = tasksRef.current.find(t => t.id === id)?.version;
+    let res;
+    try {
+      res = await updateTask(id, updates, base);
+    } catch {
+      revert?.();
+      return;
+    }
+    if (res.conflict && res.current) {
+      setTasks(prev => prev.map(t => t.id === id ? res.current : t));
+      return;
+    }
+    if (!res.ok) { revert?.(); return; }
+    const v = res.data?.version;
+    if (typeof v === 'number') setTasks(prev => prev.map(t => t.id === id ? { ...t, version: v } : t));
+  }, []);
+
   const toggleDone = async (id, currentDone) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, done: !currentDone } : t));
-    try {
-      await updateTask(id, { done: !currentDone });
-    } catch (err) {
-      setTasks(prev => prev.map(t => t.id === id ? { ...t, done: currentDone } : t));
-    }
+    await persistTask(id, { done: !currentDone },
+      () => setTasks(prev => prev.map(t => t.id === id ? { ...t, done: currentDone } : t)));
   };
 
   const removeTask = async (id) => {
@@ -807,33 +827,24 @@ export default function TaskBoardPage() {
     if (notesChanged) updates.notes = newNotes;
 
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
-    try {
-      await updateTask(id, updates);
-    } catch (err) {
-      setTasks(prev => prev.map(t => t.id === id ? { ...t, title: task.title, notes: task.notes } : t));
-    }
+    await persistTask(id, updates,
+      () => setTasks(prev => prev.map(t => t.id === id ? { ...t, title: task.title, notes: task.notes } : t)));
   };
 
   const updateAssignee = async (id, assignee) => {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
     setTasks(prev => prev.map(t => t.id === id ? { ...t, assignee } : t));
-    try {
-      await updateTask(id, { assignee });
-    } catch (err) {
-      setTasks(prev => prev.map(t => t.id === id ? { ...t, assignee: task.assignee } : t));
-    }
+    await persistTask(id, { assignee },
+      () => setTasks(prev => prev.map(t => t.id === id ? { ...t, assignee: task.assignee } : t)));
   };
 
   const updateStatus = async (id, status) => {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
     setTasks(prev => prev.map(t => t.id === id ? { ...t, status } : t));
-    try {
-      await updateTask(id, { status });
-    } catch (err) {
-      setTasks(prev => prev.map(t => t.id === id ? { ...t, status: task.status } : t));
-    }
+    await persistTask(id, { status },
+      () => setTasks(prev => prev.map(t => t.id === id ? { ...t, status: task.status } : t)));
   };
 
   // --- Subtask helpers ---
@@ -848,11 +859,7 @@ export default function TaskBoardPage() {
 
   const updateSubtasks = async (taskId, subtasks) => {
     setTasks(prev => replaceTaskSubtasks(prev, taskId, subtasks));
-    try {
-      await updateTask(taskId, { subtasks });
-    } catch (err) {
-      fetchTasks();
-    }
+    await persistTask(taskId, { subtasks }, () => fetchTasks());
   };
 
   const addSubtask = (taskId, { keepOpen = false } = {}) => {

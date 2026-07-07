@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { versionedWrite, VersionConflictError } from '@/lib/concurrency';
+import { conflictResponse } from '@/lib/apiResponses';
 import {
   uploadTenantDocument,
   deleteTenantDocument,
@@ -87,24 +89,21 @@ export async function PUT(request) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    const { category, ticker, notes } = body;
+    const { category, ticker, notes, baseVersion } = body;
     const updates = {};
     if (title !== undefined) updates.title = title;
     if (category !== undefined) updates.category = category;
     if (ticker !== undefined) updates.ticker = ticker;
     if (notes !== undefined) updates.notes = notes;
 
-    const { data: doc, error } = await supabase
-      .from('documents')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
+    // Version-guarded metadata edit → canonical 409 on a concurrent edit.
+    const doc = await versionedWrite(supabase, 'documents', {
+      match: { id }, values: updates, baseVersion, onConflict: 'id',
+    });
 
     return NextResponse.json({ success: true, document: doc });
   } catch (e) {
+    if (e instanceof VersionConflictError) return conflictResponse(e.current);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }

@@ -314,8 +314,20 @@ export default function HoldingsPage() {
   const saveEdit = async () => {
     if (!editShares || Number(editShares) <= 0) { setToast({ message: 'Enter valid shares', type: 'error' }); return; }
     if (!editCostBasis || Number(editCostBasis) <= 0) { setToast({ message: 'Enter valid cost basis', type: 'error' }); return; }
+    // Guard the edit on the version we loaded for this holding (optimistic concurrency).
+    const baseVersion = portfolio?.holdings?.find(h => h.ticker === editingTicker)?.version;
     try {
-      const data = await saveHolding({ ticker: editingTicker, shares: editShares, costBasis: editCostBasis });
+      const data = await saveHolding({ ticker: editingTicker, shares: editShares, costBasis: editCostBasis, baseVersion });
+      if (data.status === 409 && data.conflict) {
+        // Another session changed this holding first — reload the book rather than
+        // overwrite their shares/cost, and tell the user to re-apply.
+        const fresh = await fetchPortfolioData();
+        setPortfolio(fresh);
+        loadQuotes(fresh.holdings);
+        setToast({ message: `${editingTicker} was changed elsewhere — reloaded. Re-apply your edit.`, type: 'info' });
+        cancelEdit();
+        return;
+      }
       if (data.success) {
         setPortfolio(data.portfolio);
         setToast({ message: `${editingTicker} updated`, type: 'success' });

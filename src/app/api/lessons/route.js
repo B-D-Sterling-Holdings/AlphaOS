@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { versionedWrite, VersionConflictError } from '@/lib/concurrency';
+import { conflictResponse } from '@/lib/apiResponses';
 
 /*
   Supabase table required — created by scripts/migrations/007_lessons_learned.sql.
@@ -90,21 +92,20 @@ export async function PUT(req) {
   try {
     const supabase = await getDb();
     const body = await req.json();
-    const { id } = body;
+    const { id, baseVersion } = body;
     if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
 
     const updates = pickWritable(body);
     updates.updated_at = new Date().toISOString();
 
-    const { data, error } = await supabase
-      .from(TABLE)
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
+    // Version-guarded so two people editing the same lesson (its comment threads or
+    // section editors) can't clobber each other. A stale write → canonical 409.
+    const data = await versionedWrite(supabase, TABLE, {
+      match: { id }, values: updates, baseVersion, onConflict: 'id',
+    });
     return NextResponse.json(data);
   } catch (e) {
+    if (e instanceof VersionConflictError) return conflictResponse(e.current);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }

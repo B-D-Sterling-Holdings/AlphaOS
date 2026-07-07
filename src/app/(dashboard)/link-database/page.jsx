@@ -152,30 +152,32 @@ function LinkCard({ link, onUpdate, onDelete }) {
   const tickers = parseTickers(link.ticker);
   const isRead = link.is_read;
 
+  // One version-guarded PUT for every link edit. On a conflict (someone changed
+  // this link in another session) it adopts the server's fresh row instead of
+  // clobbering it, and reports { conflict } so the caller can react.
+  const putLink = async (fields) => {
+    const res = await fetch('/api/links', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: link.id, ...fields, baseVersion: link.version }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409 && data.conflict) {
+      if (data.current) onUpdate(data.current);
+      return { conflict: true };
+    }
+    if (data.link) onUpdate(data.link);
+    return { ok: !!data.link };
+  };
+
   const markRead = async () => {
     if (isRead) return;
-    try {
-      const res = await fetch('/api/links', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: link.id, is_read: true }),
-      });
-      const data = await res.json();
-      if (data.link) onUpdate(data.link);
-    } catch {}
+    try { await putLink({ is_read: true }); } catch {}
   };
 
   const toggleRead = async (e) => {
     e.stopPropagation();
-    try {
-      const res = await fetch('/api/links', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: link.id, is_read: !isRead }),
-      });
-      const data = await res.json();
-      if (data.link) onUpdate(data.link);
-    } catch {}
+    try { await putLink({ is_read: !isRead }); } catch {}
   };
 
   const startEditing = () => {
@@ -195,15 +197,7 @@ function LinkCard({ link, onUpdate, onDelete }) {
   const saveField = async (fields) => {
     const key = Object.keys(fields)[0];
     setSavingField(key);
-    try {
-      const res = await fetch('/api/links', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: link.id, ...fields }),
-      });
-      const data = await res.json();
-      if (data.link) onUpdate(data.link);
-    } catch {} finally { setSavingField(null); }
+    try { await putLink(fields); } catch {} finally { setSavingField(null); }
   };
 
   const handleDelete = async () => {
@@ -216,14 +210,10 @@ function LinkCard({ link, onUpdate, onDelete }) {
   const saveAllEdits = async () => {
     setSavingField('all');
     try {
-      const res = await fetch('/api/links', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: link.id, ...editFields }),
-      });
-      const data = await res.json();
-      if (data.link) onUpdate(data.link);
-      setEditing(false);
+      const res = await putLink(editFields);
+      // Keep the editor open on conflict so the reloaded row is visible and the
+      // user's in-progress edits (still in editFields) can be re-applied.
+      if (!res.conflict) setEditing(false);
     } catch {} finally { setSavingField(null); }
   };
 

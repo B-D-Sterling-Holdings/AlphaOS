@@ -1,5 +1,6 @@
 import { getDb } from '@/lib/db';
 import { apiBadRequest, apiJson, apiOk, withApiError } from '@/lib/apiResponses';
+import { versionedWrite } from '@/lib/concurrency';
 
 export async function GET(request) {
   const supabase = await getDb();
@@ -47,7 +48,7 @@ export async function PUT(request) {
   const supabase = await getDb();
   return withApiError(async () => {
     const body = await request.json();
-    const { id, ...rest } = body;
+    const { id, baseVersion, ...rest } = body;
     if (!id) return apiBadRequest('id is required');
 
     const updates = {};
@@ -57,15 +58,12 @@ export async function PUT(request) {
     }
     updates.updated_at = new Date().toISOString();
 
-    const { data, error } = await supabase
-      .from('ideas')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
-    return apiJson({ idea: data });
+    // Version-guarded update: a stale write throws VersionConflictError, which
+    // withApiError turns into the canonical 409 (see src/lib/concurrency.js).
+    const row = await versionedWrite(supabase, 'ideas', {
+      match: { id }, values: updates, baseVersion, onConflict: 'id',
+    });
+    return apiJson({ idea: row });
   });
 }
 
