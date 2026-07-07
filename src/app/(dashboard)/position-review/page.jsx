@@ -941,26 +941,37 @@ export default function ResearchPage() {
                 </button>
               ))}
             </div>
-            {(activeResearchTab === 'thesis' || activeResearchTab === 'notes') && thesis && (
+            <div className="flex items-center gap-3">
+              {/* Export moved up here so it's visible at the top, not buried below the page (issue #70). */}
               <button
-                onClick={() => saveThesis()}
-                disabled={thesisSaving || !thesisDirty}
-                className={`flex items-center gap-2 px-6 py-2.5 text-sm font-semibold rounded-2xl shadow-md transition-all duration-200 ${
-                  thesisDirty
-                    ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white hover:from-emerald-700 hover:to-emerald-600 hover:shadow-lg hover:shadow-emerald-200/50'
-                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                }`}
+                onClick={handleExport}
+                disabled={exporting}
+                className="flex items-center gap-2 px-6 py-2.5 text-sm font-semibold rounded-2xl bg-gradient-to-r from-gray-900 to-gray-800 text-white hover:from-gray-800 hover:to-gray-700 shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50"
               >
-                {thesisSaving ? (
-                  <RefreshCw size={14} className="animate-spin" />
-                ) : thesisDirty ? (
-                  <Save size={14} />
-                ) : (
-                  <CheckCircle size={14} />
-                )}
-                {thesisSaving ? 'Saving...' : thesisDirty ? 'Save' : 'Saved'}
+                {exporting ? <RefreshCw size={14} className="animate-spin" /> : <FileDown size={14} />}
+                {exporting ? 'Generating...' : 'Export PDF'}
               </button>
-            )}
+              {(activeResearchTab === 'thesis' || activeResearchTab === 'notes') && thesis && (
+                <button
+                  onClick={() => saveThesis()}
+                  disabled={thesisSaving || !thesisDirty}
+                  className={`flex items-center gap-2 px-6 py-2.5 text-sm font-semibold rounded-2xl shadow-md transition-all duration-200 ${
+                    thesisDirty
+                      ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white hover:from-emerald-700 hover:to-emerald-600 hover:shadow-lg hover:shadow-emerald-200/50'
+                      : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  }`}
+                >
+                  {thesisSaving ? (
+                    <RefreshCw size={14} className="animate-spin" />
+                  ) : thesisDirty ? (
+                    <Save size={14} />
+                  ) : (
+                    <CheckCircle size={14} />
+                  )}
+                  {thesisSaving ? 'Saving...' : thesisDirty ? 'Save' : 'Saved'}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Position Snapshot */}
@@ -1243,7 +1254,7 @@ export default function ResearchPage() {
                 {/* ── Valuation Model ── */}
                 <ValuationModel ref={modelRef} ticker={selectedTicker} livePrice={livePrice} />
 
-                {/* ── Equity Rating & Export ── */}
+                {/* ── Equity Rating ── (Export lives in the top action bar now, issue #70) */}
                 <Card>
                   <div className="flex items-center justify-between">
                     <div>
@@ -1278,18 +1289,6 @@ export default function ResearchPage() {
                         )}
                       </div>
                     </div>
-                    <button
-                      onClick={handleExport}
-                      disabled={exporting}
-                      className="flex items-center gap-2.5 px-8 py-3.5 bg-gradient-to-r from-gray-900 to-gray-800 text-white font-semibold rounded-2xl hover:from-gray-800 hover:to-gray-700 shadow-lg shadow-gray-300/40 hover:shadow-xl transition-all duration-200 disabled:opacity-50"
-                    >
-                      {exporting ? (
-                        <RefreshCw size={16} className="animate-spin" />
-                      ) : (
-                        <FileDown size={16} />
-                      )}
-                      {exporting ? 'Generating Report...' : 'Export Position Review'}
-                    </button>
                   </div>
                 </Card>
               </div>
