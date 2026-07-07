@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
-import { Plus, Trash2, RefreshCw, Pencil, Check, X } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Pencil, Check, X, ChevronUp, ChevronDown } from 'lucide-react';
 import Card from '@/components/Card';
 import StatCard from '@/components/StatCard';
 import Treemap from '@/components/Treemap';
@@ -81,6 +81,11 @@ export default function HoldingsPage() {
   const [costBasis, setCostBasis] = useState('');
   const [cash, setCash] = useState('');
   const [search, setSearch] = useState('');
+
+  // Positions table sort (issue #89). null key = default order. Numeric columns
+  // sort descending on first click (biggest first, IBKR-style); Symbol sorts A→Z.
+  const [sortKey, setSortKey] = useState(null);
+  const [sortDir, setSortDir] = useState('desc');
 
   // Inline edit state
   const [editingTicker, setEditingTicker] = useState(null);
@@ -384,6 +389,43 @@ export default function HoldingsPage() {
   const treemapPositions = buildTreemapPositions(positions);
   const filtered = filterPositions(positions, search);
 
+  // Positions table columns. `key` drives click-to-sort; `get` returns the numeric
+  // sort value (% AUM is proportional to Mkt Value, so both sort by value). The
+  // trailing actions column has no key and isn't sortable. (issue #89)
+  const positionColumns = [
+    { key: 'ticker', label: 'Symbol', align: 'left', type: 'text' },
+    { key: 'weight', label: '% AUM', align: 'right', get: p => p.value },
+    { key: 'value', label: 'Mkt Value', align: 'right', get: p => p.value },
+    { key: 'costBasis', label: 'Avg Cost', align: 'right', get: p => p.costBasis },
+    { key: 'shares', label: 'Qty', align: 'right', get: p => p.shares },
+    { key: 'price', label: 'Price', align: 'right', get: p => p.price },
+    { key: 'dayChangePct', label: 'Daily P&L', align: 'right', get: p => p.dayChangePct },
+    { key: 'unrealizedPnlPct', label: 'Unreal P&L', align: 'right', get: p => p.unrealizedPnlPct },
+    { key: null, label: '', align: 'right' },
+  ];
+
+  const sortedPositions = (() => {
+    if (!sortKey) return filtered;
+    const col = positionColumns.find(c => c.key === sortKey);
+    if (!col) return filtered;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => (
+      col.type === 'text'
+        ? dir * String(a.ticker).localeCompare(String(b.ticker))
+        : dir * ((col.get(a) ?? 0) - (col.get(b) ?? 0))
+    ));
+  })();
+
+  const toggleSort = (col) => {
+    if (!col.key) return;
+    if (sortKey === col.key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(col.key);
+      setSortDir(col.type === 'text' ? 'asc' : 'desc');
+    }
+  };
+
   const inputCls = "w-full bg-gray-50/50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-200";
 
   return (
@@ -495,6 +537,28 @@ export default function HoldingsPage() {
             )}
           </Card>
 
+          {/* Add Holding Form — above the table so it isn't buried (issue #70) */}
+          <Card title="Add Position" className="mb-6">
+            <form onSubmit={addHolding} className="flex flex-wrap gap-4 items-end">
+              <div className="flex-1 min-w-[140px]">
+                <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold block mb-1.5">Ticker Symbol</label>
+                <input type="text" spellCheck={true} value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())} placeholder="e.g., AAPL" className={inputCls} />
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold block mb-1.5">Shares</label>
+                <input type="number" value={shares} onChange={e => setShares(e.target.value)} placeholder="100" step="0.01" min="0" className={inputCls} />
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold block mb-1.5">Cost Basis ($)</label>
+                <input type="number" value={costBasis} onChange={e => setCostBasis(e.target.value)} placeholder="150.00" step="0.01" min="0" className={inputCls} />
+              </div>
+              <button type="submit" className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-semibold rounded-xl hover:from-emerald-700 hover:to-emerald-600 shadow-md hover:shadow-lg hover:shadow-emerald-200/50 transition-all duration-200">
+                <Plus size={14} />
+                Add
+              </button>
+            </form>
+          </Card>
+
           {/* Positions Table */}
           <Card
             title="Positions"
@@ -516,15 +580,25 @@ export default function HoldingsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100">
-                      {['Symbol', '% AUM', 'Mkt Value', 'Avg Cost', 'Qty', 'Price', 'Daily P&L', 'Unreal P&L', ''].map((col, i) => (
-                        <th key={i} className={`py-3 px-3 text-xs text-gray-400 uppercase tracking-wider font-semibold ${i === 0 ? 'text-left' : 'text-right'}`}>
-                          {col}
-                        </th>
-                      ))}
+                      {positionColumns.map((col, i) => {
+                        const active = !!col.key && sortKey === col.key;
+                        return (
+                          <th
+                            key={i}
+                            onClick={() => toggleSort(col)}
+                            className={`py-3 px-3 text-xs uppercase tracking-wider font-semibold ${col.align === 'left' ? 'text-left' : 'text-right'} ${col.key ? 'cursor-pointer select-none hover:text-gray-600 transition-colors' : ''} ${active ? 'text-gray-700' : 'text-gray-400'}`}
+                          >
+                            <span className="inline-flex items-center gap-1 align-middle">
+                              {col.label}
+                              {active && (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+                            </span>
+                          </th>
+                        );
+                      })}
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map(p => {
+                    {sortedPositions.map(p => {
                       const weight = totalAum > 0 ? (p.value / totalAum) * 100 : 0;
                       const dayIsPos = p.dailyPnl >= 0;
                       const pnlIsPos = p.unrealizedPnl >= 0;
@@ -631,27 +705,6 @@ export default function HoldingsPage() {
             )}
           </Card>
 
-          {/* Add Holding Form */}
-          <Card title="Add Position" className="mt-6 mb-6">
-            <form onSubmit={addHolding} className="flex flex-wrap gap-4 items-end">
-              <div className="flex-1 min-w-[140px]">
-                <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold block mb-1.5">Ticker Symbol</label>
-                <input type="text" spellCheck={true} value={ticker} onChange={e => setTicker(e.target.value.toUpperCase())} placeholder="e.g., AAPL" className={inputCls} />
-              </div>
-              <div className="flex-1 min-w-[140px]">
-                <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold block mb-1.5">Shares</label>
-                <input type="number" value={shares} onChange={e => setShares(e.target.value)} placeholder="100" step="0.01" min="0" className={inputCls} />
-              </div>
-              <div className="flex-1 min-w-[140px]">
-                <label className="text-xs text-gray-500 uppercase tracking-wider font-semibold block mb-1.5">Cost Basis ($)</label>
-                <input type="number" value={costBasis} onChange={e => setCostBasis(e.target.value)} placeholder="150.00" step="0.01" min="0" className={inputCls} />
-              </div>
-              <button type="submit" className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-semibold rounded-xl hover:from-emerald-700 hover:to-emerald-600 shadow-md hover:shadow-lg hover:shadow-emerald-200/50 transition-all duration-200">
-                <Plus size={14} />
-                Add
-              </button>
-            </form>
-          </Card>
         </>
       )}
 

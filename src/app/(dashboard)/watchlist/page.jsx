@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } fr
 import { useRouter } from 'next/navigation';
 import { useCache } from '@/lib/CacheContext';
 import { writeWatchlistCache, routeForStage, postWatchlist } from '@/lib/stageMove';
+import { fetchThesis, saveThesisReconciled } from '@/lib/researchApi';
 import Toast from '@/components/Toast';
 import { formatMoneyPrecise, formatPct, formatLargeNumber } from '@/lib/formatters';
 import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft, RefreshCw } from 'lucide-react';
@@ -17,6 +18,47 @@ import {
 } from 'chart.js';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip);
+
+// Escape a plain-text watchlist note so it renders literally inside the rich-text
+// (contentEditable HTML) Investment Overview box, keeping line breaks.
+function noteToPaperHtml(note) {
+  const escaped = note
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return escaped.replace(/\r?\n/g, '<br>');
+}
+
+// True if the Draft & Review "Investment Overview" (thesis.underwriting.draftReview.paper)
+// already has visible content — so we never clobber an existing write-up.
+function hasInvestmentOverview(thesis) {
+  const paper = thesis?.underwriting?.draftReview?.paper;
+  const visible = (html) => !!(html && html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim());
+  if (Array.isArray(paper)) {
+    return paper.some(block => block?.type === 'image' || visible(block?.value));
+  }
+  return typeof paper === 'string' && visible(paper);
+}
+
+// Carry the watchlist "Why I'm interested" note into the Draft & Review Investment
+// Overview the first time a name is promoted (issue #76). One-time and best-effort:
+// only seeds when the box is still empty, so the author can freely edit or clear it
+// afterward without it coming back.
+async function seedInvestmentOverviewFromNote(ticker, note) {
+  const thesis = await fetchThesis(ticker);
+  if (hasInvestmentOverview(thesis)) return;
+  const updated = {
+    ...(thesis || {}),
+    underwriting: {
+      ...((thesis || {}).underwriting || {}),
+      draftReview: {
+        ...((thesis || {}).underwriting?.draftReview || {}),
+        paper: [{ type: 'text', value: noteToPaperHtml(note) }],
+      },
+    },
+  };
+  await saveThesisReconciled(ticker, updated);
+}
 
 function autoExpand(el) {
   if (!el) return;
@@ -811,6 +853,15 @@ export default function WatchlistPage() {
     if (movingTicker) return;
     setMovingTicker(ticker);
     try {
+      // Promoting into Draft & Review seeds the Investment Overview from the "Why
+      // I'm interested" note so those initial thoughts aren't retyped (issue #76).
+      // Best-effort: a failure here must never block the stage move.
+      if (newStage === 'draft') {
+        const note = (stocks.find(s => s.ticker === ticker)?.note || '').trim();
+        if (note) {
+          try { await seedInvestmentOverviewFromNote(ticker, note); } catch {}
+        }
+      }
       await saveStocks(stocks.map(s =>
         s.ticker === ticker ? { ...s, stage: newStage } : s
       ));
