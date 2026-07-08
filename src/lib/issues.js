@@ -84,25 +84,57 @@ export function filterIssues(issues, { query = '', labelFilter = [] } = {}) {
   });
 }
 
+// Archiving (migration 033) is orthogonal to open/resolved: an archived issue
+// is tucked into the Archived tab and hidden from Open / Closed / Dev. A row
+// written before the migration simply has no archived_at and reads as active.
+export function isArchived(issue) {
+  return !!issue?.archived_at;
+}
+
 export function countOpenIssues(issues) {
-  return issues.filter(issue => issue.status !== 'resolved').length;
+  return issues.filter(issue => issue.status !== 'resolved' && !isArchived(issue)).length;
+}
+
+export function countClosedIssues(issues) {
+  return issues.filter(issue => issue.status === 'resolved' && !isArchived(issue)).length;
+}
+
+export function countArchivedIssues(issues) {
+  return issues.filter(isArchived).length;
 }
 
 const byDate = (key, direction) => (a, b) => direction * (new Date(a[key] || 0) - new Date(b[key] || 0));
 const byComments = (direction) => (a, b) => direction * ((a.comments || []).length - (b.comments || []).length);
 
 export function getVisibleIssues(issues, { tab = 'open', sort = 'newest' } = {}) {
+  // The Archived tab shows every archived issue (open or resolved), newest
+  // archived first — a plain, chronological shelf.
+  if (tab === 'archived') {
+    return [...issues].filter(isArchived).sort(byDate('archived_at', -1));
+  }
+
   if (tab === 'dev') {
     const priority = issue => issue.priority || 99;
     const sortOrder = issue => issue.sort_order ?? 0;
     return [...issues]
-      .filter(issue => issue.status !== 'resolved')
+      .filter(issue => issue.status !== 'resolved' && !isArchived(issue))
       .sort((a, b) => priority(a) - priority(b)
         || sortOrder(a) - sortOrder(b)
         || (new Date(b.created_at || 0) - new Date(a.created_at || 0)));
   }
 
-  const list = issues.filter(issue => (tab === 'closed' ? issue.status === 'resolved' : issue.status !== 'resolved'));
+  const list = issues.filter(issue => !isArchived(issue)
+    && (tab === 'closed' ? issue.status === 'resolved' : issue.status !== 'resolved'));
+
+  // The Closed tab is always ordered by when the issue was closed — most
+  // recently closed at the top, longest-closed at the bottom (fall back to
+  // updated_at for legacy rows with no resolved_at). This is a fixed order, so
+  // the sort control doesn't apply here (the list header shows "Recently closed").
+  if (tab === 'closed') {
+    return [...list].sort((a, b) =>
+      new Date(b.resolved_at || b.updated_at || 0) - new Date(a.resolved_at || a.updated_at || 0));
+  }
+
   const cmp = {
     newest: byDate('created_at', -1),
     oldest: byDate('created_at', 1),

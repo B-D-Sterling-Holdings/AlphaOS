@@ -11,7 +11,7 @@ import {
   Legend,
 } from 'chart.js';
 import { Scatter } from 'react-chartjs-2';
-import { Settings, Target, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2, ArrowRight } from 'lucide-react';
+import { Settings, Target, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2, ArrowRight, ChevronDown } from 'lucide-react';
 import {
   DEFAULT_RISK_FACTOR_WEIGHTS,
   RISK_FACTORS,
@@ -58,8 +58,11 @@ export default function AllocationPage() {
   const [rbCash, setRbCash] = useState('');
   const [rbTargetCashPercent, setRbTargetCashPercent] = useState('0');
   const [rbTransactionCostPct] = useState('0');
+  const [rbRoundedShares, setRbRoundedShares] = useState(false);
   const [rbPlan, setRbPlan] = useState(null);
   const [rbError, setRbError] = useState('');
+  const [rbGenerating, setRbGenerating] = useState(false);
+  const [rbTaxOpen, setRbTaxOpen] = useState(false);
   const [rbTaxInputs, setRbTaxInputs] = useState({});
   const [rbLoadingPortfolio, setRbLoadingPortfolio] = useState(false);
   const [syncingWeights, setSyncingWeights] = useState(false);
@@ -211,6 +214,7 @@ export default function AllocationPage() {
           ticker: h.ticker,
           currentValue: value > 0 ? value.toFixed(2) : '',
           targetWeight: savedTargets?.[h.ticker] ?? '',
+          price: price > 0 ? price.toFixed(2) : '',
         });
       });
 
@@ -262,6 +266,7 @@ export default function AllocationPage() {
             ticker: h.ticker,
             currentValue: value > 0 ? value.toFixed(2) : '',
             targetWeight: targetFor(h.ticker),
+            price: price > 0 ? price.toFixed(2) : '',
           });
         });
       }
@@ -286,10 +291,14 @@ export default function AllocationPage() {
     }
   }, [scheme]);
 
-  // Load portfolio into rebalancer on mount
+  // Load portfolio into rebalancer once the saved config is in — otherwise this
+  // races the config fetch and reads an empty rbSavedTargetsRef, so target % come
+  // back blank until you click reset. Waiting for `loaded` guarantees the saved
+  // targets (and any active scheme) are available before we build the rows.
   useEffect(() => {
+    if (!loaded) return;
     loadPortfolioIntoRebalancer();
-  }, [loadPortfolioIntoRebalancer]);
+  }, [loaded, loadPortfolioIntoRebalancer]);
 
   // --- Scheme workflow ---
   // Optimizer → save the typed weights as a scheme and move to Market Confidence.
@@ -552,19 +561,59 @@ export default function AllocationPage() {
     setRbHoldings((prev) => [...prev, createRebalanceRow()]);
   };
 
+  // Snapshot the target weights (as fractions summing to 1) at generation time so
+  // Projected Allocation can show target-vs-actual even if the rows are later edited.
+  const buildTargetFractions = () => {
+    const map = {};
+    let sum = 0;
+    rbHoldings.forEach((row) => {
+      const ticker = row.ticker.trim().toUpperCase();
+      const weight = parseNumber(row.targetWeight);
+      if (ticker && weight) { map[ticker] = (map[ticker] || 0) + weight; sum += weight; }
+    });
+    const cash = parseNumber(rbTargetCashPercent);
+    if (cash) { map.CASH = (map.CASH || 0) + cash; sum += cash; }
+    if (sum > 0) Object.keys(map).forEach((k) => { map[k] = map[k] / sum; });
+    return map;
+  };
+
   const handleGenerateRbPlan = () => {
+    if (rbGenerating) return;
     setRbError('');
     setRbPlan(null);
-    const { error, plan } = buildRebalancePlanFromRows({
-      holdings: rbHoldings,
-      cash: rbCash,
-      targetCashPercent: rbTargetCashPercent,
-      transactionCostPct: rbTransactionCostPct,
-      totalTargetPercent: rbTotalTargetPercent,
-    });
-    if (error) { setRbError(error); return; }
-    setRbPlan(plan);
+    setRbTaxOpen(false);
+    setRbGenerating(true);
+    const targetFractions = buildTargetFractions();
+    // Defer the (synchronous) solve a tick so the button's loading state paints.
+    setTimeout(() => {
+      const { error, plan } = buildRebalancePlanFromRows({
+        holdings: rbHoldings,
+        cash: rbCash,
+        targetCashPercent: rbTargetCashPercent,
+        transactionCostPct: rbTransactionCostPct,
+        totalTargetPercent: rbTotalTargetPercent,
+        roundedShares: rbRoundedShares,
+      });
+      setRbGenerating(false);
+      if (error) { setRbError(error); return; }
+      setRbPlan({ ...plan, targetWeights: targetFractions });
+    }, 180);
   };
+
+  // Unified, ordered trade list — sells first (they fund the buys), then buys,
+  // each sorted by size. Structured so the UI can show shares, dollars, and order
+  // without parsing instruction text. Notes/warnings are intentionally dropped.
+  const rbTrades = useMemo(() => {
+    if (!rbPlan) return [];
+    const toRows = (dollars, shares, type) =>
+      Object.keys(dollars || {})
+        .map((ticker) => ({ type, ticker, dollars: dollars[ticker], shares: shares?.[ticker] }))
+        .sort((a, b) => b.dollars - a.dollars);
+    return [
+      ...toRows(rbPlan.sellDollars, rbPlan.sellShares, 'sell'),
+      ...toRows(rbPlan.buyDollars, rbPlan.buyShares, 'buy'),
+    ];
+  }, [rbPlan]);
 
   const runMonteCarloSimulation = () => {
     setSimulationError('');
@@ -1077,15 +1126,30 @@ export default function AllocationPage() {
                   <span className="text-sm text-gray-400">%</span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={resetRebalancerToScheme}
-                disabled={rbLoadingPortfolio}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
-                title="Reset: current values from holdings, target weights from the scheme"
-              >
-                <RotateCcw size={15} className={rbLoadingPortfolio ? 'animate-spin' : ''} />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={rbRoundedShares}
+                  onClick={() => { setRbRoundedShares((v) => !v); setRbPlan(null); }}
+                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-[13px] font-medium transition-colors ${rbRoundedShares ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-500 hover:text-gray-700'}`}
+                  title="Trade in whole shares: solve for the nearest share count that lands each holding closest to its target weight"
+                >
+                  <span className={`w-8 h-[18px] rounded-full flex items-center transition-colors ${rbRoundedShares ? 'bg-emerald-500 justify-end' : 'bg-gray-300 justify-start'} px-0.5`}>
+                    <span className="w-3.5 h-3.5 bg-white rounded-full shadow-sm" />
+                  </span>
+                  Whole shares
+                </button>
+                <button
+                  type="button"
+                  onClick={resetRebalancerToScheme}
+                  disabled={rbLoadingPortfolio}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+                  title="Reset: current values from holdings, target weights from the scheme"
+                >
+                  <RotateCcw size={15} className={rbLoadingPortfolio ? 'animate-spin' : ''} />
+                </button>
+              </div>
             </div>
 
             {rbLoadingPortfolio ? (
@@ -1117,6 +1181,19 @@ export default function AllocationPage() {
                         placeholder="0"
                       />
                     </div>
+                    {rbRoundedShares && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Price</span>
+                        <span className="text-sm text-gray-400">$</span>
+                        <input
+                          type="number" min="0" step="0.01"
+                          value={row.price}
+                          onChange={(e) => updateRbHolding(row.id, 'price', e.target.value)}
+                          className="w-20 text-[15px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
+                          placeholder="0"
+                        />
+                      </div>
+                    )}
                     <div className="flex items-center gap-1.5">
                       <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Current</span>
                       <span className="w-16 text-right text-[15px] font-mono tabular-nums text-gray-500">
@@ -1161,10 +1238,20 @@ export default function AllocationPage() {
               <button
                 type="button"
                 onClick={handleGenerateRbPlan}
-                className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-[15px] font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+                disabled={rbGenerating}
+                className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-[15px] font-semibold hover:bg-emerald-700 active:scale-95 transition-all shadow-sm disabled:opacity-80 disabled:cursor-wait"
               >
-                <Zap className="w-4 h-4" />
-                Rebalance
+                {rbGenerating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Rebalancing…
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-4 h-4" />
+                    Rebalance
+                  </>
+                )}
               </button>
             </div>
 
@@ -1172,83 +1259,102 @@ export default function AllocationPage() {
 
             {rbPlan && (
               <div className="mt-8 space-y-4 animate-fade-in-up">
-                {/* Trading instructions */}
-                {rbPlan.steps.length > 0 ? (
-                  <div className="space-y-1.5">
-                    {rbPlan.steps.map((step, index) => {
-                      const styles = {
-                        buy: 'border-l-emerald-400 bg-emerald-50/60 text-emerald-800',
-                        sell: 'border-l-rose-400 bg-rose-50/60 text-rose-800',
-                        note: 'border-l-gray-300 bg-gray-50 text-gray-600',
-                      };
-                      return (
-                        <div key={`${step.text}-${index}`} className={`border-l-[3px] rounded-r-lg px-4 py-2.5 text-[15px] ${styles[step.type] || styles.note}`}>{step.text}</div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-[15px] text-gray-400 py-2">No trades required. Portfolio is already balanced.</p>
-                )}
-
-                {/* Buy / Sell side by side */}
-                {(Object.keys(rbPlan.buyDollars).length > 0 || Object.keys(rbPlan.sellDollars).length > 0) && (
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                      <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Buys</h4>
-                      {Object.keys(rbPlan.buyDollars).length === 0 ? (
-                        <p className="text-[15px] text-gray-400">None</p>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {Object.entries(rbPlan.buyDollars).map(([ticker, value]) => (
-                            <div key={ticker} className="flex items-center justify-between text-[15px]">
-                              <span className="font-medium text-gray-700">{ticker}</span>
-                              <span className="font-semibold text-emerald-600">{formatCurrency(value)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                      <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Sells</h4>
-                      {Object.keys(rbPlan.sellDollars).length === 0 ? (
-                        <p className="text-[15px] text-gray-400">None</p>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {Object.entries(rbPlan.sellDollars).map(([ticker, value]) => (
-                            <div key={ticker} className="flex items-center justify-between text-[15px]">
-                              <span className="font-medium text-gray-700">{ticker}</span>
-                              <span className="font-semibold text-rose-600">{formatCurrency(value)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Projected allocation — compact bar rows */}
+                {/* Trade plan — one ordered list: sells first (they fund the buys), then buys */}
                 <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                  <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Projected Allocation</h4>
-                  <div className="space-y-1.5">
-                    {Object.entries(rbPlan.finalValues)
-                      .sort(([, , ], [, , ]) => 0)
-                      .sort(([a], [b]) => rbPlan.finalWeights[b] - rbPlan.finalWeights[a])
-                      .map(([ticker, value]) => (
-                        <div key={ticker} className="flex items-center justify-between text-[15px]">
-                          <span className="font-medium text-gray-700 w-16">{ticker}</span>
-                          <div className="flex-1 mx-3 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                            <div className="h-full bg-emerald-400 rounded-full" style={{ width: `${Math.min(rbPlan.finalWeights[ticker] * 100, 100)}%` }} />
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Trade Plan</h4>
+                    {rbTrades.length > 0 && (
+                      <span className="text-[12px] text-gray-400">In order — sells fund the buys</span>
+                    )}
+                  </div>
+                  {rbTrades.length === 0 ? (
+                    <p className="text-[15px] text-gray-400 py-1">No trades required. Portfolio is already balanced.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {rbTrades.map((trade, index) => {
+                        const isSell = trade.type === 'sell';
+                        return (
+                          <div key={`${trade.type}-${trade.ticker}`} className="flex items-center gap-3 rounded-xl px-3 py-2.5 hover:bg-gray-50 transition-colors">
+                            <span className="w-5 shrink-0 text-[13px] font-mono tabular-nums text-gray-300 text-right">{index + 1}</span>
+                            <span className={`w-12 shrink-0 text-center text-[11px] font-bold uppercase tracking-wide rounded-md py-0.5 ${isSell ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                              {isSell ? 'Sell' : 'Buy'}
+                            </span>
+                            <span className="text-[15px] font-bold text-gray-900 w-20">{trade.ticker}</span>
+                            {rbPlan.mode === 'shares' && (
+                              <span className="text-[15px] font-semibold text-gray-600 tabular-nums">
+                                {trade.shares} <span className="text-[12px] font-normal text-gray-400">{trade.shares === 1 ? 'share' : 'shares'}</span>
+                              </span>
+                            )}
+                            <span className={`ml-auto text-[15px] font-semibold tabular-nums ${isSell ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {isSell ? '−' : '+'}{formatCurrency(trade.dollars)}
+                            </span>
                           </div>
-                          <span className="text-sm text-gray-500 w-20 text-right">{(rbPlan.finalWeights[ticker] * 100).toFixed(1)}%</span>
-                          <span className="text-sm text-gray-400 w-24 text-right">{formatCurrency(value)}</span>
-                        </div>
-                      ))}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Projected allocation — actual bar with a target marker + target-vs-now columns */}
+                <div className="bg-white border border-gray-100 rounded-2xl p-4">
+                  <div className="flex items-center mb-3">
+                    <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Projected Allocation</h4>
+                    <div className="ml-auto flex items-center text-[11px] uppercase tracking-wide text-gray-400">
+                      <span className="w-16 text-right">Target</span>
+                      <span className="w-16 text-right">Now</span>
+                      <span className="w-24 text-right">Value</span>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {Object.entries(rbPlan.finalValues)
+                      .sort(([a], [b]) => rbPlan.finalWeights[b] - rbPlan.finalWeights[a])
+                      .map(([ticker, value]) => {
+                        const actualPct = rbPlan.finalWeights[ticker] * 100;
+                        const targetFrac = rbPlan.targetWeights?.[ticker];
+                        const targetPct = targetFrac != null ? targetFrac * 100 : null;
+                        return (
+                          <div key={ticker} className="flex items-center text-[15px]">
+                            <span className="font-medium text-gray-700 w-16 shrink-0">{ticker}</span>
+                            <div className="relative flex-1 mx-3 h-2">
+                              <div className="absolute inset-0 bg-gray-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-emerald-400 rounded-full" style={{ width: `${Math.min(actualPct, 100)}%` }} />
+                              </div>
+                              {targetPct != null && (
+                                <div
+                                  className="absolute -top-0.5 -bottom-0.5 w-[2px] bg-gray-700 rounded"
+                                  style={{ left: `${Math.min(targetPct, 100)}%` }}
+                                  title={`Target ${targetPct.toFixed(1)}%`}
+                                />
+                              )}
+                            </div>
+                            <span className="text-sm text-gray-400 w-16 text-right tabular-nums shrink-0">{targetPct != null ? `${targetPct.toFixed(1)}%` : '—'}</span>
+                            <span className="text-sm font-semibold text-gray-700 w-16 text-right tabular-nums shrink-0">{actualPct.toFixed(1)}%</span>
+                            <span className="text-sm text-gray-400 w-24 text-right tabular-nums shrink-0">{formatCurrency(value)}</span>
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
 
-                {/* Tax impact */}
-                <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                  <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Tax Impact</h4>
+                {/* Tax impact — collapsible; summary always visible */}
+                <div className="bg-white border border-gray-100 rounded-2xl overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setRbTaxOpen((o) => !o)}
+                    className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Tax Impact</span>
+                      {rbTaxBreakdown.rows.length === 0 ? (
+                        <span className="text-[13px] text-gray-400">No sells</span>
+                      ) : (
+                        <span className="text-[13px] font-semibold text-rose-600">{formatCurrency(Math.max(0, rbTaxBreakdown.totalTax))} tax owed</span>
+                      )}
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${rbTaxOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {rbTaxOpen && (
+                  <div className="px-4 pb-4 border-t border-gray-100 pt-4">
                   {rbTaxBreakdown.rows.length === 0 ? (
                     <p className="text-[15px] text-gray-400">No sells — no tax impact.</p>
                   ) : (<>
@@ -1322,6 +1428,8 @@ export default function AllocationPage() {
                       ))}
                     </div>
                   </>)}
+                  </div>
+                  )}
                 </div>
               </div>
             )}

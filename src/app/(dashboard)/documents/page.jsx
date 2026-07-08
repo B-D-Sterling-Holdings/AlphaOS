@@ -3,43 +3,84 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   FolderOpen, Upload, Trash2, Search, FileText, File, X,
-  Image as ImageIcon, UploadCloud, ChevronRight, ExternalLink,
+  Image as ImageIcon, UploadCloud, ChevronRight,
   FileSpreadsheet, BookOpen, Mail, Archive, Scale, Pencil, Check, ChevronDown, Download,
+  Plus, Settings2, Briefcase, Landmark, Building2, BarChart3, DollarSign, PieChart,
+  Newspaper, ClipboardList, Shield, Folder, FolderUp,
 } from 'lucide-react';
+import {
+  COLOR_MAP, COLOR_OPTIONS, CATEGORY_ICON_NAMES, DEFAULT_ICON,
+  EQUITY_RESEARCH_VALUES, DEFAULT_CATEGORIES, slugify, categoryOptions,
+} from '@/lib/documentCategories';
 
-const EQUITY_RESEARCH_SUBS = [
-  { value: 'equity_research_report', label: 'Research Reports' },
-  { value: 'equity_primer', label: 'Equity Primers' },
-  { value: 'position_review_report', label: 'Position Review Reports' },
-  { value: 'equity_research_other', label: 'Other Research' },
-];
-
-const EQUITY_RESEARCH_VALUES = new Set(EQUITY_RESEARCH_SUBS.map(s => s.value).concat('equity_research'));
-
-const CATEGORIES = [
-  { value: 'shareholder_letter', label: 'Shareholder Letters', icon: Mail, color: 'blue' },
-  { value: 'equity_research', label: 'Equity Research', icon: BookOpen, color: 'emerald', subs: EQUITY_RESEARCH_SUBS },
-  { value: 'investor_memo', label: 'Investor Memos', icon: FileText, color: 'violet' },
-  { value: 'financial_model', label: 'Financial Models', icon: FileSpreadsheet, color: 'amber' },
-  { value: 'legal', label: 'Legal', icon: Scale, color: 'indigo' },
-  { value: 'tax', label: 'Tax', icon: FileText, color: 'rose' },
-  { value: 'other', label: 'Other', icon: Archive, color: 'gray' },
-];
-
-// All flat category values for selects
-const ALL_CATEGORY_OPTIONS = CATEGORIES.flatMap(c =>
-  c.subs ? c.subs.map(s => ({ value: s.value, label: `${c.label} — ${s.label}` })) : [{ value: c.value, label: c.label }]
-);
-
-const COLOR_MAP = {
-  blue:    { badge: 'bg-blue-50 text-blue-700 border-blue-200', dot: 'bg-blue-500', hover: 'hover:bg-blue-50', active: 'bg-blue-50 border-blue-200 text-blue-700' },
-  emerald: { badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', hover: 'hover:bg-emerald-50', active: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-  violet:  { badge: 'bg-violet-50 text-violet-700 border-violet-200', dot: 'bg-violet-500', hover: 'hover:bg-violet-50', active: 'bg-violet-50 border-violet-200 text-violet-700' },
-  amber:   { badge: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500', hover: 'hover:bg-amber-50', active: 'bg-amber-50 border-amber-200 text-amber-700' },
-  indigo:  { badge: 'bg-indigo-50 text-indigo-700 border-indigo-200', dot: 'bg-indigo-500', hover: 'hover:bg-indigo-50', active: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
-  rose:    { badge: 'bg-rose-50 text-rose-700 border-rose-200', dot: 'bg-rose-500', hover: 'hover:bg-rose-50', active: 'bg-rose-50 border-rose-200 text-rose-700' },
-  gray:    { badge: 'bg-gray-100 text-gray-600 border-gray-200', dot: 'bg-gray-400', hover: 'hover:bg-gray-50', active: 'bg-gray-100 border-gray-300 text-gray-700' },
+// Map the whitelisted icon names (see documentCategories.js) to lucide
+// components. Keep this in sync with CATEGORY_ICON_NAMES.
+const CATEGORY_ICONS = {
+  FileText, Mail, BookOpen, FileSpreadsheet, Scale, Archive,
+  Briefcase, Landmark, Building2, BarChart3, DollarSign, PieChart,
+  Newspaper, ClipboardList, Shield, Folder,
 };
+
+const iconFor = (name) => CATEGORY_ICONS[name] || CATEGORY_ICONS[DEFAULT_ICON];
+
+// OS/editor junk that shows up in folder uploads — never worth storing.
+const IGNORED_FILE_NAMES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+const isUploadable = (file) => file && file.name && file.size > 0 && !IGNORED_FILE_NAMES.has(file.name);
+
+// Folder-relative path when we have one (folder <input> sets webkitRelativePath;
+// drag-dropped folders get _relPath from the traversal below), else the bare name.
+const relPathOf = (file) => file.webkitRelativePath || file._relPath || file.name;
+
+// Recursively collect File objects from a webkitGetAsEntry() filesystem entry,
+// tagging each with its folder-relative path for display in the staging list.
+function readEntryFiles(entry, prefix = '') {
+  if (entry.isFile) {
+    return new Promise((resolve) => {
+      entry.file(
+        (file) => {
+          try { Object.defineProperty(file, '_relPath', { value: prefix + file.name }); } catch {}
+          resolve([file]);
+        },
+        () => resolve([]),
+      );
+    });
+  }
+  if (entry.isDirectory) {
+    const reader = entry.createReader();
+    return new Promise((resolve) => {
+      const collected = [];
+      // readEntries returns at most ~100 entries per call, so drain it in a loop.
+      const readBatch = () => reader.readEntries(
+        async (batch) => {
+          if (!batch.length) {
+            const nested = await Promise.all(collected.map((e) => readEntryFiles(e, `${prefix}${entry.name}/`)));
+            resolve(nested.flat());
+            return;
+          }
+          collected.push(...batch);
+          readBatch();
+        },
+        () => resolve([]),
+      );
+      readBatch();
+    });
+  }
+  return Promise.resolve([]);
+}
+
+// Extract files from a drop, descending into any dropped folders. Entries are
+// captured synchronously — the DataTransferItemList is emptied after the event tick.
+async function filesFromDataTransfer(dataTransfer) {
+  const items = dataTransfer.items ? Array.from(dataTransfer.items) : [];
+  const entries = items
+    .map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+    .filter(Boolean);
+  if (entries.length) {
+    const nested = await Promise.all(entries.map((entry) => readEntryFiles(entry)));
+    return nested.flat();
+  }
+  return Array.from(dataTransfer.files || []);
+}
 
 function formatFileSize(bytes) {
   if (!bytes) return '';
@@ -109,6 +150,196 @@ function fileIcon(doc) {
   };
 }
 
+/**
+ * Manage Sections dialog — add / rename / recolor / re-icon / delete the section
+ * types that make up the Documents sidebar. Edits happen on a local draft; the
+ * whole list is persisted on Save. Built-in sections may be restyled but not
+ * deleted (so core documents are never orphaned), and the Equity Research group's
+ * sub-sections are fixed.
+ */
+function ManageSectionsModal({ initial, counts, onClose, onSave }) {
+  const [draft, setDraft] = useState(() => initial.map(c => ({ ...c })));
+  const [picker, setPicker] = useState(null); // { idx, type: 'color' | 'icon' } | null
+  const [saving, setSaving] = useState(false);
+
+  const update = (idx, patch) => setDraft(d => d.map((c, i) => (i === idx ? { ...c, ...patch } : c)));
+  const remove = (idx) => { setPicker(null); setDraft(d => d.filter((_, i) => i !== idx)); };
+  const add = () => setDraft(d => [...d, { value: '', label: '', icon: DEFAULT_ICON, color: 'gray', isNew: true }]);
+
+  const docCount = (cat) => {
+    if (cat.subs) return cat.subs.reduce((n, s) => n + (counts[s.value] || 0), 0) + (counts[cat.value] || 0);
+    return counts[cat.value] || 0;
+  };
+
+  const save = async () => {
+    setSaving(true);
+    // Existing values seed the "taken" set so a freshly-slugged section can't
+    // collide with one further down the list.
+    const taken = draft.filter(c => c.value).map(c => c.value);
+    const cleaned = draft
+      .map(({ isNew, ...c }) => {
+        const label = (c.label || '').trim();
+        if (!label) return null; // drop blank rows
+        let value = c.value;
+        if (!value) { value = slugify(label, taken); taken.push(value); }
+        return { ...c, value, label };
+      })
+      .filter(Boolean);
+    await onSave(cleaned);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[10001] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-lg max-h-[85vh] flex flex-col bg-white rounded-3xl shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Manage sections</h2>
+            <p className="text-xs text-gray-400 mt-0.5">Add, rename, recolor, or remove document sections</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Rows */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1.5">
+          {draft.map((cat, idx) => {
+            const colors = COLOR_MAP[cat.color] || COLOR_MAP.gray;
+            const Icon = iconFor(cat.icon);
+            const n = docCount(cat);
+            return (
+              <div key={cat.value || `new-${idx}`} className="rounded-xl border border-gray-100 bg-gray-50/60 px-2.5 py-2">
+                <div className="flex items-center gap-2">
+                  {/* Icon picker toggle */}
+                  <div className="relative shrink-0">
+                    <button
+                      onClick={() => setPicker(p => (p?.idx === idx && p.type === 'icon' ? null : { idx, type: 'icon' }))}
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center border transition-colors ${colors.badge}`}
+                      title="Change icon"
+                    >
+                      <Icon size={16} />
+                    </button>
+                    {picker?.idx === idx && picker.type === 'icon' && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setPicker(null)} />
+                        <div className="absolute top-full left-0 mt-1 z-20 w-52 p-2 rounded-xl border border-gray-200 bg-white shadow-xl grid grid-cols-6 gap-1">
+                          {CATEGORY_ICON_NAMES.map(name => {
+                            const IconOpt = iconFor(name);
+                            return (
+                              <button
+                                key={name}
+                                onClick={() => { update(idx, { icon: name }); setPicker(null); }}
+                                className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors ${cat.icon === name ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                                title={name}
+                              >
+                                <IconOpt size={15} />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Color picker toggle */}
+                  <div className="relative shrink-0">
+                    <button
+                      onClick={() => setPicker(p => (p?.idx === idx && p.type === 'color' ? null : { idx, type: 'color' }))}
+                      className="w-6 h-6 rounded-full border border-gray-200 flex items-center justify-center hover:scale-110 transition-transform"
+                      title="Change color"
+                    >
+                      <span className={`w-3.5 h-3.5 rounded-full ${colors.dot}`} />
+                    </button>
+                    {picker?.idx === idx && picker.type === 'color' && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setPicker(null)} />
+                        <div className="absolute top-full left-0 mt-1 z-20 p-2 rounded-xl border border-gray-200 bg-white shadow-xl grid grid-cols-5 gap-1.5">
+                          {COLOR_OPTIONS.map(name => (
+                            <button
+                              key={name}
+                              onClick={() => { update(idx, { color: name }); setPicker(null); }}
+                              className={`w-6 h-6 rounded-full flex items-center justify-center ${cat.color === name ? 'ring-2 ring-offset-1 ring-gray-900' : ''}`}
+                              title={name}
+                            >
+                              <span className={`w-4 h-4 rounded-full ${(COLOR_MAP[name] || COLOR_MAP.gray).dot}`} />
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Label */}
+                  <input
+                    type="text"
+                    value={cat.label}
+                    onChange={e => update(idx, { label: e.target.value })}
+                    placeholder="Section name…"
+                    autoFocus={cat.isNew}
+                    className="flex-1 min-w-0 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-all"
+                  />
+
+                  {/* Delete (custom sections only) */}
+                  {cat.builtin ? (
+                    <span className="w-8 h-8 shrink-0 flex items-center justify-center text-gray-300" title="Built-in section — can be restyled but not removed">
+                      <Shield size={13} />
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => remove(idx)}
+                      className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                      title="Delete section"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+
+                {cat.subs && (
+                  <p className="text-[11px] text-gray-400 mt-1.5 ml-11">
+                    {cat.subs.length} fixed sub-sections
+                  </p>
+                )}
+                {!cat.builtin && n > 0 && (
+                  <p className="text-[11px] text-amber-600 mt-1.5 ml-11">
+                    Deleting keeps {n} document{n !== 1 ? 's' : ''}, shown uncategorized
+                  </p>
+                )}
+              </div>
+            );
+          })}
+
+          <button
+            onClick={add}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-dashed border-gray-300 text-sm font-semibold text-gray-500 hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50/40 transition-all"
+          >
+            <Plus size={15} /> Add section
+          </button>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-100 shrink-0">
+          <button onClick={onClose} className="text-sm font-semibold text-gray-500 bg-gray-100 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 px-5 py-2 rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+          >
+            {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check size={14} />}
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -125,6 +356,13 @@ export default function DocumentsPage() {
   const [tickerDropdownOpen, setTickerDropdownOpen] = useState(false);
   const tickerDropdownRef = useRef(null);
 
+  // Section types (categories) — editable per tenant, loaded from the API and
+  // seeded from defaults so the sidebar renders instantly before the fetch lands.
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [manageOpen, setManageOpen] = useState(false);
+
+  const allCategoryOptions = useMemo(() => categoryOptions(categories), [categories]);
+
   // Upload form state
   const [pendingFiles, setPendingFiles] = useState([]);
   const [uploadTitle, setUploadTitle] = useState('');
@@ -132,6 +370,7 @@ export default function DocumentsPage() {
   const [uploadTicker, setUploadTicker] = useState('');
   const [uploadNotes, setUploadNotes] = useState('');
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -143,19 +382,57 @@ export default function DocumentsPage() {
     }
   }, []);
 
-  useEffect(() => { loadDocuments(); }, [loadDocuments]);
+  const loadCategories = useCallback(async () => {
+    try {
+      const res = await fetch('/api/documents/categories');
+      const data = await res.json();
+      if (Array.isArray(data.categories) && data.categories.length) {
+        setCategories(data.categories);
+      }
+    } catch {}
+  }, []);
+
+  // Persist the full list and adopt the server's normalized version.
+  const saveCategories = useCallback(async (next) => {
+    setCategories(next); // optimistic
+    try {
+      const res = await fetch('/api/documents/categories', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categories: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const saved = Array.isArray(data.categories) ? data.categories : next;
+      setCategories(saved);
+      // If the active filter pointed at a section that was just deleted, drop it
+      // so the document list doesn't get stuck showing nothing.
+      setFilterCategory(prev => {
+        if (!prev) return prev;
+        const exists = saved.some(c => c.value === prev || (c.subs || []).some(s => s.value === prev));
+        return exists ? prev : '';
+      });
+      return saved;
+    } catch {
+      return next;
+    }
+  }, []);
+
+  useEffect(() => { loadDocuments(); loadCategories(); }, [loadDocuments, loadCategories]);
 
   const handleFilesSelected = (files) => {
-    if (!files?.length) return;
+    const list = Array.from(files || []).filter(isUploadable);
+    if (!list.length) return;
     setUploadError('');
-    setPendingFiles(Array.from(files));
-    setUploadTitle(files.length === 1 ? files[0].name.replace(/\.[^/.]+$/, '') : '');
+    setPendingFiles(list);
+    setUploadTitle(list.length === 1 ? list[0].name.replace(/\.[^/.]+$/, '') : '');
   };
 
-  const handleDrop = (e) => {
+  const handleDrop = async (e) => {
     e.preventDefault();
     setDragOver(false);
-    handleFilesSelected(e.dataTransfer.files);
+    // Descend into dropped folders; falls back to a flat file list otherwise.
+    const files = await filesFromDataTransfer(e.dataTransfer);
+    handleFilesSelected(files);
   };
 
   const handleUpload = async () => {
@@ -198,6 +475,7 @@ export default function DocumentsPage() {
     setUploadTicker('');
     setUploadNotes('');
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (folderInputRef.current) folderInputRef.current.value = '';
     setUploading(false);
   };
 
@@ -208,6 +486,7 @@ export default function DocumentsPage() {
     setUploadTicker('');
     setUploadNotes('');
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (folderInputRef.current) folderInputRef.current.value = '';
   };
 
   const handleDownload = async (doc) => {
@@ -387,8 +666,8 @@ export default function DocumentsPage() {
         <div className="fixed inset-0 z-40 bg-emerald-500/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
           <div className="bg-white rounded-3xl shadow-2xl border-2 border-dashed border-emerald-400 px-16 py-12 text-center">
             <UploadCloud size={48} className="text-emerald-500 mx-auto mb-3" />
-            <p className="text-lg font-bold text-gray-900">Drop files here</p>
-            <p className="text-sm text-gray-500 mt-1">They&apos;ll be added to your document hub</p>
+            <p className="text-lg font-bold text-gray-900">Drop files or folders here</p>
+            <p className="text-sm text-gray-500 mt-1">Every file inside a folder is added to your document hub</p>
           </div>
         </div>
       )}
@@ -403,15 +682,37 @@ export default function DocumentsPage() {
             <span>{formatFileSize(totalSize) || '0 B'} stored</span>
           </p>
         </div>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center gap-2 text-sm font-semibold text-white bg-gray-900 hover:bg-gray-800 px-5 py-2.5 rounded-xl transition-all shadow-sm hover:shadow-md"
-        >
-          <Upload size={15} />
-          Upload
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => folderInputRef.current?.click()}
+            className="flex items-center gap-2 text-sm font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 hover:border-gray-300 px-4 py-2.5 rounded-xl transition-all shadow-sm"
+            title="Upload every file inside a folder"
+          >
+            <FolderUp size={15} />
+            Upload folder
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 text-sm font-semibold text-white bg-gray-900 hover:bg-gray-800 px-5 py-2.5 rounded-xl transition-all shadow-sm hover:shadow-md"
+          >
+            <Upload size={15} />
+            Upload
+          </button>
+        </div>
         <input
           ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={e => handleFilesSelected(e.target.files)}
+        />
+        {/* Folder picker: webkitdirectory is set imperatively so React reliably
+            passes it through; selecting a folder yields every nested file. */}
+        <input
+          ref={el => {
+            folderInputRef.current = el;
+            if (el) { el.setAttribute('webkitdirectory', ''); el.setAttribute('directory', ''); }
+          }}
           type="file"
           multiple
           className="hidden"
@@ -448,9 +749,9 @@ export default function DocumentsPage() {
             <div className="flex flex-wrap gap-2 mb-5">
               {pendingFiles.map((f, i) => (
                 <div key={i} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-1.5 text-sm">
-                  <File size={14} className="text-gray-400" />
-                  <span className="text-gray-700 font-medium truncate max-w-[200px]">{f.name}</span>
-                  <span className="text-gray-400 text-xs">{formatFileSize(f.size)}</span>
+                  <File size={14} className="text-gray-400 flex-shrink-0" />
+                  <span className="text-gray-700 font-medium truncate max-w-[260px]" title={relPathOf(f)}>{relPathOf(f)}</span>
+                  <span className="text-gray-400 text-xs flex-shrink-0">{formatFileSize(f.size)}</span>
                   <button
                     onClick={() => setPendingFiles(prev => prev.filter((_, j) => j !== i))}
                     className="text-gray-300 hover:text-red-500 transition-colors"
@@ -482,7 +783,7 @@ export default function DocumentsPage() {
                   onChange={e => setUploadCategory(e.target.value)}
                   className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-all"
                 >
-                  {ALL_CATEGORY_OPTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  {allCategoryOptions.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </select>
               </div>
               <div>
@@ -550,12 +851,12 @@ export default function DocumentsPage() {
             </button>
 
             <div className="mt-1 space-y-0.5">
-              {CATEGORIES.map(cat => {
+              {categories.map(cat => {
                 const count = categoryCounts[cat.value] || 0;
-                const colors = COLOR_MAP[cat.color];
+                const colors = COLOR_MAP[cat.color] || COLOR_MAP.gray;
                 const isActive = filterCategory === cat.value;
                 const isSubActive = cat.subs && cat.subs.some(s => filterCategory === s.value);
-                const Icon = cat.icon;
+                const Icon = iconFor(cat.icon);
                 const showSubs = cat.subs && (isActive || isSubActive);
                 return (
                   <div key={cat.value}>
@@ -603,6 +904,15 @@ export default function DocumentsPage() {
                 );
               })}
             </div>
+
+            {/* Manage section types */}
+            <button
+              onClick={() => setManageOpen(true)}
+              className="w-full mt-1 flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-50 border border-transparent transition-all"
+            >
+              <Settings2 size={15} />
+              Manage sections
+            </button>
           </div>
 
           {/* Ticker dropdown */}
@@ -687,18 +997,18 @@ export default function DocumentsPage() {
           ) : (
             <div className="space-y-2">
               {visibleDocs.map((doc, idx) => {
-                let cat = CATEGORIES.find(c => c.value === doc.category);
+                let cat = categories.find(c => c.value === doc.category);
                 let subLabel = null;
                 if (!cat) {
                   // Check if it's a subcategory
-                  for (const c of CATEGORIES) {
+                  for (const c of categories) {
                     if (c.subs) {
                       const sub = c.subs.find(s => s.value === doc.category);
                       if (sub) { cat = c; subLabel = sub.label; break; }
                     }
                   }
                 }
-                const colors = COLOR_MAP[cat?.color || 'gray'];
+                const colors = COLOR_MAP[cat?.color || 'gray'] || COLOR_MAP.gray;
                 const isDeleting = confirmDeleteId === doc.id;
                 const isEditing = editingId === doc.id;
                 const fileVisual = fileIcon(doc);
@@ -829,7 +1139,7 @@ export default function DocumentsPage() {
                                 onChange={(e) => setEditForm(f => ({ ...f, category: e.target.value }))}
                                 className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-all"
                               >
-                                {ALL_CATEGORY_OPTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                                {allCategoryOptions.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
                               </select>
                             </div>
                             <div>
@@ -878,6 +1188,15 @@ export default function DocumentsPage() {
           )}
         </div>
       </div>
+
+      {manageOpen && (
+        <ManageSectionsModal
+          initial={categories}
+          counts={categoryCounts}
+          onClose={() => setManageOpen(false)}
+          onSave={saveCategories}
+        />
+      )}
     </div>
   );
 }

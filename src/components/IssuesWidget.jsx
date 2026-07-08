@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   CircleDot, CheckCircle2, X, Plus, ArrowLeft, Trash2, MessageSquare,
   Search, ChevronDown, ChevronRight, ChevronUp, Check, ShieldCheck, Loader2,
-  RotateCcw, MessageSquarePlus, Tag, Wrench,
+  RotateCcw, Tag, Wrench, Archive, ArchiveRestore,
 } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 import RichTextArea from '@/components/RichTextArea';
@@ -15,6 +15,8 @@ import {
   ISSUE_PRIORITIES,
   ISSUE_SORTS,
   blocksToHtml,
+  countArchivedIssues,
+  countClosedIssues,
   countOpenIssues,
   createIssueRecord,
   deleteIssueById,
@@ -23,6 +25,7 @@ import {
   filterIssues,
   findIssueSortSwap,
   getVisibleIssues,
+  isArchived,
   isBodyEmpty,
   labelDef,
   mutateIssue,
@@ -249,7 +252,8 @@ export default function IssuesWidget() {
   );
 
   const openCount = useMemo(() => countOpenIssues(filtered), [filtered]);
-  const closedCount = filtered.length - openCount;
+  const closedCount = useMemo(() => countClosedIssues(filtered), [filtered]);
+  const archivedCount = useMemo(() => countArchivedIssues(filtered), [filtered]);
 
   const visible = useMemo(
     () => getVisibleIssues(filtered, { tab: effTab, sort }),
@@ -319,6 +323,21 @@ export default function IssuesWidget() {
         setCommentDraft(EMPTY_ISSUE_BODY);
         setComposerNonce(n => n + 1);
       }
+      await mutate({ id: selected.id, action });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Archive / unarchive (admin only). Tucks the issue into the Archived tab
+  // (or restores it). Keep the detail view open so the state flip is visible.
+  const setArchive = async (action) => {
+    if (!selected || busy) return;
+    setBusy(true);
+    setError('');
+    try {
       await mutate({ id: selected.id, action });
     } catch (e) {
       setError(e.message);
@@ -484,15 +503,11 @@ export default function IssuesWidget() {
           onClick={() => { setOpen(true); setView('list'); }}
           aria-label="Open feedback"
           title="Report a bug or share feedback"
-          className="fixed bottom-6 right-6 z-40 group flex items-center gap-2.5 pl-4 pr-5 py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/30 hover:shadow-xl hover:shadow-emerald-600/40 hover:-translate-y-0.5 transition-all duration-200"
+          className="fixed bottom-6 right-3 z-40 group flex items-center px-4 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/30 hover:shadow-xl hover:shadow-emerald-600/40 hover:-translate-y-0.5 transition-all duration-200"
         >
-          <MessageSquarePlus size={20} className="shrink-0" />
-          <span className="text-[15px] font-bold leading-none">Feedback</span>
-          <span className="hidden sm:block text-[11px] font-medium text-emerald-100/90 leading-none -ml-0.5 pl-2.5 border-l border-emerald-400/50">
-            Spotted a bug? Tell us
-          </span>
+          <span className="text-[13px] font-bold leading-none">Feedback</span>
           {totalOpen > 0 && (
-            <span className="absolute -top-1.5 -right-1.5 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center rounded-full bg-white text-emerald-700 text-[11px] font-bold shadow ring-2 ring-emerald-600 tabular-nums">
+            <span className="absolute -top-1.5 -right-1.5 min-w-[20px] h-[20px] px-1.5 flex items-center justify-center rounded-full bg-white text-emerald-700 text-[10px] font-bold shadow ring-2 ring-emerald-600 tabular-nums">
               {totalOpen}
             </span>
           )}
@@ -601,6 +616,17 @@ export default function IssuesWidget() {
                           {closedCount}
                         </span>
                       </button>
+                      <button
+                        onClick={() => setTab('archived')}
+                        title="Archived issues"
+                        className={`flex items-center gap-1.5 text-[13px] transition-colors ${effTab === 'archived' ? 'font-bold text-gray-900' : 'font-medium text-gray-500 hover:text-gray-800'}`}
+                      >
+                        <Archive size={15} className={effTab === 'archived' ? 'text-gray-700' : ''} />
+                        Archived
+                        <span className={`px-1.5 py-px rounded-full text-[11px] tabular-nums ${effTab === 'archived' ? 'bg-gray-200 text-gray-700' : 'bg-gray-200/60 text-gray-500'}`}>
+                          {archivedCount}
+                        </span>
+                      </button>
                       {isAdmin && (
                         <button
                           onClick={() => setTab('dev')}
@@ -656,6 +682,10 @@ export default function IssuesWidget() {
 
                       {effTab === 'dev' ? (
                         <span className="px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-400">Priority order</span>
+                      ) : effTab === 'archived' ? (
+                        <span className="px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-400">Recently archived</span>
+                      ) : effTab === 'closed' ? (
+                        <span className="px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-400">Recently closed</span>
                       ) : (
                         <div className="relative">
                           <button
@@ -692,22 +722,26 @@ export default function IssuesWidget() {
                     <div className="py-14 text-center px-6">
                       {effTab === 'closed'
                         ? <CheckCircle2 size={28} className="text-gray-300 mx-auto mb-3" />
-                        : effTab === 'dev'
-                          ? <Wrench size={28} className="text-gray-300 mx-auto mb-3" />
-                          : <CircleDot size={28} className="text-gray-300 mx-auto mb-3" />}
+                        : effTab === 'archived'
+                          ? <Archive size={28} className="text-gray-300 mx-auto mb-3" />
+                          : effTab === 'dev'
+                            ? <Wrench size={28} className="text-gray-300 mx-auto mb-3" />
+                            : <CircleDot size={28} className="text-gray-300 mx-auto mb-3" />}
                       <p className="text-[14px] font-bold text-gray-600">
                         {query.trim() || labelFilter.length
                           ? 'No results matched your search.'
                           : effTab === 'closed' ? (isAdmin ? "There aren't any closed issues." : "You don't have any closed tickets.")
-                            : effTab === 'dev' ? 'Nothing to triage yet.'
-                              : (isAdmin ? "There aren't any open issues." : "You haven't opened any tickets yet.")}
+                            : effTab === 'archived' ? 'Nothing archived yet.'
+                              : effTab === 'dev' ? 'Nothing to triage yet.'
+                                : (isAdmin ? "There aren't any open issues." : "You haven't opened any tickets yet.")}
                       </p>
                       <p className="text-[12px] text-gray-400 mt-1">
                         {query.trim() || labelFilter.length
                           ? 'Try clearing the search or label filters.'
                           : effTab === 'closed' ? (isAdmin ? 'Closed issues will appear here.' : 'Tickets the team resolves will appear here.')
-                            : effTab === 'dev' ? 'Every open issue shows up here with your priority and notes.'
-                              : (isAdmin ? 'Open one with the New issue button.' : 'Report a bug or request with the New issue button.')}
+                            : effTab === 'archived' ? 'Archived issues are tucked away here, out of the Open and Closed tabs.'
+                              : effTab === 'dev' ? 'Every open issue shows up here with your priority and notes.'
+                                : (isAdmin ? 'Open one with the New issue button.' : 'Report a bug or request with the New issue button.')}
                       </p>
                     </div>
                   ) : (
@@ -764,6 +798,7 @@ export default function IssuesWidget() {
                               {closed
                                 ? <>{issue.author || 'Unknown'} · closed {timeAgo(issue.resolved_at || issue.updated_at)}</>
                                 : <>{issue.author || 'Unknown'} opened {timeAgo(issue.created_at)}</>}
+                              {effTab === 'archived' && isArchived(issue) && <> · archived {timeAgo(issue.archived_at)}</>}
                             </p>
                           </div>
                           {(issue.comments || []).length > 0 && (
@@ -918,6 +953,11 @@ export default function IssuesWidget() {
                 </h3>
                 <div className="flex flex-wrap items-center gap-2.5 mt-2.5 pb-4 border-b border-gray-200">
                   <StateBadge status={selected.status} />
+                  {isArchived(selected) && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-semibold bg-gray-100 text-gray-600 ring-1 ring-inset ring-gray-300 shrink-0">
+                      <Archive size={13} /> Archived
+                    </span>
+                  )}
                   <p className="text-[12.5px] text-gray-500">
                     <span className="font-semibold text-gray-700">{selected.author || 'Unknown'}</span>
                     {' '}opened this issue {timeAgo(selected.created_at)}
@@ -1111,6 +1151,30 @@ export default function IssuesWidget() {
                           placeholder="Quick note on this issue (only admins see this)…"
                           className="w-full text-[12px] text-gray-700 border border-gray-200 rounded-lg px-2.5 py-2 bg-gray-50 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none transition-all"
                         />
+                      </div>
+                    )}
+
+                    {isAdmin && (
+                      <div className="mt-4 pt-3 border-t border-gray-200">
+                        {isArchived(selected) ? (
+                          <button
+                            onClick={() => setArchive('unarchive')}
+                            disabled={busy}
+                            className="flex items-center gap-1.5 text-[12px] font-semibold text-gray-600 hover:text-gray-900 disabled:opacity-50 transition-colors"
+                            title="Restore this issue to the Open / Closed tabs"
+                          >
+                            <ArchiveRestore size={13} /> Unarchive issue
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setArchive('archive')}
+                            disabled={busy}
+                            className="flex items-center gap-1.5 text-[12px] font-semibold text-gray-600 hover:text-gray-900 disabled:opacity-50 transition-colors"
+                            title="Move this issue to the Archived tab"
+                          >
+                            <Archive size={13} /> Archive issue
+                          </button>
+                        )}
                       </div>
                     )}
 

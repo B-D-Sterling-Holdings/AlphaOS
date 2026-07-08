@@ -4,6 +4,7 @@ import {
   buildRebalancePlanFromRows,
   calculateVolatilityScores,
   rebalanceExecutionPlan,
+  rebalanceSharesPlan,
   runAllocationSimulation,
 } from '../src/lib/allocationEngine.js';
 
@@ -31,6 +32,71 @@ test('rebalanceExecutionPlan consolidates sells and buys while preserving total 
   assert.equal(plan.finalValues.BBB, 1500);
   assert.equal(plan.finalWeights.AAA, 0.25);
   assert.equal(plan.finalWeights.BBB, 0.75);
+});
+
+test('rebalanceSharesPlan floors then greedily fills leftover cash into underweight names', () => {
+  const plan = rebalanceSharesPlan({
+    currentValues: { AAA: 1000 },
+    targetWeights: { AAA: 0.6, BBB: 0.4, CASH: 0 },
+    prices: { AAA: 100, BBB: 30 },
+    cash: 1000,
+  });
+
+  assert.equal(plan.mode, 'shares');
+  // Total 2000. Naive rounding wants AAA=12, BBB=27 ($2010 — overspends).
+  // Floor + greedy fill lands AAA=12, BBB=26 (feasible), remainder is $20 of cash.
+  assert.deepEqual(plan.finalShares, { AAA: 12, BBB: 26 });
+  assert.deepEqual(plan.buyShares, { AAA: 2, BBB: 26 });
+  assert.equal(plan.buyDollars.AAA, 200);
+  assert.equal(plan.buyDollars.BBB, 780);
+  assert.equal(plan.endingCash, 20);
+  assert.equal(plan.finalValues.AAA, 1200);
+  assert.equal(plan.finalValues.BBB, 780);
+});
+
+test('rebalanceSharesPlan lets cash dip below target when it lowers overall tracking error', () => {
+  const plan = rebalanceSharesPlan({
+    currentValues: { AAA: 1000 },
+    targetWeights: { AAA: 0.55, BBB: 0.4, CASH: 0.05 },
+    prices: { AAA: 100, BBB: 30 },
+    cash: 1000,
+  });
+
+  // Target cash 5% of 2000 = $100. Buying a 27th BBB share drops cash to $90
+  // (below target) but lands BBB at 0.405 vs 0.39 — closer overall — so it's taken.
+  assert.equal(plan.targetCash, 100);
+  assert.deepEqual(plan.finalShares, { AAA: 11, BBB: 27 });
+  assert.equal(plan.endingCash, 90);
+  assert.ok(plan.finalWeights.CASH < 0.05);
+});
+
+test('rebalanceSharesPlan flags a missing share price', () => {
+  assert.throws(
+    () => rebalanceSharesPlan({
+      currentValues: { AAA: 1000 },
+      targetWeights: { AAA: 1 },
+      prices: {},
+      cash: 0,
+    }),
+    /Enter a share price for: AAA/
+  );
+});
+
+test('buildRebalancePlanFromRows routes to the whole-share plan when enabled', () => {
+  const result = buildRebalancePlanFromRows({
+    holdings: [
+      { ticker: 'AAA', currentValue: '1000', targetWeight: '60', price: '100' },
+      { ticker: 'BBB', currentValue: '0', targetWeight: '40', price: '30' },
+    ],
+    cash: '1000',
+    targetCashPercent: '0',
+    transactionCostPct: '0',
+    totalTargetPercent: 100,
+    roundedShares: true,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.plan.mode, 'shares');
+  assert.deepEqual(result.plan.buyShares, { AAA: 2, BBB: 26 });
 });
 
 test('buildRebalancePlanFromRows keeps row validation outside the UI component', () => {

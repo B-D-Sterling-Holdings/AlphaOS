@@ -37,6 +37,7 @@ export const createRebalanceRow = (overrides = {}) => ({
   ticker: '',
   currentValue: '',
   targetWeight: '',
+  price: '',
   ...overrides,
 });
 
@@ -262,12 +263,243 @@ export const rebalanceExecutionPlan = ({
   };
 };
 
+// Whole-share variant of the execution plan. Instead of trading exact dollar
+// amounts we solve for whole-share positions that land the allocation as close
+// to target as integer lots allow, reporting trades in both shares and dollars.
+//
+// Based on portfolio_optimization/share_rebalancing.py. The naive approach —
+// rounding each ticker's target dollars to the nearest share independently — can
+// overspend (the rounded lots cost more than the portfolio holds) and dumps every
+// rounding remainder into cash. Instead we:
+//   1. Floor each ticker to its target dollars (always feasible, never overspends).
+//   2. If even the floor plan can't be funded, peel back buys from the most
+//      overweight names until cash is non-negative.
+//   3. Spend the leftover cash one share at a time, each time buying whichever
+//      affordable share reduces total tracking error the most — where CASH counts
+//      as an asset with its own target weight. This lets cash drift slightly BELOW
+//      its target when doing so pulls the equities closer, and stops before any buy
+//      would push the portfolio further from target overall. Cash never goes below
+//      zero (you can't spend money you don't have).
+export const rebalanceSharesPlan = ({
+  currentValues,
+  targetWeights,
+  prices,
+  cash,
+  transactionCostPct = 0,
+  minInstructionThreshold = 1e-6,
+  maxGreedyIters = 20000,
+}) => {
+  const fee = Number(transactionCostPct);
+  if (fee < 0 || fee >= 1) {
+    throw new Error('transaction_cost_pct must be in [0, 1).');
+  }
+
+  const tickers = Array.from(
+    new Set([...Object.keys(currentValues), ...Object.keys(targetWeights)])
+  )
+    .filter((ticker) => ticker !== 'CASH')
+    .sort();
+
+  const missingPrice = tickers.filter((ticker) => !(Number(prices[ticker]) > 0));
+  if (missingPrice.length > 0) {
+    throw new Error(`Enter a share price for: ${missingPrice.join(', ')}.`);
+  }
+
+  const targetSum = Object.values(targetWeights).reduce((sum, value) => sum + Number(value || 0), 0);
+  if (Math.abs(targetSum - 1) > 1e-6) {
+    throw new Error(`Target weights must sum to 1.0; got ${targetSum.toFixed(6)}`);
+  }
+
+  const effectiveCash = Number.isFinite(cash) ? cash : Number(currentValues.CASH || 0);
+
+  const w = {};
+  tickers.forEach((ticker) => { w[ticker] = Number(targetWeights[ticker] || 0); });
+  const equityWeight = tickers.reduce((sum, ticker) => sum + w[ticker], 0);
+  const cashWeight = targetWeights.CASH != null
+    ? Number(targetWeights.CASH)
+    : Math.max(0, 1 - equityWeight);
+
+  // Current whole-share position (round the dollar value back to lots) and the
+  // total we're rebalancing against.
+  const current = {};
+  const currentShares = {};
+  tickers.forEach((ticker) => {
+    current[ticker] = currentShares[ticker] = 0;
+  });
+  tickers.forEach((ticker) => {
+    const shares = Math.max(0, Math.round(Number(currentValues[ticker] || 0) / prices[ticker]));
+    currentShares[ticker] = shares;
+    current[ticker] = shares * prices[ticker];
+  });
+
+  const startingTotal = tickers.reduce((sum, ticker) => sum + current[ticker], 0) + effectiveCash;
+  const targetCash = cashWeight * startingTotal;
+  const targetDollars = {};
+  tickers.forEach((ticker) => { targetDollars[ticker] = w[ticker] * startingTotal; });
+
+  // Step 1 — floor each holding to its target dollars, then diff against current.
+  const finalShares = {};
+  const buyShares = {};
+  const sellShares = {};
+  tickers.forEach((ticker) => {
+    finalShares[ticker] = Math.max(0, Math.floor(targetDollars[ticker] / prices[ticker]));
+    const diff = finalShares[ticker] - currentShares[ticker];
+    if (diff > 0) buyShares[ticker] = diff;
+    else if (diff < 0) sellShares[ticker] = -diff;
+  });
+
+  const cashFromSells = () =>
+    Object.entries(sellShares).reduce((sum, [ticker, sh]) => sum + sh * prices[ticker] * (1 - fee), 0);
+  const cashForBuys = () =>
+    Object.entries(buyShares).reduce((sum, [ticker, sh]) => sum + sh * prices[ticker] * (1 + fee), 0);
+
+  let cashExec = effectiveCash + cashFromSells() - cashForBuys();
+
+  // Total squared tracking error of a candidate position, counting CASH as an
+  // asset with its own target weight. This is the objective the greedy fill
+  // minimizes, so cash and equities are traded off on equal footing.
+  const trackingError = (shares, cashAmount) => {
+    const total = cashAmount + tickers.reduce((sum, ticker) => sum + shares[ticker] * prices[ticker], 0);
+    if (total <= 0) return Infinity;
+    let err = tickers.reduce((sum, ticker) => {
+      const dev = (shares[ticker] * prices[ticker]) / total - w[ticker];
+      return sum + dev * dev;
+    }, 0);
+    const cashDev = cashAmount / total - cashWeight;
+    return err + cashDev * cashDev;
+  };
+
+  // Step 2 — the floor plan can overspend only if current holdings are already so
+  // overweight that trimming them to the floor still can't fund the buys. If cash
+  // went negative, peel back the buy on whichever name is most overweight until
+  // cash is non-negative again.
+  if (cashExec < -1e-9) {
+    let iters = 0;
+    while (
+      cashExec < -1e-9 &&
+      iters < maxGreedyIters &&
+      Object.values(buyShares).some((sh) => sh > 0)
+    ) {
+      iters += 1;
+      const total = cashExec + tickers.reduce((sum, ticker) => sum + finalShares[ticker] * prices[ticker], 0);
+      let bestTicker = null;
+      let bestOver = null;
+      Object.entries(buyShares).forEach(([ticker, sh]) => {
+        if (sh <= 0) return;
+        const wCur = total > 0 ? (finalShares[ticker] * prices[ticker]) / total : 0;
+        const over = wCur - w[ticker];
+        if (bestOver === null || over > bestOver) { bestOver = over; bestTicker = ticker; }
+      });
+      if (!bestTicker) break;
+      buyShares[bestTicker] -= 1;
+      finalShares[bestTicker] -= 1;
+      cashExec += prices[bestTicker] * (1 + fee);
+    }
+  }
+
+  // Step 3 — spend leftover cash one share at a time, each step buying whichever
+  // affordable share reduces total tracking error the most. Cash is allowed to
+  // fall below its target when that lands the whole portfolio closer, but never
+  // below zero, and we stop as soon as no buy improves the fit.
+  {
+    let iters = 0;
+    while (iters < maxGreedyIters) {
+      iters += 1;
+      const baseErr = trackingError(finalShares, cashExec);
+      let bestTicker = null;
+      let bestErr = baseErr;
+      tickers.forEach((ticker) => {
+        const costOne = prices[ticker] * (1 + fee);
+        if (costOne > cashExec + 1e-9) return; // unaffordable — would overdraw cash
+        finalShares[ticker] += 1;
+        const err = trackingError(finalShares, cashExec - costOne);
+        finalShares[ticker] -= 1;
+        if (err < bestErr - 1e-15) { bestErr = err; bestTicker = ticker; }
+      });
+      if (!bestTicker) break;
+      buyShares[bestTicker] = (buyShares[bestTicker] || 0) + 1;
+      finalShares[bestTicker] += 1;
+      cashExec -= prices[bestTicker] * (1 + fee);
+    }
+  }
+
+  // Clean up zero-share trades and derive dollar amounts.
+  const buyDollars = {};
+  const sellDollars = {};
+  Object.keys(buyShares).forEach((ticker) => {
+    if (buyShares[ticker] > 0) buyDollars[ticker] = buyShares[ticker] * prices[ticker];
+    else delete buyShares[ticker];
+  });
+  Object.keys(sellShares).forEach((ticker) => {
+    if (sellShares[ticker] > 0) sellDollars[ticker] = sellShares[ticker] * prices[ticker];
+    else delete sellShares[ticker];
+  });
+
+  const finalValues = {};
+  tickers.forEach((ticker) => { finalValues[ticker] = finalShares[ticker] * prices[ticker]; });
+  finalValues.CASH = cashExec;
+
+  const finalTotal = Object.values(finalValues).reduce((sum, value) => sum + value, 0);
+  const finalWeights = {};
+  Object.entries(finalValues).forEach(([ticker, value]) => {
+    finalWeights[ticker] = finalTotal > 0 ? value / finalTotal : 0;
+  });
+
+  const shareLabel = (count) => `${count} ${count === 1 ? 'share' : 'shares'}`;
+  const steps = [
+    ...Object.entries(sellShares)
+      .sort(([a, sa], [b, sb]) => sb * prices[b] - sa * prices[a])
+      .map(([ticker, count]) => ({
+        type: 'sell',
+        text: `Sell ${shareLabel(count)} of ${ticker} (${formatCurrency(sellDollars[ticker])}).`,
+      })),
+    ...Object.entries(buyShares)
+      .sort(([a, sa], [b, sb]) => sb * prices[b] - sa * prices[a])
+      .map(([ticker, count]) => ({
+        type: 'buy',
+        text: `Buy ${shareLabel(count)} of ${ticker} (${formatCurrency(buyDollars[ticker])}).`,
+      })),
+  ];
+
+  if (cashExec < -1e-6) {
+    steps.push({
+      type: 'note',
+      text: `Warning: These whole-share trades need ${formatCurrency(-cashExec)} more than the available cash.`,
+    });
+  } else if (targetCash - cashExec > 1e-6) {
+    steps.push({
+      type: 'note',
+      text: `Note: Ending CASH ${formatCurrency(cashExec)} is below the ${formatCurrency(targetCash)} target — the extra was put into equities to land the overall allocation closer to target.`,
+    });
+  }
+
+  return {
+    mode: 'shares',
+    steps,
+    buyDollars,
+    sellDollars,
+    buyShares,
+    sellShares,
+    prices,
+    currentShares,
+    finalShares,
+    currentValues: current,
+    startingTotal,
+    finalValues,
+    finalWeights,
+    endingCash: cashExec,
+    targetCash,
+    targetCashWeight: cashWeight,
+  };
+};
+
 export function buildRebalancePlanFromRows({
   holdings,
   cash,
   targetCashPercent,
   transactionCostPct = 0,
   totalTargetPercent,
+  roundedShares = false,
 }) {
   const filtered = holdings.filter((row) => row.ticker.trim() || row.currentValue || row.targetWeight);
   if (filtered.length === 0) {
@@ -276,6 +508,7 @@ export function buildRebalancePlanFromRows({
 
   const currentValues = {};
   const targetWeights = {};
+  const prices = {};
   const problems = [];
 
   filtered.forEach((row, index) => {
@@ -288,6 +521,10 @@ export function buildRebalancePlanFromRows({
     if (ticker) {
       currentValues[ticker] = (currentValues[ticker] || 0) + currentValue;
       targetWeights[ticker] = (targetWeights[ticker] || 0) + targetPercent / 100;
+      if (roundedShares) {
+        const price = parseNumber(row.price);
+        if (price > 0) prices[ticker] = price;
+      }
     }
   });
 
@@ -303,6 +540,17 @@ export function buildRebalancePlanFromRows({
   }
 
   try {
+    if (roundedShares) {
+      return {
+        plan: rebalanceSharesPlan({
+          currentValues,
+          targetWeights,
+          prices,
+          cash: cashValue,
+          transactionCostPct: parseNumber(transactionCostPct) / 100,
+        }),
+      };
+    }
     return {
       plan: rebalanceExecutionPlan({
         currentValues,

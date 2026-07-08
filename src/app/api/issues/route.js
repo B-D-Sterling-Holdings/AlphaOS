@@ -112,10 +112,11 @@ export async function POST(req) {
 }
 
 // PUT — mutate an existing issue via an explicit action:
-//   comment          (any user)  append a comment
-//   labels           (any user)  replace the label list
-//   resolve / reopen (admin only) change status / archive
-//   priority         (admin only) set triage priority (1..4 or null)
+//   comment            (any user)  append a comment
+//   labels             (any user)  replace the label list
+//   resolve / reopen   (admin only) change status
+//   archive / unarchive(admin only) move to / out of the Archived tab
+//   priority           (admin only) set triage priority (1..4 or null)
 //   complexity       (admin only) set triage complexity (1..5 or null)
 //   dev-notes        (admin only) set the triage note
 //   sort-order       (admin only) set the manual rank within a priority band
@@ -195,6 +196,24 @@ export async function PUT(req) {
         ? { status: 'resolved', resolved_at: new Date().toISOString(), resolved_by: db.username || '' }
         : { status: 'open', resolved_at: null, resolved_by: null };
       updates.updated_at = new Date().toISOString();
+      const { data, error } = await db
+        .from(TABLE).update(updates).eq('id', id).select().single();
+      if (error) throw new Error(error.message);
+      return NextResponse.json(data);
+    }
+
+    // Archive / unarchive — admin only. Orthogonal to status (an open OR a
+    // resolved issue can be archived); archived rows are hidden from every tab
+    // except the Archived one. Requires migration 033 (the archived_at column);
+    // before that runs the update simply errors and the button reports it.
+    if (action === 'archive' || action === 'unarchive') {
+      if (!db.isAdmin) {
+        return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      }
+      const updates = {
+        archived_at: action === 'archive' ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      };
       const { data, error } = await db
         .from(TABLE).update(updates).eq('id', id).select().single();
       if (error) throw new Error(error.message);

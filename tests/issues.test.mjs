@@ -2,9 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   blocksToHtml,
+  countArchivedIssues,
+  countClosedIssues,
+  countOpenIssues,
   filterIssues,
   findIssueSortSwap,
   getVisibleIssues,
+  isArchived,
   isBodyEmpty,
   timeAgo,
 } from '../src/lib/issues.js';
@@ -77,6 +81,18 @@ test('getVisibleIssues applies open, closed, sort, and dev-tab ordering rules', 
   assert.deepEqual(getVisibleIssues(issues, { tab: 'dev' }).map(issue => issue.id), ['b', 'a']);
 });
 
+test('Closed tab is ordered by close time (most recently closed first), ignoring the sort control', () => {
+  const closed = [
+    { id: 'r1', status: 'resolved', created_at: '2026-01-01T00:00:00Z', resolved_at: '2026-03-01T00:00:00Z' },
+    { id: 'r2', status: 'resolved', created_at: '2026-02-01T00:00:00Z', resolved_at: '2026-05-01T00:00:00Z' },
+    { id: 'r3', status: 'resolved', created_at: '2026-01-15T00:00:00Z', resolved_at: '2026-04-01T00:00:00Z' },
+    // Legacy row with no resolved_at falls back to updated_at.
+    { id: 'r4', status: 'resolved', created_at: '2026-01-20T00:00:00Z', updated_at: '2026-02-15T00:00:00Z' },
+  ];
+  // newest close first regardless of the requested sort:
+  assert.deepEqual(getVisibleIssues(closed, { tab: 'closed', sort: 'oldest' }).map(i => i.id), ['r2', 'r3', 'r1', 'r4']);
+});
+
 test('findIssueSortSwap swaps within the same priority band only', () => {
   const visible = getVisibleIssues(issues, { tab: 'dev' });
   assert.deepEqual(findIssueSortSwap(visible, issues[0], 'up'), {
@@ -85,6 +101,28 @@ test('findIssueSortSwap swaps within the same priority band only', () => {
     otherSortOrder: 2,
   });
   assert.equal(findIssueSortSwap(visible, issues[1], 'up'), null);
+});
+
+test('archived issues leave the Open/Closed/Dev tabs and surface in Archived (newest first)', () => {
+  const withArchived = [
+    ...issues,
+    { id: 'x', title: 'Archived open', status: 'open', archived_at: '2026-02-01T00:00:00Z', created_at: '2026-01-06T00:00:00Z' },
+    { id: 'y', title: 'Archived resolved', status: 'resolved', archived_at: '2026-02-03T00:00:00Z', created_at: '2026-01-07T00:00:00Z' },
+  ];
+
+  // Active tabs ignore archived rows entirely.
+  assert.deepEqual(getVisibleIssues(withArchived, { tab: 'open' }).map(i => i.id), ['a', 'b']);
+  assert.deepEqual(getVisibleIssues(withArchived, { tab: 'closed' }).map(i => i.id), ['c']);
+  assert.deepEqual(getVisibleIssues(withArchived, { tab: 'dev' }).map(i => i.id), ['b', 'a']);
+
+  // Archived tab shows both (regardless of status), most-recently-archived first.
+  assert.deepEqual(getVisibleIssues(withArchived, { tab: 'archived' }).map(i => i.id), ['y', 'x']);
+
+  assert.equal(isArchived(withArchived[3]), true);
+  assert.equal(isArchived(issues[0]), false);
+  assert.equal(countOpenIssues(withArchived), 2);
+  assert.equal(countClosedIssues(withArchived), 1);
+  assert.equal(countArchivedIssues(withArchived), 2);
 });
 
 test('timeAgo formats short relative times with an injectable clock', () => {
