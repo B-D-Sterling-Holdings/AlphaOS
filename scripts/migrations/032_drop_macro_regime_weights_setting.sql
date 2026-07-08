@@ -1,0 +1,21 @@
+-- ============================================================
+-- 032 — Drop the orphaned `macro_regime_weights` app_settings key
+-- ============================================================
+-- The standalone `/macro-regime` ("Market Confidence") page was deleted on
+-- 2026-07-07. Its functionality now lives entirely in the Allocation → Macro
+-- Risk tab, which sources base weights from the active allocation scheme
+-- (`allocation_schemes`), not from this key. The page's
+-- `/api/macro-regime/weights` route — the ONLY reader/writer of this key — was
+-- removed with it.
+--
+-- `macro_regime_weights` was a per-tenant editable weight snapshot, folded from
+-- its own single-row table into `app_settings` by migration 024. Nothing reads
+-- it anymore, so those rows are dead data. This deletes them.
+--
+-- No schema change: the key simply stops existing. Other macro_regime_* data
+-- (config, runs, results, plots) is untouched — the Macro Risk tab still uses
+-- it. No app dependency and no deploy-order note: the app code that referenced
+-- the key is already gone, so this is safe to run anytime. Idempotent.
+-- ============================================================
+
+DELETE FROM public.app_settings WHERE key = 'macro_regime_weights';

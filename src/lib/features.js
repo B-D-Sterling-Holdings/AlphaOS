@@ -21,7 +21,6 @@
 export const FEATURES = [
   { key: 'holdings', label: 'Holdings', hrefs: ['/holdings'] },
   { key: 'allocation', label: 'Allocation', hrefs: ['/allocation'] },
-  { key: 'macro-regime', label: 'Market Confidence', hrefs: ['/macro-regime'] },
   { key: 'relationships', label: 'Relationships', hrefs: ['/relationships'] },
   { key: 'strategic-hub', label: 'Strategic Hub', hrefs: ['/strategic-hub'] },
   { key: 'tasks', label: 'Tasks', hrefs: ['/tasks'] },
@@ -114,9 +113,10 @@ export const API_FEATURES = {
   // Allocation
   '/api/allocation': ['allocation'],
   '/api/return-covariance': ['allocation'],
-  '/api/realized-vol': ['allocation', 'macro-regime'],
-  // Market Confidence (prefix covers config/plots/predict/results/run/weights)
-  '/api/macro-regime': ['macro-regime'],
+  '/api/realized-vol': ['allocation'],
+  // Macro Risk model — lives inside the Allocation tab (prefix covers
+  // config/plots/predict/results/run).
+  '/api/macro-regime': ['allocation'],
   // Relationships
   '/api/contacts': ['relationships'],
   '/api/contact-files': ['relationships'],
@@ -152,7 +152,7 @@ export const API_FEATURES = {
   '/api/fund-nav': ['financials'],
   // Portfolio positions feed — consumed by every holdings-derived surface, so
   // it is blocked only when ALL of those features are off.
-  '/api/portfolio': ['holdings', 'allocation', 'macro-regime', 'research'],
+  '/api/portfolio': ['holdings', 'allocation', 'research'],
 };
 
 /*

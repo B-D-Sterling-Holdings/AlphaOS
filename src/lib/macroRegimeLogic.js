@@ -230,43 +230,68 @@ export function computeDeriskOverlay({ baseWeights, volScores, compRisks, M, cfg
     defensiveScaled[ticker] = maxDefensive > 1e-9 ? defensiveSide[ticker] / maxDefensive : 0;
   }
 
+  // Absolute per-name weight cap (fraction). Opt-in: only enforced when a positive
+  // max_weight (percent) is configured, so callers that don't set it keep the prior
+  // relative-only behavior. The effective ceiling for a name is the tighter of its
+  // relative boost cap and this absolute cap.
+  const capFraction = Number(config.max_weight) > 0 ? Number(config.max_weight) / 100 : Infinity;
+  const capOf = (ticker) => Math.min(baseFractions[ticker] * (1 + config.max_boost), capFraction);
+
+  // 1) Trim aggressive names. They are only ever trimmed here (never boosted), so an
+  //    aggressive name's delta is always ≤ 0. Also hard-cap anything already above the
+  //    absolute ceiling. Everything trimmed goes into `removed`.
   const trimmedWeights = {};
   let removed = 0;
   for (const ticker of tickers) {
     const trim = D * config.max_trim * aggressiveScaled[ticker];
-    const nextWeight = baseFractions[ticker] * (1 - trim);
-    trimmedWeights[ticker] = nextWeight;
-    removed += baseFractions[ticker] - nextWeight;
+    let w = baseFractions[ticker] * (1 - trim);
+    if (w > capFraction) w = capFraction;
+    trimmedWeights[ticker] = w;
+    removed += baseFractions[ticker] - w;
   }
 
+  // 2) Route removed weight to cash first (up to the derisk cash target)…
   const targetCash = config.cash_min + D * (config.cash_max - config.cash_min);
   const cashExtra = Math.max(0, targetCash - baseCash);
   const actualCashExtra = Math.min(cashExtra, removed);
-  const actualCash = baseCash + actualCashExtra;
-  const redistribute = Math.max(0, removed - actualCashExtra);
+  let cash = baseCash + actualCashExtra;
+  let pool = removed - actualCashExtra; // …then redistribute the rest to defensive names.
 
-  const defensiveSum = tickers.reduce((sum, ticker) => sum + defensiveScaled[ticker], 0);
-  const newWeights = {};
-  for (const ticker of tickers) {
-    const add = defensiveSum > 1e-9 ? redistribute * (defensiveScaled[ticker] / defensiveSum) : 0;
-    newWeights[ticker] = trimmedWeights[ticker] + add;
+  // 3) Water-fill the pool into defensive names in proportion to how defensive each is,
+  //    never past that name's ceiling. Unlike the old code we do NOT rescale the whole
+  //    book afterwards — that uniform rescale leaked capped-out boosts back into the
+  //    aggressive names we just trimmed and let deltas accelerate past the cap. Anything
+  //    that can't be placed (every defensive name capped) falls back to cash.
+  const finalStock = { ...trimmedWeights };
+  let guard = 0;
+  while (pool > 1e-9 && guard < 128) {
+    guard += 1;
+    const active = tickers.filter((t) => defensiveScaled[t] > 1e-9 && capOf(t) - finalStock[t] > 1e-9);
+    if (active.length === 0) break;
+    const weightSum = active.reduce((sum, t) => sum + defensiveScaled[t], 0);
+    if (weightSum <= 1e-9) break;
+    let placed = 0;
+    for (const t of active) {
+      const give = Math.min(pool * (defensiveScaled[t] / weightSum), capOf(t) - finalStock[t]);
+      finalStock[t] += give;
+      placed += give;
+    }
+    pool -= placed;
+    if (placed <= 1e-12) break; // no measurable progress — stop
   }
+  cash += Math.max(0, pool); // leftover nobody could absorb becomes cash
 
-  const boundedWeights = {};
-  for (const ticker of tickers) {
-    const lower = baseFractions[ticker] * (1 - config.max_trim);
-    const upper = baseFractions[ticker] * (1 + config.max_boost);
-    boundedWeights[ticker] = Math.max(lower, Math.min(upper, newWeights[ticker]));
-  }
-
-  const boundedSum = tickers.reduce((sum, ticker) => sum + boundedWeights[ticker], 0);
-  const targetStockSum = 1 - actualCash;
-  const scale = boundedSum > 1e-9 ? targetStockSum / boundedSum : 1;
+  // 4) Emit. Stocks + cash sum to 1 by construction; make CASH the exact residual so
+  //    the rounded weights always total 100.00 (no uniform rescale needed).
   const finalWeights = {};
+  let stockSum = 0;
   for (const ticker of tickers) {
-    finalWeights[ticker] = Number((boundedWeights[ticker] * scale * 100).toFixed(2));
+    const v = Number((finalStock[ticker] * 100).toFixed(2));
+    finalWeights[ticker] = v;
+    stockSum += v;
   }
-  finalWeights.CASH = Number((actualCash * 100).toFixed(2));
+  const cashPct = Number((100 - stockSum).toFixed(2));
+  finalWeights.CASH = cashPct;
 
-  return { weights: finalWeights, cash: actualCash, D, aggressiveness, trimmed: true };
+  return { weights: finalWeights, cash: cashPct / 100, D, aggressiveness, trimmed: true };
 }

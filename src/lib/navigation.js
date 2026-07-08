@@ -1,6 +1,6 @@
 import {
   Briefcase, Search, Eye, FolderOpen, ClipboardList, ListChecks,
-  PieChart, DollarSign, Link2, Users, Activity, Target, Sparkles, LayoutDashboard, MessagesSquare,
+  PieChart, DollarSign, Link2, Users, Target, Sparkles, LayoutDashboard, MessagesSquare,
   GraduationCap,
 } from 'lucide-react';
 
@@ -15,7 +15,6 @@ export const NAV_GROUPS = [
     items: [
       { href: '/holdings', label: 'Holdings', icon: Briefcase },
       { href: '/allocation', label: 'Allocation', icon: PieChart },
-      { href: '/macro-regime', label: 'Market Confidence', icon: Activity },
       { href: '/relationships', label: 'Relationships', icon: Users },
     ],
   },

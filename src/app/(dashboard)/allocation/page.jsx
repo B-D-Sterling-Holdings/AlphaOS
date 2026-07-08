@@ -226,6 +226,66 @@ export default function AllocationPage() {
     }
   }, []);
 
+  // Reset button behaviour: the CURRENT VALUES (left side) snap back to what the
+  // portfolio actually holds right now, while the TARGET WEIGHTS (right side) reset
+  // to the active scheme's weights — not whatever targets happen to be saved from
+  // the portfolio. Falls back to the saved targets only when there's no scheme.
+  const resetRebalancerToScheme = useCallback(async () => {
+    setRbLoadingPortfolio(true);
+    setRbPlan(null);
+    setRbError('');
+    try {
+      const eff = scheme ? schemeEffectiveWeights(scheme) : {};
+      const hasScheme = Object.keys(eff).length > 0;
+      const targetFor = (ticker) => {
+        const t = (ticker || '').trim().toUpperCase();
+        if (hasScheme) return eff[t] != null ? String(eff[t]) : '';
+        return rbSavedTargetsRef.current?.[ticker] ?? '';
+      };
+
+      const portfolio = await fetch('/api/portfolio').then((r) => r.json());
+      const holdings = portfolio.holdings || [];
+      const cashVal = portfolio.cash || 0;
+
+      // Seed rows from current holdings (values from the portfolio) with scheme targets.
+      let rows = [];
+      const costBasisMap = {};
+      if (holdings.length > 0) {
+        const tickers = holdings.map((h) => h.ticker).join(',');
+        const quotesData = await fetch(`/api/quotes?tickers=${tickers}`).then((r) => r.json());
+        const quotes = quotesData.quotes || quotesData;
+        rows = holdings.map((h) => {
+          const price = quotes[h.ticker]?.price || 0;
+          const value = h.shares * price;
+          costBasisMap[h.ticker] = h.shares * (h.cost_basis || 0);
+          return createRebalanceRow({
+            ticker: h.ticker,
+            currentValue: value > 0 ? value.toFixed(2) : '',
+            targetWeight: targetFor(h.ticker),
+          });
+        });
+      }
+
+      // Scheme names you don't currently hold → add as buy-from-zero rows.
+      if (hasScheme) {
+        const present = new Set(rows.map((r) => r.ticker.trim().toUpperCase()));
+        const extras = Object.keys(eff)
+          .filter((t) => t !== 'CASH' && !present.has(t) && (Number(eff[t]) || 0) > 0)
+          .map((t) => createRebalanceRow({ ticker: t, currentValue: '', targetWeight: String(eff[t]) }));
+        rows = [...rows, ...extras];
+        if (eff.CASH != null) setRbTargetCashPercent(String(eff.CASH));
+      }
+
+      rbCostBasisRef.current = costBasisMap;
+      setRbHoldings(rows.length ? rows : createDefaultRebalanceHoldings());
+      setRbCash(cashVal > 0 ? cashVal.toFixed(2) : '');
+    } catch (err) {
+      console.error('Failed to reset rebalancer to scheme:', err);
+    } finally {
+      setRbLoadingPortfolio(false);
+    }
+  }, [scheme]);
+
   // Load portfolio into rebalancer on mount
   useEffect(() => {
     loadPortfolioIntoRebalancer();
@@ -641,7 +701,7 @@ export default function AllocationPage() {
           <div className="flex items-center gap-1 bg-gray-100/80 rounded-xl p-1 w-fit">
             {[
               { key: 'optimizer', label: 'Optimizer' },
-              { key: 'confidence', label: 'Market Confidence' },
+              { key: 'confidence', label: 'Macro Risk' },
               { key: 'rebalancer', label: 'Rebalancer' },
             ].map(tab => (
               <button
@@ -701,36 +761,36 @@ export default function AllocationPage() {
                   type="text" spellCheck={true}
                   value={row.ticker}
                   onChange={(e) => updateAllocation(row.id, 'ticker', e.target.value.toUpperCase())}
-                  className="w-20 text-sm font-bold text-gray-900 bg-transparent border-0 outline-none placeholder:text-gray-300 placeholder:font-normal"
+                  className="w-20 text-[15px] font-bold text-gray-900 bg-transparent border-0 outline-none placeholder:text-gray-300 placeholder:font-normal"
                   placeholder="TICKER"
                 />
 
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Exp. Return</span>
+                  <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Exp. Return</span>
                   <input
                     type="number" min="0" step="0.01"
                     data-col="expectedReturn" data-row={idx}
                     value={row.expectedReturn}
                     onChange={(e) => updateAllocation(row.id, 'expectedReturn', e.target.value)}
                     onKeyDown={(e) => handleColumnTab(e, 'expectedReturn', idx)}
-                    className="w-16 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
+                    className="w-16 text-[15px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
                     placeholder="0"
                   />
-                  <span className="text-xs text-gray-400">%</span>
+                  <span className="text-[13px] text-gray-400">%</span>
                 </div>
 
                 <div className="flex items-center gap-1.5 ml-auto">
-                  <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Weight</span>
+                  <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Weight</span>
                   <input
                     type="number" min="0" step="0.01"
                     data-col="userWeight" data-row={idx}
                     value={row.userWeight}
                     onKeyDown={(e) => handleColumnTab(e, 'userWeight', idx)}
                     onChange={(e) => updateAllocation(row.id, 'userWeight', e.target.value)}
-                    className="w-16 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
+                    className="w-16 text-[15px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
                     placeholder="0"
                   />
-                  <span className="text-xs text-gray-400">%</span>
+                  <span className="text-[13px] text-gray-400">%</span>
                 </div>
 
                 {allocations.length > 1 && (
@@ -746,7 +806,7 @@ export default function AllocationPage() {
 
               {/* Bottom row: Risk factor exposures */}
               <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-50">
-                <span className="text-[10px] font-medium text-gray-300 uppercase tracking-wide shrink-0">Risk Factors</span>
+                <span className="text-[11px] font-medium text-gray-300 uppercase tracking-wide shrink-0">Risk Factors</span>
                 <div className="flex items-center gap-3 flex-wrap">
                   {row.factorExposures.map((value, index) => {
                     const ticker = row.ticker.trim().toUpperCase();
@@ -763,7 +823,7 @@ export default function AllocationPage() {
                         type="number" min="0" step="0.01"
                         value={value}
                         onChange={(e) => updateAllocationExposure(row.id, index, e.target.value)}
-                        className={`w-14 text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-1.5 py-0.5 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all ${index === 0 && ticker !== 'CASH' ? 'border-emerald-200 bg-emerald-50/30' : ''}`}
+                        className={`w-14 text-[13px] text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-1.5 py-0.5 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all ${index === 0 && ticker !== 'CASH' ? 'border-emerald-200 bg-emerald-50/30' : ''}`}
                         placeholder="0"
                         title={index === 0 && ticker !== 'CASH' ? 'Auto-computed from realized vol (CDF of cross-sectional distribution)' : ''}
                       />
@@ -782,7 +842,7 @@ export default function AllocationPage() {
           <button
             type="button"
             onClick={addAllocation}
-            className="text-sm font-medium text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 px-4 py-2 rounded-xl transition-colors"
+            className="text-[15px] font-medium text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 px-4 py-2 rounded-xl transition-colors"
           >
             + Add Asset
           </button>
@@ -790,7 +850,7 @@ export default function AllocationPage() {
             type="button"
             onClick={runMonteCarloSimulation}
             disabled={simulating}
-            className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-sm"
+            className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-[15px] font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-sm"
           >
             {simulating ? (
               <>
@@ -806,15 +866,15 @@ export default function AllocationPage() {
           </button>
         </div>
 
-        {simulationError && <p className="mt-4 text-sm text-red-600 font-medium">{simulationError}</p>}
+        {simulationError && <p className="mt-4 text-[15px] text-red-600 font-medium">{simulationError}</p>}
 
         {/* Results */}
         {simulationChart && (
           <div className="mt-8 bg-white border border-gray-200 rounded-2xl p-6 animate-fade-in-up">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-gray-900">Efficient Frontier</h3>
+              <h3 className="text-[15px] font-semibold text-gray-900">Efficient Frontier</h3>
               {simulationResult && (
-                <span className="text-xs text-gray-400">{simulationResult.totalSamples.toLocaleString()} portfolios generated</span>
+                <span className="text-[13px] text-gray-400">{simulationResult.totalSamples.toLocaleString()} portfolios generated</span>
               )}
             </div>
             <Scatter data={simulationChart} options={simulationChartOptions} />
@@ -829,31 +889,31 @@ export default function AllocationPage() {
               <div className="bg-white border border-gray-200 rounded-2xl p-5">
                 <div className="flex items-center gap-2 mb-3">
                   <div className="w-2 h-2 rounded-full bg-red-500" />
-                  <h4 className="text-sm font-semibold text-gray-900">Max Composite Ratio</h4>
+                  <h4 className="text-[15px] font-semibold text-gray-900">Max Composite Ratio</h4>
                 </div>
                 <div className="flex items-baseline gap-3 mb-4">
                   <div>
                     <p className="text-2xl font-bold text-gray-900">{(simulationResult.maxSharpe.expectedReturn * 100).toFixed(1)}%</p>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Return</p>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Return</p>
                   </div>
                   <div>
                     <p className="text-lg font-semibold text-gray-500">{(simulationResult.maxSharpe.volatility * 100).toFixed(1)}%</p>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Risk</p>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Risk</p>
                   </div>
                   <div>
                     <p className="text-lg font-semibold text-gray-500">{simulationResult.maxSharpe.compositeRatio.toFixed(2)}</p>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Ratio</p>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Ratio</p>
                   </div>
                 </div>
                 <div className="space-y-1.5">
                   {simulationResult.maxSharpe.weights.map((item) => (
-                    <div key={`max-${item.ticker}`} className="flex items-center justify-between text-sm">
+                    <div key={`max-${item.ticker}`} className="flex items-center justify-between text-[15px]">
                       <span className="font-medium text-gray-700">{item.ticker}</span>
                       <div className="flex items-center gap-2">
                         <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                           <div className="h-full bg-red-400 rounded-full" style={{ width: `${Math.min(((item.weight * 100) / (parseNumber(maxWeight) || 15)) * 100, 100)}%` }} />
                         </div>
-                        <span className="text-xs text-gray-500 w-12 text-right">{(item.weight * 100).toFixed(1)}%</span>
+                        <span className="text-[13px] text-gray-500 w-12 text-right">{(item.weight * 100).toFixed(1)}%</span>
                       </div>
                     </div>
                   ))}
@@ -864,31 +924,31 @@ export default function AllocationPage() {
               <div className="bg-white border border-gray-200 rounded-2xl p-5">
                 <div className="flex items-center gap-2 mb-3">
                   <div className="w-2 h-2 rounded-full bg-blue-500" />
-                  <h4 className="text-sm font-semibold text-gray-900">Min Risk</h4>
+                  <h4 className="text-[15px] font-semibold text-gray-900">Min Risk</h4>
                 </div>
                 <div className="flex items-baseline gap-3 mb-4">
                   <div>
                     <p className="text-2xl font-bold text-gray-900">{(simulationResult.minVol.expectedReturn * 100).toFixed(1)}%</p>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Return</p>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Return</p>
                   </div>
                   <div>
                     <p className="text-lg font-semibold text-gray-500">{(simulationResult.minVol.volatility * 100).toFixed(1)}%</p>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Risk</p>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Risk</p>
                   </div>
                   <div>
                     <p className="text-lg font-semibold text-gray-500">{simulationResult.minVol.compositeRatio.toFixed(2)}</p>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Ratio</p>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Ratio</p>
                   </div>
                 </div>
                 <div className="space-y-1.5">
                   {simulationResult.minVol.weights.map((item) => (
-                    <div key={`min-${item.ticker}`} className="flex items-center justify-between text-sm">
+                    <div key={`min-${item.ticker}`} className="flex items-center justify-between text-[15px]">
                       <span className="font-medium text-gray-700">{item.ticker}</span>
                       <div className="flex items-center gap-2">
                         <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                           <div className="h-full bg-blue-400 rounded-full" style={{ width: `${Math.min(((item.weight * 100) / (parseNumber(maxWeight) || 15)) * 100, 100)}%` }} />
                         </div>
-                        <span className="text-xs text-gray-500 w-12 text-right">{(item.weight * 100).toFixed(1)}%</span>
+                        <span className="text-[13px] text-gray-500 w-12 text-right">{(item.weight * 100).toFixed(1)}%</span>
                       </div>
                     </div>
                   ))}
@@ -900,31 +960,31 @@ export default function AllocationPage() {
                 <div className="bg-white border border-gray-200 rounded-2xl p-5">
                   <div className="flex items-center gap-2 mb-3">
                     <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                    <h4 className="text-sm font-semibold text-gray-900">Your Portfolio</h4>
+                    <h4 className="text-[15px] font-semibold text-gray-900">Your Portfolio</h4>
                   </div>
                   <div className="flex items-baseline gap-3 mb-4">
                     <div>
                       <p className="text-2xl font-bold text-gray-900">{(simulationResult.userDefined.expectedReturn * 100).toFixed(1)}%</p>
-                      <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Return</p>
+                      <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Return</p>
                     </div>
                     <div>
                       <p className="text-lg font-semibold text-gray-500">{(simulationResult.userDefined.volatility * 100).toFixed(1)}%</p>
-                      <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Risk</p>
+                      <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Risk</p>
                     </div>
                     <div>
                       <p className="text-lg font-semibold text-gray-500">{simulationResult.userDefined.compositeRatio.toFixed(2)}</p>
-                      <p className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">Ratio</p>
+                      <p className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Ratio</p>
                     </div>
                   </div>
                   <div className="space-y-1.5">
                     {simulationResult.userDefined.weights.map((item) => (
-                      <div key={`user-${item.ticker}`} className="flex items-center justify-between text-sm">
+                      <div key={`user-${item.ticker}`} className="flex items-center justify-between text-[15px]">
                         <span className="font-medium text-gray-700">{item.ticker}</span>
                         <div className="flex items-center gap-2">
                           <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                             <div className="h-full bg-emerald-400 rounded-full" style={{ width: `${Math.min(((item.weight * 100) / (parseNumber(maxWeight) || 15)) * 100, 100)}%` }} />
                           </div>
-                          <span className="text-xs text-gray-500 w-12 text-right">{(item.weight * 100).toFixed(1)}%</span>
+                          <span className="text-[13px] text-gray-500 w-12 text-right">{(item.weight * 100).toFixed(1)}%</span>
                         </div>
                       </div>
                     ))}
@@ -939,8 +999,8 @@ export default function AllocationPage() {
         {simulationResult?.standaloneRisk && (
           <div className="mt-6 bg-white border border-gray-200 rounded-2xl p-5 animate-fade-in-up">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-gray-900">Standalone Composite Risk</h3>
-              <span className="text-[10px] text-gray-400">Weighted avg of factor exposures &middot; lambda {simulationResult.lambda?.toFixed(2)}</span>
+              <h3 className="text-[15px] font-semibold text-gray-900">Standalone Composite Risk</h3>
+              <span className="text-[11px] text-gray-400">Weighted avg of factor exposures &middot; lambda {simulationResult.lambda?.toFixed(2)}</span>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
               {Object.entries(simulationResult.standaloneRisk)
@@ -952,7 +1012,7 @@ export default function AllocationPage() {
                   return (
                     <div key={ticker} className="border border-gray-100 rounded-xl px-3 py-2.5">
                       <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-xs font-bold text-gray-800">{ticker}</span>
+                        <span className="text-[13px] font-bold text-gray-800">{ticker}</span>
                         <span className="text-[11px] font-mono text-gray-500">{(risk * 100).toFixed(1)}</span>
                       </div>
                       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
@@ -968,15 +1028,15 @@ export default function AllocationPage() {
         {/* Save scheme & continue → Market Confidence */}
         <div className="mt-8 flex flex-col gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-gray-900">Happy with these weights?</p>
-            <p className="text-xs text-gray-500">Save them as an allocation scheme and carry them into Market Confidence.</p>
+            <p className="text-[15px] font-semibold text-gray-900">Happy with these weights?</p>
+            <p className="text-[13px] text-gray-500">Save them as an allocation scheme and carry them into Macro Risk.</p>
           </div>
           <button onClick={handleSaveSchemeAndContinue}
-            className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700">
+            className="inline-flex items-center gap-2 whitespace-nowrap rounded-xl bg-emerald-600 px-6 py-2.5 text-[15px] font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700">
             Save scheme &amp; continue <ArrowRight className="h-4 w-4" />
           </button>
         </div>
-        {schemeError && <p className="mt-3 text-sm font-medium text-red-600">{schemeError}</p>}
+        {schemeError && <p className="mt-3 text-[15px] font-medium text-red-600">{schemeError}</p>}
 
         </>)}
 
@@ -1007,22 +1067,22 @@ export default function AllocationPage() {
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Cash</span>
-                  <span className="text-sm text-gray-400">$</span>
-                  <input type="number" min="0" step="0.01" value={rbCash} onChange={(e) => setRbCash(e.target.value)} className="w-28 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
+                  <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Cash</span>
+                  <span className="text-[15px] text-gray-400">$</span>
+                  <input type="number" min="0" step="0.01" value={rbCash} onChange={(e) => setRbCash(e.target.value)} className="w-28 text-[15px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Target Cash</span>
-                  <input type="number" min="0" step="0.01" value={rbTargetCashPercent} onChange={(e) => setRbTargetCashPercent(e.target.value)} className="w-16 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
-                  <span className="text-xs text-gray-400">%</span>
+                  <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Target Cash</span>
+                  <input type="number" min="0" step="0.01" value={rbTargetCashPercent} onChange={(e) => setRbTargetCashPercent(e.target.value)} className="w-16 text-[15px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
+                  <span className="text-sm text-gray-400">%</span>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={loadPortfolioIntoRebalancer}
+                onClick={resetRebalancerToScheme}
                 disabled={rbLoadingPortfolio}
                 className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
-                title="Reset from holdings"
+                title="Reset: current values from holdings, target weights from the scheme"
               >
                 <RotateCcw size={15} className={rbLoadingPortfolio ? 'animate-spin' : ''} />
               </button>
@@ -1031,7 +1091,7 @@ export default function AllocationPage() {
             {rbLoadingPortfolio ? (
               <div className="flex items-center justify-center py-16">
                 <div className="w-4 h-4 border-2 border-emerald-200 border-t-emerald-600 rounded-full animate-spin mr-2" />
-                <span className="text-sm text-gray-400">Loading portfolio...</span>
+                <span className="text-[15px] text-gray-400">Loading portfolio...</span>
               </div>
             ) : (<>
             {/* Holdings cards */}
@@ -1043,38 +1103,38 @@ export default function AllocationPage() {
                       type="text" spellCheck={true}
                       value={row.ticker}
                       onChange={(e) => updateRbHolding(row.id, 'ticker', e.target.value)}
-                      className="w-20 text-sm font-bold text-gray-900 bg-transparent border-0 outline-none placeholder:text-gray-300 placeholder:font-normal"
+                      className="w-20 text-[15px] font-bold text-gray-900 bg-transparent border-0 outline-none placeholder:text-gray-300 placeholder:font-normal"
                       placeholder="TICKER"
                     />
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Value</span>
-                      <span className="text-xs text-gray-400">$</span>
+                      <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Value</span>
+                      <span className="text-sm text-gray-400">$</span>
                       <input
                         type="number" min="0" step="0.01"
                         value={row.currentValue}
                         onChange={(e) => updateRbHolding(row.id, 'currentValue', e.target.value)}
-                        className="w-24 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
+                        className="w-24 text-[15px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
                         placeholder="0"
                       />
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Current</span>
-                      <span className="w-12 text-right text-sm font-mono tabular-nums text-gray-500">
+                      <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Current</span>
+                      <span className="w-16 text-right text-[15px] font-mono tabular-nums text-gray-500">
                         {rbCurrentAum > 0 ? ((parseNumber(row.currentValue) / rbCurrentAum) * 100).toFixed(1) : '0.0'}%
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 ml-auto">
-                      <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Target</span>
+                      <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">Target</span>
                       <input
                         type="number" min="0" step="0.01"
                         data-col="rbTargetWeight" data-row={idx}
                         value={row.targetWeight}
                         onChange={(e) => updateRbHolding(row.id, 'targetWeight', e.target.value)}
                         onKeyDown={(e) => handleRbColumnTab(e, 'rbTargetWeight', idx)}
-                        className="w-16 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
+                        className="w-16 text-[15px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
                         placeholder="0"
                       />
-                      <span className="text-xs text-gray-400">%</span>
+                      <span className="text-sm text-gray-400">%</span>
                     </div>
                     {rbHoldings.length > 1 && (
                       <button
@@ -1092,23 +1152,23 @@ export default function AllocationPage() {
 
             {/* Actions */}
             <div className="flex items-center justify-between mt-5 animate-fade-in-up stagger-3">
-              <button type="button" onClick={addRbHolding} className="text-sm font-medium text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 px-4 py-2 rounded-xl transition-colors">
+              <button type="button" onClick={addRbHolding} className="text-[15px] font-medium text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 px-4 py-2 rounded-xl transition-colors">
                 + Add Holding
               </button>
-              <span className="text-xs text-gray-400">
+              <span className="text-sm text-gray-400">
                 Total: <span className={`font-semibold ${Math.abs(rbTotalTargetPercent - 100) < 0.01 ? 'text-emerald-600' : 'text-gray-900'}`}>{rbTotalTargetPercent.toFixed(2)}%</span>
               </span>
               <button
                 type="button"
                 onClick={handleGenerateRbPlan}
-                className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+                className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-[15px] font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
               >
                 <Zap className="w-4 h-4" />
                 Rebalance
               </button>
             </div>
 
-            {rbError && <p className="mt-4 text-sm text-red-600 font-medium">{rbError}</p>}
+            {rbError && <p className="mt-4 text-[15px] text-red-600 font-medium">{rbError}</p>}
 
             {rbPlan && (
               <div className="mt-8 space-y-4 animate-fade-in-up">
@@ -1122,25 +1182,25 @@ export default function AllocationPage() {
                         note: 'border-l-gray-300 bg-gray-50 text-gray-600',
                       };
                       return (
-                        <div key={`${step.text}-${index}`} className={`border-l-[3px] rounded-r-lg px-4 py-2.5 text-sm ${styles[step.type] || styles.note}`}>{step.text}</div>
+                        <div key={`${step.text}-${index}`} className={`border-l-[3px] rounded-r-lg px-4 py-2.5 text-[15px] ${styles[step.type] || styles.note}`}>{step.text}</div>
                       );
                     })}
                   </div>
                 ) : (
-                  <p className="text-sm text-gray-400 py-2">No trades required. Portfolio is already balanced.</p>
+                  <p className="text-[15px] text-gray-400 py-2">No trades required. Portfolio is already balanced.</p>
                 )}
 
                 {/* Buy / Sell side by side */}
                 {(Object.keys(rbPlan.buyDollars).length > 0 || Object.keys(rbPlan.sellDollars).length > 0) && (
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Buys</h4>
+                      <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Buys</h4>
                       {Object.keys(rbPlan.buyDollars).length === 0 ? (
-                        <p className="text-sm text-gray-400">None</p>
+                        <p className="text-[15px] text-gray-400">None</p>
                       ) : (
                         <div className="space-y-1.5">
                           {Object.entries(rbPlan.buyDollars).map(([ticker, value]) => (
-                            <div key={ticker} className="flex items-center justify-between text-sm">
+                            <div key={ticker} className="flex items-center justify-between text-[15px]">
                               <span className="font-medium text-gray-700">{ticker}</span>
                               <span className="font-semibold text-emerald-600">{formatCurrency(value)}</span>
                             </div>
@@ -1149,13 +1209,13 @@ export default function AllocationPage() {
                       )}
                     </div>
                     <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Sells</h4>
+                      <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Sells</h4>
                       {Object.keys(rbPlan.sellDollars).length === 0 ? (
-                        <p className="text-sm text-gray-400">None</p>
+                        <p className="text-[15px] text-gray-400">None</p>
                       ) : (
                         <div className="space-y-1.5">
                           {Object.entries(rbPlan.sellDollars).map(([ticker, value]) => (
-                            <div key={ticker} className="flex items-center justify-between text-sm">
+                            <div key={ticker} className="flex items-center justify-between text-[15px]">
                               <span className="font-medium text-gray-700">{ticker}</span>
                               <span className="font-semibold text-rose-600">{formatCurrency(value)}</span>
                             </div>
@@ -1168,19 +1228,19 @@ export default function AllocationPage() {
 
                 {/* Projected allocation — compact bar rows */}
                 <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                  <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Projected Allocation</h4>
+                  <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Projected Allocation</h4>
                   <div className="space-y-1.5">
                     {Object.entries(rbPlan.finalValues)
                       .sort(([, , ], [, , ]) => 0)
                       .sort(([a], [b]) => rbPlan.finalWeights[b] - rbPlan.finalWeights[a])
                       .map(([ticker, value]) => (
-                        <div key={ticker} className="flex items-center justify-between text-sm">
+                        <div key={ticker} className="flex items-center justify-between text-[15px]">
                           <span className="font-medium text-gray-700 w-16">{ticker}</span>
                           <div className="flex-1 mx-3 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                             <div className="h-full bg-emerald-400 rounded-full" style={{ width: `${Math.min(rbPlan.finalWeights[ticker] * 100, 100)}%` }} />
                           </div>
-                          <span className="text-xs text-gray-500 w-20 text-right">{(rbPlan.finalWeights[ticker] * 100).toFixed(1)}%</span>
-                          <span className="text-xs text-gray-400 w-24 text-right">{formatCurrency(value)}</span>
+                          <span className="text-sm text-gray-500 w-20 text-right">{(rbPlan.finalWeights[ticker] * 100).toFixed(1)}%</span>
+                          <span className="text-sm text-gray-400 w-24 text-right">{formatCurrency(value)}</span>
                         </div>
                       ))}
                   </div>
@@ -1188,36 +1248,36 @@ export default function AllocationPage() {
 
                 {/* Tax impact */}
                 <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                  <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-4">Tax Impact</h4>
+                  <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Tax Impact</h4>
                   {rbTaxBreakdown.rows.length === 0 ? (
-                    <p className="text-sm text-gray-400">No sells — no tax impact.</p>
+                    <p className="text-[15px] text-gray-400">No sells — no tax impact.</p>
                   ) : (<>
                     {/* Summary at top — large */}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                       <div>
-                        <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Capital Gains</p>
+                        <p className="text-sm text-gray-400 uppercase tracking-wide mb-1">Capital Gains</p>
                         {rbTaxBreakdown.totalGains < 0 ? (
-                          <p className="text-xl font-bold text-gray-900">None <span className="text-sm font-normal text-gray-400">({formatCurrency(rbTaxBreakdown.totalGains)})</span></p>
+                          <p className="text-xl font-bold text-gray-900">None <span className="text-[15px] font-normal text-gray-400">({formatCurrency(rbTaxBreakdown.totalGains)})</span></p>
                         ) : (
                           <p className="text-xl font-bold text-gray-900">{formatCurrency(rbTaxBreakdown.totalGains)}</p>
                         )}
                       </div>
                       <div>
-                        <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Tax Owed</p>
+                        <p className="text-sm text-gray-400 uppercase tracking-wide mb-1">Tax Owed</p>
                         {rbTaxBreakdown.totalTax < 0 ? (
-                          <p className="text-xl font-bold text-gray-900">None <span className="text-sm font-normal text-gray-400">({formatCurrency(rbTaxBreakdown.totalTax)})</span></p>
+                          <p className="text-xl font-bold text-gray-900">None <span className="text-[15px] font-normal text-gray-400">({formatCurrency(rbTaxBreakdown.totalTax)})</span></p>
                         ) : (
                           <p className="text-xl font-bold text-rose-600">{formatCurrency(rbTaxBreakdown.totalTax)}</p>
                         )}
                       </div>
                       <div>
-                        <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">AUM</p>
+                        <p className="text-sm text-gray-400 uppercase tracking-wide mb-1">AUM</p>
                         <p className="text-xl font-bold text-gray-900">{formatCurrency(rbAumValue)}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Tax / AUM</p>
+                        <p className="text-sm text-gray-400 uppercase tracking-wide mb-1">Tax / AUM</p>
                         {rbTaxOwedPctOfAum < 0 ? (
-                          <p className="text-xl font-bold text-gray-900">0.00% <span className="text-sm font-normal text-gray-400">({rbTaxOwedPctOfAum.toFixed(2)}%)</span></p>
+                          <p className="text-xl font-bold text-gray-900">0.00% <span className="text-[15px] font-normal text-gray-400">({rbTaxOwedPctOfAum.toFixed(2)}%)</span></p>
                         ) : (
                           <p className="text-xl font-bold text-gray-900">{rbTaxOwedPctOfAum.toFixed(2)}%</p>
                         )}
@@ -1226,35 +1286,35 @@ export default function AllocationPage() {
 
                     {/* Per-ticker breakdown below */}
                     <div className="border-t border-gray-100 pt-4 space-y-3">
-                      <h5 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Breakdown</h5>
+                      <h5 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Breakdown</h5>
                       {rbTaxBreakdown.rows.map((row) => (
                         <div key={row.ticker} className="border border-gray-100 rounded-xl p-3">
                           <div className="flex items-center justify-between mb-2.5">
-                            <span className="text-sm font-bold text-gray-900">{row.ticker}</span>
-                            <span className="text-[10px] text-gray-400">sell {formatCurrency(rbPlan.sellDollars[row.ticker])}</span>
+                            <span className="text-[15px] font-bold text-gray-900">{row.ticker}</span>
+                            <span className="text-[11px] text-gray-400">sell {formatCurrency(rbPlan.sellDollars[row.ticker])}</span>
                           </div>
                           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                             <div>
-                              <span className="text-[10px] text-gray-400 uppercase tracking-wide">Cost Basis</span>
-                              <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.initialValue ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'initialValue', e.target.value)} className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
+                              <span className="text-[11px] text-gray-400 uppercase tracking-wide">Cost Basis</span>
+                              <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.initialValue ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'initialValue', e.target.value)} className="w-full text-[15px] bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
                             </div>
                             <div>
-                              <span className="text-[10px] text-gray-400 uppercase tracking-wide">Mkt Value</span>
-                              <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.finalValue ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'finalValue', e.target.value)} className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
+                              <span className="text-[11px] text-gray-400 uppercase tracking-wide">Mkt Value</span>
+                              <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.finalValue ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'finalValue', e.target.value)} className="w-full text-[15px] bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
                             </div>
                             <div>
-                              <span className="text-[10px] text-gray-400 uppercase tracking-wide">Amt Sold</span>
-                              <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.amountSold ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'amountSold', e.target.value)} className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
+                              <span className="text-[11px] text-gray-400 uppercase tracking-wide">Amt Sold</span>
+                              <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.amountSold ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'amountSold', e.target.value)} className="w-full text-[15px] bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="0" />
                             </div>
                             <div>
-                              <span className="text-[10px] text-gray-400 uppercase tracking-wide">Tax Rate</span>
+                              <span className="text-[11px] text-gray-400 uppercase tracking-wide">Tax Rate</span>
                               <div className="flex items-center gap-1">
-                                <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.taxRate ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'taxRate', e.target.value)} className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="20" />
-                                <span className="text-xs text-gray-400">%</span>
+                                <input type="number" min="0" step="0.01" value={rbTaxInputs[row.ticker]?.taxRate ?? ''} onChange={(e) => updateRbTaxInput(row.ticker, 'taxRate', e.target.value)} className="w-full text-[15px] bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all" placeholder="20" />
+                                <span className="text-sm text-gray-400">%</span>
                               </div>
                             </div>
                           </div>
-                          <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                          <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
                             <span>Gain: <span className="font-semibold text-gray-700">{formatCurrency(row.gainRealized)}</span></span>
                             <span>Tax: <span className="font-semibold text-rose-600">{formatCurrency(row.taxOwed)}</span></span>
                           </div>
