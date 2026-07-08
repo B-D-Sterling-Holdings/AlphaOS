@@ -8,7 +8,7 @@ import { versionedWrite, versionedMutate, versionOf } from './concurrency';
   This is the single home for per-tenant configuration. As of migration 024 it
   also holds what used to be the standalone single-row config tables
   (allocation_config, sector_config, factor_config, macro_regime_config,
-  macro_regime_weights, portfolio_cash) — each is now one keyed row here.
+  portfolio_cash) — each is now one keyed row here.
 
   RLS scopes every read/write to the caller's tenant, so callers never pass
   tenant_id. `value` is JSONB (migration 023): PostgREST returns it already

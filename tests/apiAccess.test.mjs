@@ -64,8 +64,8 @@ test('every API_FEATURES owner is a real feature key', () => {
 
 test('the historically leaking routes are now gated', () => {
   // These all served tenant data while their feature's page was blocked.
-  assert.equal(isApiAllowed('/api/macro-regime/results', ['macro-regime']), false);
-  assert.equal(isApiAllowed('/api/macro-regime/weights', ['macro-regime']), false);
+  assert.equal(isApiAllowed('/api/macro-regime/results', ['allocation']), false);
+  assert.equal(isApiAllowed('/api/macro-regime/run', ['allocation']), false); // sub-path
   assert.equal(isApiAllowed('/api/allocation', ['allocation']), false);
   assert.equal(isApiAllowed('/api/tasks', ['tasks']), false);
   assert.equal(isApiAllowed('/api/tasks/reorder', ['tasks']), false); // sub-path
@@ -97,15 +97,13 @@ test('admin is role-gated, not feature-gated or common', () => {
 });
 
 test('multi-owner routes block only when ALL owners are disabled', () => {
-  // /api/realized-vol → ['allocation','macro-regime']
-  assert.equal(isApiAllowed('/api/realized-vol', ['allocation']), true);
-  assert.equal(isApiAllowed('/api/realized-vol', ['allocation', 'macro-regime']), false);
-  // /api/portfolio → all four holdings-derived features
+  // /api/portfolio → holdings, allocation, research (blocked only when all off)
   assert.equal(isApiAllowed('/api/portfolio', ['holdings']), true);
-  assert.equal(
-    isApiAllowed('/api/portfolio', ['holdings', 'allocation', 'macro-regime', 'research']),
-    false
-  );
+  assert.equal(isApiAllowed('/api/portfolio', ['holdings', 'allocation']), true);
+  assert.equal(isApiAllowed('/api/portfolio', ['holdings', 'allocation', 'research']), false);
+  // /api/realized-vol → allocation only (single owner)
+  assert.equal(isApiAllowed('/api/realized-vol', []), true);
+  assert.equal(isApiAllowed('/api/realized-vol', ['allocation']), false);
 });
 
 test('a user with no restrictions reaches everything gated', () => {

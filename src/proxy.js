@@ -120,7 +120,6 @@ export const config = {
     '/admin/:path*',
     '/holdings/:path*',
     '/allocation/:path*',
-    '/macro-regime/:path*',
     '/relationships/:path*',
     '/strategic-hub/:path*',
     '/tasks/:path*',

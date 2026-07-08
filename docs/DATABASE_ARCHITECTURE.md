@@ -172,7 +172,7 @@ table must be added to that list** or workspace deletion will orphan its rows.
 |---|---|
 | `holdings` | the actual book: `ticker`, `shares`, `cost_basis`, `added_at`. `UNIQUE (tenant_id, ticker)`. Writers: `/api/holdings` via `lib/portfolio.js`. |
 | `fund_nav_data` | daily `date`, `fund_nav`, `sp500_nav` series. NAV/share is computed by `/api/fund-nav` POST from the accounting state's share ladder; the S&P leg is normalized to inception (2024-09-17, ^GSPC 5634.58 → NAV 100). Read by the Financials charts and the investor-IRR engine. |
-| `app_settings` | per-tenant key/value store (`PRIMARY KEY (tenant_id, key)`, `value` is **JSONB**). The single home for per-tenant config; all access via `readSetting`/`writeSetting` in `lib/appSettings.js`. Known keys: `fund-accounting-state` (the entire fund accounting engine state — quarters, periods, contributions), `activeWatchlistId`, `task_boards`, `activeTaskBoardId`, `assignees` / `assignees_<boardId>`, `saved_emails`, and the former config tables `portfolio_cash` (`{cash}`), `allocation_config`, `sector_config`, `factor_config`, `macro_regime_config`, `macro_regime_weights`. |
+| `app_settings` | per-tenant key/value store (`PRIMARY KEY (tenant_id, key)`, `value` is **JSONB**). The single home for per-tenant config; all access via `readSetting`/`writeSetting` in `lib/appSettings.js`. Known keys: `fund-accounting-state` (the entire fund accounting engine state — quarters, periods, contributions), `activeWatchlistId`, `task_boards`, `activeTaskBoardId`, `assignees` / `assignees_<boardId>`, `saved_emails`, and the former config tables `portfolio_cash` (`{cash}`), `allocation_config`, `sector_config`, `factor_config`, `macro_regime_config`. |
 
 ### Research pipeline (Watchlist → Draft & Review → Research → Position Review)
 
@@ -245,7 +245,6 @@ via `lib/appSettings.js`:
   the allocation optimizer and the risk engine.
 - `macro_regime_config` — allocator hyper-parameters, synced to `config.yaml`
   before every pipeline run.
-- `macro_regime_weights` — saved portfolio weights.
 - `portfolio_cash` — `{ cash }`, one number per tenant.
 
 ### Macro-regime allocator
