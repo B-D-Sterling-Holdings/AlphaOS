@@ -233,6 +233,12 @@ table must be added to that list** or workspace deletion will orphan its rows.
 |---|---|
 | `issues` | GitHub-style tickets: `title`, `body JSONB` (rich-text blocks), `status open|resolved`, `author` (server-set from the session; non-admins only ever see their own), `comments JSONB`, per-tenant `number`, `labels JSONB`, and the admin-only triage columns `priority` (1–4), `complexity` (1–5), `dev_notes`, `sort_order`. `number` is assigned by a read-max+1 under RLS (races acceptable, no uniqueness constraint). |
 
+### Allocation risk inputs
+
+| Table | Purpose |
+|---|---|
+| `risk_factor_snapshots` | Append-only revision history behind the Allocation → **Inputs** tab (API `/api/allocation/risk-snapshots`). One row per committed revision of a ticker's risk inputs: `ticker`, self-describing `factors JSONB` (names) with aligned `scores`/`reasons`/`factor_weights JSONB` arrays, a free-text `note`, `author` (server-set), `created_at`. The *working* scores/reasons a stock currently uses still live in the `allocation_config` blob (`row.factorExposures` / `factorReasons`) — this table is the audit log the Inputs tab diffs against (newest row per ticker = "current saved"). |
+
 ### Per-tenant config (keys in `app_settings`)
 
 These were once six single-row config tables; migration 024 folded them into
