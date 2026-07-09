@@ -9,7 +9,9 @@ export const createAllocationRow = (overrides = {}) => ({
   ticker: '',
   expectedReturn: '',
   factorExposures: RISK_FACTORS.map(() => ''),
-  userWeight: '',
+  // Per-factor reasoning ("why this score for this stock"), aligned to RISK_FACTORS.
+  // Edited in the Allocation → Inputs tab; snapshotted into risk_factor_snapshots.
+  factorReasons: RISK_FACTORS.map(() => ''),
   ...overrides,
 });
 
@@ -23,6 +25,87 @@ export const createDefaultAllocations = () => [
     userWeight: '',
   }),
 ];
+
+// --- Risk score display scale --------------------------------------------
+// Risk factor SCORES are canonically 0–1 everywhere in storage and math (the
+// optimizer, the macro overlay, the realized-vol CDF all assume 0–1, and every
+// saved config already holds 0–1 values). The Inputs UI is friendlier on a 0–10
+// scale, so we convert ONLY at the input boundary — nothing downstream changes.
+export const RISK_DISPLAY_SCALE = 10;
+
+// Stored 0–1 value → the 0–10 string shown in the UI (rounded to hide float noise).
+export const toDisplayScore = (stored) => {
+  if (stored === '' || stored == null) return '';
+  const n = Number(stored);
+  if (!Number.isFinite(n)) return '';
+  return String(Math.round(n * RISK_DISPLAY_SCALE * 100) / 100);
+};
+
+// A 0–10 value typed in the UI → the 0–1 string persisted on the row.
+export const fromDisplayScore = (display) => {
+  if (display === '' || display == null || display === '-') return '';
+  const n = Number(display);
+  if (!Number.isFinite(n)) return '';
+  return String(n / RISK_DISPLAY_SCALE);
+};
+
+// --- Risk factor reasoning + snapshots -----------------------------------
+// The five factor SCORES per stock live on the allocation row (factorExposures)
+// and the reasoning behind each lives alongside (factorReasons). Rows saved by
+// older code won't have factorReasons, so always read them through this getter.
+export const getFactorReasons = (row) => {
+  const reasons = Array.isArray(row?.factorReasons) ? row.factorReasons : [];
+  return RISK_FACTORS.map((_, i) => reasons[i] ?? '');
+};
+
+// Normalize a row's five scores to display strings aligned to RISK_FACTORS.
+export const getFactorScores = (row) => {
+  const scores = Array.isArray(row?.factorExposures) ? row.factorExposures : [];
+  return RISK_FACTORS.map((_, i) => (scores[i] ?? '') === '' ? '' : String(scores[i]));
+};
+
+// Build the payload appended to risk_factor_snapshots when an analyst commits a
+// revision of a ticker's risk inputs. Self-describing: `factors` records the names
+// so later factor-list changes never silently re-label old history.
+export const buildRiskSnapshot = (row, factorWeights = [], note = '') => ({
+  ticker: (row?.ticker || '').trim().toUpperCase(),
+  factors: [...RISK_FACTORS],
+  scores: getFactorScores(row).map((v) => (v === '' ? null : Number(v))),
+  reasons: getFactorReasons(row),
+  factorWeights: RISK_FACTORS.map((_, i) => {
+    const w = factorWeights?.[i];
+    return w === '' || w == null ? null : Number(w);
+  }),
+  note: (note || '').trim(),
+});
+
+// Compare two score cells that may be '' / null / number / numeric-string.
+// Numeric when both parse ("0.40" == 0.4), else exact (blank vs blank).
+const sameScore = (a, b) => {
+  const aBlank = a === '' || a == null;
+  const bBlank = b === '' || b == null;
+  if (aBlank || bBlank) return aBlank && bBlank;
+  const na = Number(a);
+  const nb = Number(b);
+  if (Number.isFinite(na) && Number.isFinite(nb)) return Math.abs(na - nb) < 1e-9;
+  return String(a) === String(b);
+};
+
+// Does the row's current scores/reasons differ from the latest saved snapshot?
+// Drives the "unsaved changes" indicator / enables the Save revision button.
+export const riskInputsDiffer = (row, snapshot) => {
+  const scores = getFactorScores(row);
+  const reasons = getFactorReasons(row);
+  if (!snapshot) {
+    // No history yet: "dirty" only once something has actually been entered.
+    return scores.some((s) => s !== '') || reasons.some((r) => (r || '').trim() !== '');
+  }
+  const snapReasons = RISK_FACTORS.map((_, i) => snapshot.reasons?.[i] ?? '');
+  return (
+    scores.some((s, i) => !sameScore(s, snapshot.scores?.[i])) ||
+    reasons.some((r, i) => (r || '').trim() !== (snapReasons[i] || '').trim())
+  );
+};
 
 export const parseNumber = (value) => {
   const parsed = Number.parseFloat(value);

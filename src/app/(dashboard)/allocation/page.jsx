@@ -11,10 +11,11 @@ import {
   Legend,
 } from 'chart.js';
 import { Scatter } from 'react-chartjs-2';
-import { Settings, Target, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2, ArrowRight, ChevronDown } from 'lucide-react';
+import { Settings, Zap, X, SlidersHorizontal, RotateCcw, RefreshCw, Loader2, ArrowRight, ChevronDown } from 'lucide-react';
 import {
   DEFAULT_RISK_FACTOR_WEIGHTS,
   RISK_FACTORS,
+  RISK_DISPLAY_SCALE,
   buildRebalancePlanFromRows,
   calculateVolatilityScores,
   calculateRebalanceTaxBreakdown,
@@ -31,6 +32,7 @@ import {
   updateRebalanceTaxInputValue,
 } from '@/lib/allocationEngine';
 import ConfidenceTab from './ConfidenceTab';
+import InputsTab from './InputsTab';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
@@ -53,7 +55,7 @@ export default function AllocationPage() {
   const [simulating, setSimulating] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activeSubTab, setActiveSubTab] = useState('optimizer');
+  const [activeSubTab, setActiveSubTab] = useState('inputs');
   const [rbHoldings, setRbHoldings] = useState([]);
   const [rbCash, setRbCash] = useState('');
   const [rbTargetCashPercent, setRbTargetCashPercent] = useState('0');
@@ -454,6 +456,21 @@ export default function AllocationPage() {
     );
   };
 
+  // Per-factor reasoning, edited in the Inputs tab. Tolerates rows saved before
+  // factorReasons existed by seeding a blank array aligned to the factor list.
+  const updateAllocationReason = (id, index, value) => {
+    setAllocations((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const reasons = Array.isArray(row.factorReasons)
+          ? [...row.factorReasons]
+          : riskFactors.map(() => '');
+        reasons[index] = value;
+        return { ...row, factorReasons: reasons };
+      })
+    );
+  };
+
   const updateRiskFactorWeight = (index, value) => {
     setRiskFactorWeights((prev) => {
       const updated = [...prev];
@@ -720,21 +737,10 @@ export default function AllocationPage() {
                 </div>
               </div>
 
-              {/* Risk Factor Weights */}
-              <div>
-                <div className="flex items-center gap-2 mb-4">
-                  <Target className="w-4 h-4 text-gray-500" />
-                  <h3 className="text-sm font-semibold text-gray-900">Risk Factor Weights</h3>
-                </div>
-                <div className="space-y-3">
-                  {riskFactors.map((factor, index) => (
-                    <div key={factor} className="flex items-center justify-between gap-4">
-                      <label className="text-sm text-gray-600 min-w-[120px]">{factor}</label>
-                      <input type="number" min="0" step="0.01" value={riskFactorWeights[index]} onChange={(e) => updateRiskFactorWeight(index, e.target.value)} className="w-24 border border-gray-200 rounded-lg px-3 py-2 text-sm text-right focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all" />
-                    </div>
-                  ))}
-                </div>
-              </div>
+              {/* Risk Factor Weights now live in the Inputs tab, alongside the per-stock scores. */}
+              <p className="text-[12px] text-gray-400">
+                Risk factor weights and per-stock risk scores moved to the <span className="font-medium text-gray-500">Inputs</span> tab.
+              </p>
             </div>
           </div>
         </div>
@@ -749,6 +755,7 @@ export default function AllocationPage() {
         <div className="flex items-center justify-between mb-6 animate-fade-in-up stagger-2">
           <div className="flex items-center gap-1 bg-gray-100/80 rounded-xl p-1 w-fit">
             {[
+              { key: 'inputs', label: 'Inputs' },
               { key: 'optimizer', label: 'Optimizer' },
               { key: 'confidence', label: 'Macro Risk' },
               { key: 'rebalancer', label: 'Rebalancer' },
@@ -797,6 +804,17 @@ export default function AllocationPage() {
             </>)}
           </div>
         </div>
+
+        {activeSubTab === 'inputs' && (
+          <InputsTab
+            allocations={allocations}
+            updateAllocationExposure={updateAllocationExposure}
+            updateAllocationReason={updateAllocationReason}
+            riskFactorWeights={riskFactorWeights}
+            updateRiskFactorWeight={updateRiskFactorWeight}
+            volScoresLoading={volScoresLoading}
+          />
+        )}
 
         {activeSubTab === 'optimizer' && (<>
 
@@ -853,34 +871,34 @@ export default function AllocationPage() {
                 )}
               </div>
 
-              {/* Bottom row: Risk factor exposures */}
+              {/* Bottom row: Risk factor exposures — read-only here; edited (with reasoning) in the Inputs tab */}
               <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-50">
                 <span className="text-[11px] font-medium text-gray-300 uppercase tracking-wide shrink-0">Risk Factors</span>
                 <div className="flex items-center gap-3 flex-wrap">
                   {row.factorExposures.map((value, index) => {
                     const ticker = row.ticker.trim().toUpperCase();
                     const isVolLoading = index === 0 && ticker !== 'CASH' && volScoresLoading[ticker];
+                    const display = value === '' || value == null ? '—' : (Number(value) * RISK_DISPLAY_SCALE).toFixed(1);
                     return (
-                    <div key={`${row.id}-${riskFactors[index]}`} className="flex items-center gap-1.5">
-                      <span className="text-[11px] text-gray-400">{riskFactors[index]}</span>
-                      {isVolLoading ? (
-                        <div className="w-14 h-[22px] flex items-center justify-center">
-                          <Loader2 size={12} className="animate-spin text-emerald-500" />
-                        </div>
-                      ) : (
-                      <input
-                        type="number" min="0" step="0.01"
-                        value={value}
-                        onChange={(e) => updateAllocationExposure(row.id, index, e.target.value)}
-                        className={`w-14 text-[13px] text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-1.5 py-0.5 text-right focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all ${index === 0 && ticker !== 'CASH' ? 'border-emerald-200 bg-emerald-50/30' : ''}`}
-                        placeholder="0"
-                        title={index === 0 && ticker !== 'CASH' ? 'Auto-computed from realized vol (CDF of cross-sectional distribution)' : ''}
-                      />
-                      )}
-                    </div>
+                      <div key={`${row.id}-${riskFactors[index]}`} className="flex items-center gap-1">
+                        <span className="text-[11px] text-gray-400">{riskFactors[index]}</span>
+                        {isVolLoading ? (
+                          <Loader2 size={11} className="animate-spin text-emerald-500" />
+                        ) : (
+                          <span className={`text-[12px] font-mono tabular-nums ${index === 0 && ticker !== 'CASH' ? 'text-emerald-600' : 'text-gray-600'}`}>{display}</span>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveSubTab('inputs')}
+                  className="ml-auto text-[11px] font-medium text-gray-400 hover:text-emerald-600 transition-colors shrink-0"
+                  title="Edit risk scores and reasoning in the Inputs tab"
+                >
+                  Edit in Inputs →
+                </button>
               </div>
             </div>
           ))}
