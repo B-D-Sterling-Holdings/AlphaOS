@@ -94,15 +94,53 @@ export async function uploadTenantImage({ ticker, file }) {
 }
 
 /**
- * Store a document-library file under the session tenant's prefix.
- * Returns { path, url } where url is the app-relative (auth-gated) URL.
+ * Mint a short-lived, single-use signed UPLOAD URL for a NEW document-library
+ * file under the session tenant's prefix. The browser PUTs the bytes straight
+ * to Storage with this URL, bypassing the serverless request-body limit that
+ * capped uploads at a few MB — then calls the documents POST to record
+ * metadata. The object path is BUILT here from the tenant prefix (same rule as
+ * the old proxy upload), so the client never chooses where its bytes land.
+ *
+ * Returns { bucket, path, token, signedUrl }; the signed URL is valid for
+ * 2 hours (Supabase default).
  */
-export async function uploadTenantDocument({ category, file }) {
+export async function createTenantDocumentUploadUrl({ category, fileName }) {
   const session = await requireSession();
   const categorySeg = safeSegment(category, 'other');
-  const nameSeg = safeSegment(file.name, 'file');
+  const nameSeg = safeSegment(fileName, 'file');
   const path = `${session.tenantId}/${categorySeg}/${Date.now()}_${nameSeg}`;
-  return uploadToBucket({ bucket: DOCUMENT_BUCKET, path, file });
+  const { data, error } = await supabaseAdmin.storage
+    .from(DOCUMENT_BUCKET)
+    .createSignedUploadUrl(path);
+  if (error) throw new Error(error.message);
+  return { bucket: DOCUMENT_BUCKET, path, token: data.token, signedUrl: data.signedUrl };
+}
+
+/**
+ * Confirm a directly-uploaded document object before its metadata row is
+ * written. The path must belong to the session tenant AND the object must
+ * actually exist in the bucket, so a crafted "commit" can neither create a row
+ * pointing at nothing nor reference another tenant's prefix. Returns the
+ * authoritative { path, url, size, contentType } read back from Storage —
+ * size and type come from the stored object, never from the client body.
+ * Throws { status: 401|403|404 }-shaped errors for the route to map.
+ */
+export async function confirmTenantDocumentUpload(path) {
+  const session = await requireSession();
+  if (!isPathAllowedForTenant(session.tenantId, path)) throw forbidden();
+  const { data, error } = await supabaseAdmin.storage.from(DOCUMENT_BUCKET).info(path);
+  if (error) {
+    const notFound = /not.?found/i.test(error.message);
+    const err = new Error(notFound ? 'Uploaded file not found in storage' : error.message);
+    err.status = notFound ? 404 : 500;
+    throw err;
+  }
+  return {
+    path,
+    url: appStorageUrl(DOCUMENT_BUCKET, path),
+    size: typeof data.size === 'number' ? data.size : null,
+    contentType: data.contentType || '',
+  };
 }
 
 /**

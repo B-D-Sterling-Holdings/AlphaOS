@@ -440,17 +440,59 @@ export default function DocumentsPage() {
     setUploading(true);
     setUploadError('');
     const failed = [];
+    // The bytes go straight to Storage via a signed upload URL (so large files
+    // don't hit the serverless request-body limit); only metadata comes back
+    // through /api/documents. One anon Storage client for the whole batch.
+    let storageClient;
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      storageClient = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      );
+    } catch (err) {
+      setUploadError('Could not initialize the uploader. Please retry.');
+      setUploading(false);
+      return;
+    }
     for (const file of pendingFiles) {
       try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('title', pendingFiles.length === 1 ? (uploadTitle || file.name) : file.name);
-        formData.append('category', uploadCategory);
-        formData.append('ticker', uploadTicker);
-        formData.append('notes', uploadNotes);
+        // 1. Ask the server for a tenant-scoped signed upload URL.
+        const signRes = await fetch('/api/documents/upload-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: uploadCategory, fileName: file.name }),
+        });
+        const signData = await signRes.json().catch(() => ({}));
+        if (!signRes.ok) {
+          failed.push({ name: file.name, reason: signData.error || `Upload failed (${signRes.status})` });
+          continue;
+        }
 
-        const res = await fetch('/api/documents', { method: 'POST', body: formData });
-        const data = await res.json();
+        // 2. PUT the bytes directly to Storage (bypasses the function body limit).
+        const { error: putError } = await storageClient.storage
+          .from(signData.bucket)
+          .uploadToSignedUrl(signData.path, signData.token, file, { contentType: file.type || undefined });
+        if (putError) {
+          failed.push({ name: file.name, reason: putError.message || 'Storage upload failed' });
+          continue;
+        }
+
+        // 3. Record metadata; the server re-verifies the object before inserting.
+        const res = await fetch('/api/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            storagePath: signData.path,
+            title: pendingFiles.length === 1 ? (uploadTitle || file.name) : file.name,
+            category: uploadCategory,
+            ticker: uploadTicker,
+            notes: uploadNotes,
+            fileName: file.name,
+            fileType: file.type,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           failed.push({ name: file.name, reason: data.error || `Upload failed (${res.status})` });
           continue;
