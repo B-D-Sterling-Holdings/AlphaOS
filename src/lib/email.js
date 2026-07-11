@@ -129,6 +129,50 @@ export function renderNotifyEmail({ ticker, recipientName, role, threads, stageL
 }
 
 /**
+ * Build the notification email for a new comment on an in-app Feedback / Issues
+ * ticket. Sent only when the admin explicitly opts in and picks a recipient at
+ * comment / close time — a single immediate email, no cadence / auto-reminder.
+ *
+ * @param {object} opts
+ * @param {number|undefined} opts.number — the tenant-scoped issue number (#12)
+ * @param {string} opts.title — the issue title
+ * @param {string} opts.recipientName — optional display name of the recipient
+ * @param {string} opts.commenterName — who wrote the comment
+ * @param {*} opts.body — the new comment, in RichTextArea block format
+ * @param {boolean} opts.closing — true when the comment accompanied closing the issue
+ */
+export function renderIssueNotifyEmail({ number, title, recipientName, commenterName, body, closing }) {
+  const ref = number ? `#${number}` : '';
+  const safeTitle = escapeHtml(title || 'this issue');
+  const commenter = escapeHtml(commenterName || 'An admin');
+  const action = closing
+    ? `<strong>${commenter}</strong> closed an issue${ref ? ` (<strong>${ref}</strong>)` : ''} with a comment:`
+    : `<strong>${commenter}</strong> commented on an issue${ref ? ` (<strong>${ref}</strong>)` : ''}:`;
+  const subject = closing
+    ? `[Issue${ref ? ` ${ref}` : ''}] Closed with a comment — "${title || 'issue'}"`
+    : `[Issue${ref ? ` ${ref}` : ''}] New comment on "${title || 'issue'}"`;
+
+  const html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#111827;">
+      <p style="font-size:15px;margin:0 0 4px;">Hi ${escapeHtml(recipientName || 'there')},</p>
+      <p style="font-size:15px;color:#374151;margin:0 0 16px;">${action}</p>
+      <div style="border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:12px 0;">
+        <div style="font-size:14px;font-weight:700;color:#111827;margin-bottom:8px;">${safeTitle}</div>
+        <div style="border-left:2px solid #05966933;padding:2px 0 2px 12px;margin:4px 0;">
+          <div style="font-size:12px;font-weight:600;color:#059669;">${commenter}</div>
+          <div style="font-size:14px;color:#374151;line-height:1.5;">${renderBody(body)}</div>
+        </div>
+      </div>
+      <p style="font-size:13px;color:#6b7280;margin:16px 0 0;">
+        Open the <strong>Feedback</strong> panel in AlphaOS to reply or see the full thread.
+      </p>
+      <p style="font-size:12px;color:#9ca3af;margin-top:20px;">Sent from AlphaOS · Strategic Research</p>
+    </div>`;
+
+  return { subject, html };
+}
+
+/**
  * Given the draftReview state, figure out which unresolved threads are waiting on
  * each role. A thread is "waiting" on whoever should speak next: the opposite of
  * the last message's role. Empty threads (no comments yet) are skipped — there's

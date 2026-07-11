@@ -49,6 +49,16 @@ import {
  * and Close / Reopen / Delete.
  */
 
+// Quick-pick recipients for the "notify by email" prompt. Hard-coded for now
+// (development) — swap for a real per-tenant contact list later. A custom address
+// can always be typed in the prompt instead.
+const NOTIFY_RECIPIENTS = [
+  { name: 'Dhruv', email: 'dattadhruv930@gmail.com' },
+  { name: 'Bhuvan', email: 'bsiddaveerappa@gmail.com' },
+];
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // Read-only render of stored rich-text (issue body / comment). The scoped styles
 // in the component cover images, tables and lists so content looks the same as in
 // the editor without mounting an editable RichTextArea.
@@ -181,6 +191,13 @@ export default function IssuesWidget() {
   const [composerNonce, setComposerNonce] = useState(0);
   const [posting, setPosting] = useState(false);
 
+  // "Notify by email?" prompt shown to admins when they comment / close-with-comment.
+  // notifyPrompt: null | { mode: 'comment' | 'status', action?: 'resolve' | 'reopen' }
+  const [notifyPrompt, setNotifyPrompt] = useState(null);
+  const [notifyEnabled, setNotifyEnabled] = useState(false); // opt-in; default is skip
+  const [notifyTarget, setNotifyTarget] = useState('');   // a recipient email, or '__custom__'
+  const [notifyCustom, setNotifyCustom] = useState('');   // custom address when notifyTarget === '__custom__'
+
   // Per-action busy / confirm state
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -223,13 +240,14 @@ export default function IssuesWidget() {
     if (!open) return;
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
-      if (menu) setMenu(null);
+      if (notifyPrompt) setNotifyPrompt(null);   // dismiss the notify prompt first
+      else if (menu) setMenu(null);
       else if (view !== 'list') { setView('list'); setSelectedId(null); }
       else setOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, menu, view]);
+  }, [open, menu, view, notifyPrompt]);
 
   const selected = useMemo(() => issues.find(i => i.id === selectedId) || null, [issues, selectedId]);
   const totalOpen = useMemo(() => countOpenIssues(issues), [issues]);
@@ -296,14 +314,20 @@ export default function IssuesWidget() {
     }
   };
 
-  const postComment = async () => {
+  // Post the current draft as a comment. `notify` (optional) tells the server to
+  // email a chosen recipient — set by the "Notify by email?" prompt, absent otherwise.
+  const submitComment = async (notify) => {
+    await mutate({ id: selected.id, action: 'comment', body: commentDraft, notify: notify || undefined });
+    setCommentDraft(EMPTY_ISSUE_BODY);
+    setComposerNonce(n => n + 1);
+  };
+
+  const postComment = async (notify) => {
     if (isBodyEmpty(commentDraft) || posting || !selected) return;
     setPosting(true);
     setError('');
     try {
-      await mutate({ id: selected.id, action: 'comment', body: commentDraft });
-      setCommentDraft(EMPTY_ISSUE_BODY);
-      setComposerNonce(n => n + 1);
+      await submitComment(notify);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -312,22 +336,65 @@ export default function IssuesWidget() {
   };
 
   // Close / reopen. If there's a pending comment when closing, post it first —
-  // GitHub's "Close with comment".
-  const setStatus = async (action) => {
+  // GitHub's "Close with comment". `notify` rides along on that comment.
+  const setStatus = async (action, notify) => {
     if (!selected || busy) return;
     setBusy(true);
     setError('');
     try {
       if (!isBodyEmpty(commentDraft)) {
-        await mutate({ id: selected.id, action: 'comment', body: commentDraft });
-        setCommentDraft(EMPTY_ISSUE_BODY);
-        setComposerNonce(n => n + 1);
+        await submitComment(notify);
       }
       await mutate({ id: selected.id, action });
     } catch (e) {
       setError(e.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Admins are asked whether to email a notification before a comment / close-with-
+  // comment actually posts; the prompt then calls back into postComment / setStatus.
+  // Non-admins (and empty-draft plain closes / reopens) go straight through.
+  const requestComment = () => {
+    if (isBodyEmpty(commentDraft) || posting || !selected) return;
+    if (isAdmin) openNotifyPrompt({ mode: 'comment' });
+    else postComment(null);
+  };
+  const requestStatus = (action) => {
+    if (!selected || busy) return;
+    if (isAdmin && !isBodyEmpty(commentDraft)) openNotifyPrompt({ mode: 'status', action });
+    else setStatus(action, null);
+  };
+
+  const openNotifyPrompt = (prompt) => {
+    setNotifyEnabled(false);   // default: skip — opt in by ticking the box
+    setNotifyTarget('');
+    setNotifyCustom('');
+    setNotifyPrompt(prompt);
+  };
+
+  // Resolve the currently-selected recipient in the prompt (a quick-pick or the
+  // typed custom address), or null if nothing valid is chosen yet.
+  const resolvedNotify = (() => {
+    if (notifyTarget === '__custom__') {
+      const email = notifyCustom.trim();
+      return EMAIL_RE.test(email) ? { email, name: '' } : null;
+    }
+    const r = NOTIFY_RECIPIENTS.find(x => x.email === notifyTarget);
+    return r ? { email: r.email, name: r.name } : null;
+  })();
+
+  // Confirm the prompt: `notify` present ⇒ send an email, null ⇒ skip. Either way
+  // the comment / status change still goes through.
+  const confirmNotify = (notify) => {
+    const prompt = notifyPrompt;
+    setNotifyPrompt(null);
+    if (!prompt) return;
+    if (prompt.mode === 'comment') {
+      postComment(notify);
+    } else {
+      setStatus(prompt.action, notify ? { ...notify, closing: prompt.action === 'resolve' } : null);
     }
   };
 
@@ -1048,7 +1115,7 @@ export default function IssuesWidget() {
                           {isAdmin && (
                             selected.status === 'resolved' ? (
                               <button
-                                onClick={() => setStatus('reopen')}
+                                onClick={() => requestStatus('reopen')}
                                 disabled={busy}
                                 className="flex items-center gap-1.5 text-[12.5px] font-semibold px-3 py-1.5 rounded-lg border border-gray-300 text-emerald-700 bg-white hover:bg-emerald-50 disabled:opacity-50 transition-colors"
                               >
@@ -1056,7 +1123,7 @@ export default function IssuesWidget() {
                               </button>
                             ) : (
                               <button
-                                onClick={() => setStatus('resolve')}
+                                onClick={() => requestStatus('resolve')}
                                 disabled={busy}
                                 className="flex items-center gap-1.5 text-[12.5px] font-semibold px-3 py-1.5 rounded-lg border border-gray-300 text-purple-700 bg-white hover:bg-purple-50 disabled:opacity-50 transition-colors"
                               >
@@ -1066,7 +1133,7 @@ export default function IssuesWidget() {
                             )
                           )}
                           <button
-                            onClick={postComment}
+                            onClick={requestComment}
                             disabled={isBodyEmpty(commentDraft) || posting}
                             className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                           >
@@ -1200,6 +1267,102 @@ export default function IssuesWidget() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* "Notify by email?" prompt — shown to admins before a comment / close-with-
+          comment posts. Pick a recipient and send, or skip (the comment still posts). */}
+      {notifyPrompt && (
+        <div className="fixed inset-0 z-[10010] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/50 backdrop-blur-sm" onClick={() => setNotifyPrompt(null)} />
+          <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200">
+              <h3 className="text-[15px] font-bold text-gray-900">
+                {notifyPrompt.mode === 'status' && notifyPrompt.action === 'resolve'
+                  ? 'Close this issue with a comment'
+                  : notifyPrompt.mode === 'status'
+                    ? 'Reopen this issue with a comment'
+                    : 'Post your comment'}
+              </h3>
+              <p className="text-[12.5px] text-gray-500 mt-0.5">
+                By default nobody is emailed. Tick the box below only if you want to notify someone.
+              </p>
+            </div>
+            <div className="px-5 py-4">
+              {/* Opt-in: unchecked by default, so the primary action is a plain post. */}
+              <button
+                onClick={() => setNotifyEnabled(v => !v)}
+                className="flex items-center gap-2.5 w-full text-left"
+                role="checkbox"
+                aria-checked={notifyEnabled}
+              >
+                <span className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors ${notifyEnabled ? 'bg-emerald-600 border-emerald-600' : 'border-gray-300 bg-white'}`}>
+                  {notifyEnabled && <Check size={13} className="text-white" />}
+                </span>
+                <span className="text-[13px] font-semibold text-gray-800">Send an email notification</span>
+              </button>
+
+              {notifyEnabled && (
+                <div className="space-y-2 mt-3 pl-0.5">
+                  {NOTIFY_RECIPIENTS.map(r => {
+                    const active = notifyTarget === r.email;
+                    return (
+                      <button
+                        key={r.email}
+                        onClick={() => { setNotifyTarget(r.email); setNotifyCustom(''); }}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-colors ${active ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 hover:bg-gray-50'}`}
+                      >
+                        <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${active ? 'border-emerald-500' : 'border-gray-300'}`}>
+                          {active && <span className="w-2 h-2 rounded-full bg-emerald-500" />}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-[13px] font-semibold text-gray-800">{r.name}</span>
+                          <span className="block text-[11.5px] text-gray-500 truncate">{r.email}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+
+                  {/* Custom address */}
+                  <div className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-colors ${notifyTarget === '__custom__' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200'}`}>
+                    <button
+                      onClick={() => setNotifyTarget('__custom__')}
+                      className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${notifyTarget === '__custom__' ? 'border-emerald-500' : 'border-gray-300'}`}
+                      aria-label="Use a custom email address"
+                    >
+                      {notifyTarget === '__custom__' && <span className="w-2 h-2 rounded-full bg-emerald-500" />}
+                    </button>
+                    <input
+                      type="email"
+                      value={notifyCustom}
+                      onChange={e => { setNotifyCustom(e.target.value); setNotifyTarget('__custom__'); }}
+                      placeholder="Other email address…"
+                      className="flex-1 min-w-0 bg-transparent text-[13px] text-gray-800 placeholder:text-gray-400 outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-gray-200 bg-gray-50/70">
+              {notifyEnabled && (
+                <button
+                  onClick={() => confirmNotify(null)}
+                  className="text-[12.5px] font-semibold px-3 py-2 rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors"
+                >
+                  Post without email
+                </button>
+              )}
+              <button
+                onClick={() => confirmNotify(notifyEnabled ? resolvedNotify : null)}
+                disabled={notifyEnabled && !resolvedNotify}
+                className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {notifyEnabled
+                  ? `Send email & ${notifyPrompt.action === 'resolve' ? 'close' : notifyPrompt.action === 'reopen' ? 'reopen' : 'post'}`
+                  : notifyPrompt.action === 'resolve' ? 'Close issue' : notifyPrompt.action === 'reopen' ? 'Reopen issue' : 'Post comment'}
+              </button>
+            </div>
           </div>
         </div>
       )}
