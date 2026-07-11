@@ -42,11 +42,12 @@ import {
  * and a detail view with a comment timeline.
  *
  * Permissions mirror the API (src/app/api/issues/route.js): every user can open an
- * issue, comment, and edit labels — but non-admins are served ONLY the tickets
- * they authored (open + previously closed), so for them this reads as a personal
- * "my tickets" panel rather than a team board (the list chrome — label filter,
- * sort — is hidden too). Only an admin (the CIO login) sees everyone's issues
- * and Close / Reopen / Delete.
+ * issue, comment, and edit labels — but non-(workspace-)admins are served ONLY the
+ * tickets they authored (open + previously closed), so for them this reads as a
+ * personal "my tickets" panel rather than a team board (the list chrome — label
+ * filter, sort — is hidden too). A workspace admin — the CIO login AND every
+ * member of the admin workspace — sees everyone's issues and Close / Reopen /
+ * Delete. `isWorkspaceAdmin` (not the global `isAdmin`) is what gates all of this.
  */
 
 // Quick-pick recipients for the "notify by email" prompt. Hard-coded for now
@@ -164,7 +165,9 @@ function Menu({ open, onClose, align = 'right', width = 'w-56', title, children 
 }
 
 export default function IssuesWidget() {
-  const { authenticated, isAdmin } = useAuth();
+  // Workspace admin: the global CIO admin OR any member of the admin workspace.
+  // Aliased to `isAdmin` locally so the whole widget reads unchanged.
+  const { authenticated, isWorkspaceAdmin: isAdmin } = useAuth();
 
   const [open, setOpen] = useState(false);
   const [view, setView] = useState('list');      // 'list' | 'new' | 'detail'

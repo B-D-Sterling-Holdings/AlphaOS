@@ -16,6 +16,13 @@
   'user'  — a workspace member (sub-user), or a legacy standalone login.
             Sees only the features an admin/owner left enabled; manages
             nothing.
+
+  The admin workspace (the CIO tenant) is a special case: EVERY member of it,
+  whatever their stored role, is treated as an admin *within that workspace* —
+  full feedback board, no feature restrictions, and user management. This is
+  scoped to the CIO tenant only and never grants cross-tenant (global-admin)
+  powers; callers pass `isAdminWorkspace` (tenantId === CIO_TENANT_ID) so these
+  predicates can stay framework-neutral without importing the constant.
 */
 
 export const ROLES = ['admin', 'owner', 'user'];
@@ -25,16 +32,20 @@ export function normalizeRole(role) {
   return ROLES.includes(role) ? role : 'user';
 }
 
-/** Only global admins are never feature-restricted. */
-export function isUnrestrictedRole(role) {
-  return role === 'admin';
+/**
+ * Never feature-restricted: global admins, and every member of the admin
+ * workspace (the CIO tenant) — the internal team gets full access like the CIO.
+ */
+export function isUnrestrictedRole(role, isAdminWorkspace = false) {
+  return role === 'admin' || isAdminWorkspace;
 }
 
 /**
  * May this role open /admin and call the user-management API at all?
- * Owners are additionally scoped to their own tenant server-side — this only
- * answers "is the door open", not "which users may they touch".
+ * Owners — and every member of the admin workspace — are additionally scoped to
+ * their own tenant server-side; this only answers "is the door open", not
+ * "which users may they touch". Cross-tenant management stays global-admin only.
  */
-export function canManageUsers(role) {
-  return role === 'admin' || role === 'owner';
+export function canManageUsers(role, isAdminWorkspace = false) {
+  return role === 'admin' || role === 'owner' || isAdminWorkspace;
 }

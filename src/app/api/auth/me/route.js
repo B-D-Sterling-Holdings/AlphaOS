@@ -5,6 +5,7 @@ import {
   verifySession,
   setSessionCookie,
   clearSessionCookie,
+  isAdminWorkspaceTenant,
 } from '@/lib/auth';
 import { getUserAuthState, getSessionNotBefore } from '@/lib/users';
 import { sanitizeFeatureKeys } from '@/lib/features';
@@ -38,13 +39,18 @@ export async function GET(request) {
 
   let role = normalizeRole(session.role);
 
+  // Members of the admin workspace (the CIO tenant) are elevated to admin within
+  // that workspace: never feature-restricted, and shown the shield / user
+  // management. This is tenant-only and never cross-tenant global admin.
+  const isAdminWorkspace = isAdminWorkspaceTenant(session.tenantId);
+
   // Read the live access list from the DB (falling back to the JWT claim if the
   // lookup fails) so an admin's change shows up on the user's next page load —
-  // not only after their week-long session JWT is reissued. Only admins are
-  // never restricted (owners are gated like any user). The same lookup enforces
+  // not only after their week-long session JWT is reissued. Global admins and
+  // admin-workspace members are never restricted. The same lookup enforces
   // disable/delete mid-session: a revoked account is logged out here rather
   // than riding out its 7-day token.
-  let disabledFeatures = isUnrestrictedRole(role) ? [] : sanitizeFeatureKeys(session.disabledFeatures);
+  let disabledFeatures = isUnrestrictedRole(role, isAdminWorkspace) ? [] : sanitizeFeatureKeys(session.disabledFeatures);
   let claimsStale = false;
   if (USERS_TABLE_ID_RE.test(session.userId || '')) {
     try {
@@ -57,7 +63,7 @@ export async function GET(request) {
       const claimed = sanitizeFeatureKeys(session.disabledFeatures);
       claimsStale =
         live.length !== claimed.length || live.some((k) => !claimed.includes(k));
-      disabledFeatures = live;
+      disabledFeatures = isUnrestrictedRole(role, isAdminWorkspace) ? [] : live;
     } catch {
       // Transient lookup failure — fall back to the JWT claims read above.
     }
@@ -67,6 +73,7 @@ export async function GET(request) {
     authenticated: true,
     user: { username: session.username },
     role,
+    isAdminWorkspace,
     disabledFeatures,
     expiresAt: session.exp ? new Date(session.exp * 1000).toISOString() : null,
   });

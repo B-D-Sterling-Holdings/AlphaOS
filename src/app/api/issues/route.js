@@ -11,12 +11,15 @@ import { signStorageUrlsForTenant } from '@/lib/storage';
   Supabase table required — created by scripts/migrations/010_issues.sql. Rows are
   tenant-scoped by RLS, so every user in a tenant shares the same issue board.
 
-  Authorization split:
+  Authorization split (keyed on db.isWorkspaceAdmin — true for the global admin
+  AND for every member of the admin workspace / CIO tenant, so the internal team
+  all sees the full board like the CIO):
     - Any authenticated user may open an issue (POST) or comment (PUT action=comment).
-    - Non-admins only ever see (and may only comment on / relabel) issues THEY
-      authored — the board is not shared; it reads as "my open/closed tickets".
-    - Only an admin (the CIO login) sees every issue and may resolve, reopen, or
-      delete. All of this is gated HERE, from the verified session — RLS only
+    - Non-workspace-admins only ever see (and may only comment on / relabel)
+      issues THEY authored — the board is not shared; it reads as "my
+      open/closed tickets".
+    - A workspace admin sees every issue in the tenant and may resolve, reopen,
+      or delete. All of this is gated HERE, from the verified session — RLS only
       enforces tenant isolation, not roles.
 
   Author/attribution is always taken from the session (db.username), never from the
@@ -63,7 +66,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // can't be abused as an open mail relay.
 async function notifyIssueComment(db, { issue, commentBody, notify }) {
   try {
-    if (!db.isAdmin) return;
+    if (!db.isWorkspaceAdmin) return;
     const to = (notify?.email || '').trim();
     if (!EMAIL_RE.test(to)) return; // no / invalid recipient → no email
     // Re-sign inline-image references so the recipient's email client (no cookie)
@@ -94,10 +97,10 @@ export async function GET() {
       .from(TABLE)
       .select('*')
       .order('updated_at', { ascending: false });
-    if (!db.isAdmin) query = query.eq('author', db.username || '');
+    if (!db.isWorkspaceAdmin) query = query.eq('author', db.username || '');
     const { data, error } = await query;
     if (error) throw new Error(error.message);
-    const rows = db.isAdmin
+    const rows = db.isWorkspaceAdmin
       ? (data || [])
       : (data || []).map(({ priority, dev_notes, sort_order, complexity, ...rest }) => rest);
     return NextResponse.json(rows);
@@ -171,7 +174,7 @@ export async function PUT(req) {
         match: { id },
         mutate: (existing) => {
           // Non-admins can only comment on their own tickets (mirrors GET visibility).
-          if (!db.isAdmin && existing.author !== db.username) return null;
+          if (!db.isWorkspaceAdmin && existing.author !== db.username) return null;
           const comment = {
             id: randomUUID(),
             author: db.username || '',
@@ -200,7 +203,7 @@ export async function PUT(req) {
         .from(TABLE)
         .update({ labels: normalizeLabels(body.labels), updated_at: new Date().toISOString() })
         .eq('id', id);
-      if (!db.isAdmin) update = update.eq('author', db.username || '');
+      if (!db.isWorkspaceAdmin) update = update.eq('author', db.username || '');
       const { data, error } = await update.select().maybeSingle();
       if (error) throw new Error(error.message);
       if (!data) return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
@@ -210,7 +213,7 @@ export async function PUT(req) {
     // Priority / complexity / dev notes / manual order — the admin's triage
     // state for the Dev tab.
     if (action === 'priority' || action === 'complexity' || action === 'dev-notes' || action === 'sort-order') {
-      if (!db.isAdmin) {
+      if (!db.isWorkspaceAdmin) {
         return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
       }
       const updates = action === 'priority'
@@ -230,7 +233,7 @@ export async function PUT(req) {
 
     // Resolve / reopen — admin only.
     if (action === 'resolve' || action === 'reopen') {
-      if (!db.isAdmin) {
+      if (!db.isWorkspaceAdmin) {
         return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
       }
       const updates = action === 'resolve'
@@ -248,7 +251,7 @@ export async function PUT(req) {
     // except the Archived one. Requires migration 033 (the archived_at column);
     // before that runs the update simply errors and the button reports it.
     if (action === 'archive' || action === 'unarchive') {
-      if (!db.isAdmin) {
+      if (!db.isWorkspaceAdmin) {
         return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
       }
       const updates = {
@@ -272,7 +275,7 @@ export async function PUT(req) {
 export async function DELETE(req) {
   try {
     const db = await getDb();
-    if (!db.isAdmin) {
+    if (!db.isWorkspaceAdmin) {
       return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
     }
     const params = new URL(req.url).searchParams;

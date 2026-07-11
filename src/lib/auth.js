@@ -45,6 +45,16 @@ export function clearSessionCookie(response) {
 // scripts/migrations/005_multitenancy.sql).
 export const CIO_TENANT_ID = '11111111-1111-1111-1111-111111111111';
 
+/**
+ * The "admin workspace" is the CIO tenant. Every member of it (any role) is
+ * elevated to admin-within-the-workspace: full feedback board, no feature
+ * restrictions, and user management scoped to this tenant. Membership never
+ * confers cross-tenant (global-admin) powers.
+ */
+export function isAdminWorkspaceTenant(tenantId) {
+  return tenantId === CIO_TENANT_ID;
+}
+
 function getSecret() {
   const secret = process.env.AUTH_JWT_SECRET
     || (process.env.NODE_ENV !== 'production' ? 'alphaos-local-preview-secret' : '');

@@ -9,6 +9,11 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [role, setRole] = useState('user');
+  // True when this session belongs to the admin workspace (the CIO tenant).
+  // Every member of it is elevated to admin *within that workspace* — full
+  // feedback board, no feature restrictions, and user management. Never grants
+  // cross-tenant (global-admin) powers; that stays keyed on role === 'admin'.
+  const [isAdminWorkspace, setIsAdminWorkspace] = useState(false);
   // Feature keys an admin has switched OFF for this user (empty = full access).
   // This is the LIVE list (refreshed from /api/auth/me), used to hide nav items
   // and block in-page rendering; the hard server gate lives in middleware.
@@ -59,6 +64,7 @@ export function AuthProvider({ children }) {
         if (data.authenticated) {
           setAuthenticated(true);
           setRole(normalizeRole(data.role));
+          setIsAdminWorkspace(!!data.isAdminWorkspace);
           setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
         }
       }
@@ -101,6 +107,7 @@ export function AuthProvider({ children }) {
     setAuthenticated(true);
     setSessionExpired(false);
     setRole(normalizeRole(data.role));
+    setIsAdminWorkspace(!!data.isAdminWorkspace);
     setDisabledFeatures(sanitizeFeatureKeys(data.disabledFeatures));
     return true;
   }, []);
@@ -113,21 +120,29 @@ export function AuthProvider({ children }) {
     }
     setAuthenticated(false);
     setRole('user');
+    setIsAdminWorkspace(false);
     setDisabledFeatures([]);
   }, []);
 
-  // Admins and workspace owners are never feature-restricted, whatever the
-  // stored list says.
-  const effectiveDisabled = isUnrestrictedRole(role) ? [] : disabledFeatures;
+  // Global admins and every member of the admin workspace are never
+  // feature-restricted, whatever the stored list says.
+  const effectiveDisabled = isUnrestrictedRole(role, isAdminWorkspace) ? [] : disabledFeatures;
 
   return (
     <AuthContext.Provider
       value={{
         authenticated,
         role,
+        // `isAdmin` stays the GLOBAL superadmin (cross-tenant) — the admin page
+        // keys its workspace-management UI on this, so it must not include
+        // admin-workspace members. Tenant-scoped admin surfaces (the feedback
+        // board) use `isWorkspaceAdmin` instead.
         isAdmin: role === 'admin',
-        // Workspace owners manage their own team; admins manage everyone.
-        canManageUsers: canManageUsers(role),
+        isAdminWorkspace,
+        isWorkspaceAdmin: role === 'admin' || isAdminWorkspace,
+        // Workspace owners — and every admin-workspace member — manage their own
+        // team; only global admins manage everyone.
+        canManageUsers: canManageUsers(role, isAdminWorkspace),
         disabledFeatures: effectiveDisabled,
         refreshSession,
         loading,

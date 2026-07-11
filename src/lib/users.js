@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from './supabaseAdmin';
 import { sanitizeFeatureKeys } from './features';
 import { ROLES, normalizeRole, isUnrestrictedRole } from './roles';
-import { CIO_TENANT_ID } from './auth';
+import { CIO_TENANT_ID, isAdminWorkspaceTenant } from './auth';
 
 /*
   User + tenant management. Runs through the service-role client (BYPASSRLS)
@@ -32,11 +32,11 @@ export async function getDisabledFeaturesForUser(id) {
   if (!id) return [];
   const { data, error } = await supabaseAdmin
     .from('users')
-    .select('role, disabled_features')
+    .select('role, tenant_id, disabled_features')
     .eq('id', id)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  if (!data || isUnrestrictedRole(data.role)) return [];
+  if (!data || isUnrestrictedRole(data.role, isAdminWorkspaceTenant(data.tenant_id))) return [];
   return sanitizeFeatureKeys(data.disabled_features);
 }
 
@@ -92,7 +92,7 @@ export async function getUserAuthState(id) {
   if (!id) return null;
   const { data, error } = await supabaseAdmin
     .from('users')
-    .select('role, is_active, disabled_features')
+    .select('role, tenant_id, is_active, disabled_features')
     .eq('id', id)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -100,7 +100,9 @@ export async function getUserAuthState(id) {
   return {
     isActive: data.is_active !== false,
     role: normalizeRole(data.role),
-    disabledFeatures: isUnrestrictedRole(data.role) ? [] : sanitizeFeatureKeys(data.disabled_features),
+    disabledFeatures: isUnrestrictedRole(data.role, isAdminWorkspaceTenant(data.tenant_id))
+      ? []
+      : sanitizeFeatureKeys(data.disabled_features),
   };
 }
 

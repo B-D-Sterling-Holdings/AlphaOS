@@ -1,5 +1,6 @@
 import { getSession } from '@/lib/db';
 import { canManageUsers } from '@/lib/roles';
+import { isAdminWorkspaceTenant } from '@/lib/auth';
 import { apiBadRequest, apiError, apiJson, apiOk } from '@/lib/apiResponses';
 import {
   listUsers,
@@ -27,11 +28,19 @@ import {
                        themselves-via-this-API, or anyone outside their tenant,
                        and everything they create is forced to a sub-user in
                        their own tenant.
+    admin-workspace members (any role in the CIO tenant) — treated exactly like
+                       an owner here: scoped to managing their own (admin)
+                       workspace. They are NOT global admins, so cross-tenant
+                       operations (list all, create/delete workspaces, set
+                       roles) stay closed to them.
 */
 async function requireManager() {
   const session = await getSession();
   if (!session) return { error: 'Not authenticated', status: 401 };
-  if (!canManageUsers(session.role)) return { error: 'Admin access required', status: 403 };
+  const isAdminWorkspace = isAdminWorkspaceTenant(session.tenantId);
+  if (!canManageUsers(session.role, isAdminWorkspace)) return { error: 'Admin access required', status: 403 };
+  // Only the global-admin role gets cross-tenant reach; admin-workspace members
+  // are scoped to their own tenant like an owner.
   return { session, isGlobalAdmin: session.role === 'admin' };
 }
 

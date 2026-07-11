@@ -32,10 +32,12 @@ function RestrictedNotice() {
 
 export default function FeatureRouteGuard({ children }) {
   const pathname = usePathname();
-  const { isAdmin, disabledFeatures } = useAuth();
+  // Workspace admins (the CIO login + every admin-workspace member) are never
+  // feature-restricted, matching the middleware gate and /api/auth/me.
+  const { isWorkspaceAdmin, disabledFeatures } = useAuth();
 
   const feature = featureForPath(pathname);
-  const blocked = !isAdmin && feature && disabledFeatures.includes(feature.key);
+  const blocked = !isWorkspaceAdmin && feature && disabledFeatures.includes(feature.key);
 
   if (blocked) return <RestrictedNotice />;
   return children;
