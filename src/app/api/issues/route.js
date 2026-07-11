@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { getDb } from '@/lib/db';
 import { versionedMutate } from '@/lib/concurrency';
+import { sendEmail, renderIssueNotifyEmail } from '@/lib/email';
+import { signStorageUrlsForTenant } from '@/lib/storage';
 
 /*
   In-app issue tracker (the Issues widget in the navbar).
@@ -49,6 +51,36 @@ function normalizeLabels(value) {
     .filter(l => typeof l === 'string')
     .map(l => l.trim().slice(0, 50))
     .filter(Boolean))].slice(0, 10);
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Email a comment notification when an admin explicitly opts in and chose a
+// recipient in the comment composer. Best-effort and self-contained: the comment
+// is already persisted before this runs, so any failure here (invalid address,
+// mail transport down) is swallowed and must never fail the comment request.
+// Only admins may trigger a send — a non-admin's notifyEmail is ignored, so this
+// can't be abused as an open mail relay.
+async function notifyIssueComment(db, { issue, commentBody, notify }) {
+  try {
+    if (!db.isAdmin) return;
+    const to = (notify?.email || '').trim();
+    if (!EMAIL_RE.test(to)) return; // no / invalid recipient → no email
+    // Re-sign inline-image references so the recipient's email client (no cookie)
+    // can load them; take the tenant from the verified session, never the client.
+    const signedBody = await signStorageUrlsForTenant(commentBody, { tenantId: db.tenantId });
+    const { subject, html } = renderIssueNotifyEmail({
+      number: issue.number,
+      title: issue.title,
+      recipientName: typeof notify?.name === 'string' ? notify.name.slice(0, 120) : '',
+      commenterName: db.username,
+      body: signedBody,
+      closing: !!notify?.closing,
+    });
+    await sendEmail({ to, subject, html });
+  } catch {
+    // Swallow — notification is best-effort; the comment already succeeded.
+  }
 }
 
 // GET — the caller's visible issues (newest activity first). Admins see the whole
@@ -150,6 +182,15 @@ export async function PUT(req) {
         },
       });
       if (!data) return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
+      // Optional email notification — only when the admin opted in and picked a
+      // recipient in the composer (body.notify). This single hook covers both a
+      // plain comment and "close with comment" (the UI posts the comment before
+      // resolving, flagging notify.closing). No notify → no email.
+      await notifyIssueComment(db, {
+        issue: data,
+        commentBody: normalizeBody(body.body),
+        notify: body.notify,
+      });
       return NextResponse.json(data);
     }
 
