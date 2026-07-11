@@ -270,7 +270,7 @@ function InlineMemberForm({ onSubmit, onCancel, busy }) {
       <PasswordInput
         value={password}
         onChange={(e) => setPassword(e.target.value)}
-        placeholder="Password (min 6 chars)"
+        placeholder="Password (min 5 chars)"
         required
         className="flex-1 min-w-[180px]"
         inputClassName="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
@@ -461,7 +461,7 @@ export default function AdminPage() {
   }
 
   async function resetPassword(u) {
-    const password = window.prompt(`New password for "${u.username}" (min 6 characters):`);
+    const password = window.prompt(`New password for "${u.username}" (min 5 characters):`);
     if (password === null) return;
     setError('');
     setNotice('');
@@ -733,7 +733,7 @@ export default function AdminPage() {
           <PasswordInput
             value={form.password}
             onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-            placeholder="Password (min 6 chars)"
+            placeholder="Password (min 5 chars)"
             required
             className="sm:col-span-2"
             inputClassName="px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300"
