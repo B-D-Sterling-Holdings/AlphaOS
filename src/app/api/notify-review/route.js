@@ -56,6 +56,14 @@ export async function POST(request) {
         continue;
       }
 
+      // CC the other party so both sides see the back-and-forth: the author is
+      // copied when the reviewer is emailed, and vice versa. Skip when the
+      // counterpart has no email, or is the same address as the recipient.
+      const counterpart = roles[role === 'reviewer' ? 'author' : 'reviewer'] || {};
+      const cc = counterpart.email && counterpart.email.toLowerCase() !== person.email.toLowerCase()
+        ? counterpart.email
+        : undefined;
+
       // Rewrite inline-image references into signed URLs the recipient's
       // email client can actually load (no cookie there).
       const signedItems = await signStorageUrlsForTenant(items, { tenantId: session.tenantId });
@@ -68,8 +76,8 @@ export async function POST(request) {
       });
 
       try {
-        await sendEmail({ to: person.email, subject, html });
-        sent.push({ role, email: person.email, count: items.length });
+        await sendEmail({ to: person.email, cc, subject, html });
+        sent.push({ role, email: person.email, cc: cc || null, count: items.length });
       } catch (e) {
         skipped.push({ role, count: items.length, reason: e.message });
       }

@@ -106,6 +106,12 @@ async function runAutoNotify() {
         summary.skipped.push({ ticker: row.ticker, role, count: items.length, reason: 'no email set' });
         continue;
       }
+      // CC the counterpart so both sides stay in the loop (author copied when the
+      // reviewer is emailed, and vice versa). Skip if it's the same/absent address.
+      const counterpart = role === 'reviewer' ? author : reviewer;
+      const cc = counterpart.email && counterpart.email.toLowerCase() !== person.email.toLowerCase()
+        ? counterpart.email
+        : undefined;
       // Inline images reference auth-gated app URLs (or legacy public URLs),
       // neither of which an email client can load. Re-sign them for the
       // tenant that OWNS this thesis row — authority comes from the DB, and
@@ -119,7 +125,7 @@ async function runAutoNotify() {
         stageLabel,
       });
       try {
-        await sendEmail({ to: person.email, subject, html });
+        await sendEmail({ to: person.email, cc, subject, html });
         summary.emailsSent++;
         for (const t of items) remindedIds.push(t.id);
       } catch (e) {

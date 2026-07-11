@@ -7,7 +7,10 @@ import { writeWatchlistCache, routeForStage, postWatchlist } from '@/lib/stageMo
 import { fetchThesis, saveThesisReconciled } from '@/lib/researchApi';
 import Toast from '@/components/Toast';
 import { formatMoneyPrecise, formatPct, formatLargeNumber } from '@/lib/formatters';
-import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, ChevronUp, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft, RefreshCw, Star, ArrowUpNarrowWide, MessageCircle } from 'lucide-react';
+import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, ChevronUp, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft, RefreshCw, Star, ArrowUpNarrowWide, MessageCircle, GripVertical } from 'lucide-react';
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import { SortableContext, rectSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -384,6 +387,7 @@ function StockCard({
   author = null,
   commentsOpen = false,
   onToggleComments = () => {},
+  dragHandleProps = null,
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const openThreadCount = openCommentCount;
@@ -391,7 +395,7 @@ function StockCard({
   return (
     <div
       data-stock-ticker={stock.ticker}
-      className={`relative h-full flex flex-col bg-white rounded-2xl border shadow-sm hover:shadow-md transition-shadow p-5 pb-3 ${
+      className={`group relative h-full flex flex-col bg-white rounded-2xl border shadow-sm hover:shadow-md transition-shadow p-5 pb-3 ${
         starred ? 'border-amber-300 ring-1 ring-amber-200' : 'border-gray-200'
       }`}
     >
@@ -416,6 +420,21 @@ function StockCard({
             </button>
           </div>
         </div>
+      )}
+
+      {/* Drag handle — only present when the card is sortable (manual order). A
+          persistent grip tab at top-center so it's obvious the card can be
+          dragged; it darkens on hover. The rest of the card stays clickable. */}
+      {dragHandleProps && (
+        <button
+          {...dragHandleProps}
+          className="absolute -top-0.5 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-2.5 py-0.5 rounded-b-lg bg-gray-100 text-gray-400 hover:bg-gray-200 hover:text-gray-600 cursor-grab active:cursor-grabbing touch-none transition-colors"
+          title="Drag to reorder"
+          aria-label="Drag to reorder"
+        >
+          <GripVertical size={12} className="rotate-90" />
+          <span className="text-[9px] font-bold uppercase tracking-wider">Drag</span>
+        </button>
       )}
 
       {/* Header */}
@@ -575,6 +594,29 @@ function StockCard({
           {moving ? <RefreshCw size={13} className="animate-spin" /> : <ArrowRight size={13} />}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ── Sortable wrapper ─────────────────────────────────────────────
+   Makes a StockCard draggable (manual order only). The drag listeners are handed
+   to the card's grip handle so the rest of the card stays interactive. dnd-kit's
+   DndContext auto-scrolls the window when a drag nears the viewport edge. */
+function SortableStockCard({ stock, disabled, ...cardProps }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: stock.ticker,
+    disabled,
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 50 : 'auto',
+    position: 'relative',
+  };
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      <StockCard stock={stock} dragHandleProps={disabled ? null : listeners} {...cardProps} />
     </div>
   );
 }
@@ -788,6 +830,11 @@ export default function WatchlistPage() {
   const stockAreaRef = useRef(null);
   const prevPositionsRef = useRef(new Map());
   const movedTickersRef = useRef(new Set());
+  // Drag starts after an 8px move so a click on the grip (or a card button) isn't
+  // swallowed. Window auto-scroll during a drag is dnd-kit's built-in behaviour.
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+  );
   const noteRowsFrameRef = useRef(null);
   const pendingScrollRef = useRef(null);
   const shouldAnimateRef = useRef(false);
@@ -1214,6 +1261,20 @@ export default function WatchlistPage() {
     await persistWatchingOrder(moved);
   };
 
+  // Drag-and-drop reorder (manual mode only). We DON'T arm the FLIP animation here
+  // — dnd-kit already animates the move — and persistWatchingOrder re-floats pinned
+  // names, so a drag can't leave a starred/un-starred name on the wrong side.
+  const handleStockDragEnd = async (event) => {
+    if (sortMode !== 'manual') return;
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const list = displayWatching;
+    const oldIndex = list.findIndex(s => s.ticker === active.id);
+    const newIndex = list.findIndex(s => s.ticker === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    await persistWatchingOrder(arrayMove(list, oldIndex, newIndex));
+  };
+
   const toggleStar = async (ticker) => {
     // Flip the pin, then re-float. Base this on the MANUAL order (not the current
     // view) so pinning while sorted by "% change" never overwrites the saved manual
@@ -1552,6 +1613,12 @@ export default function WatchlistPage() {
         {/* Order controls */}
         {watching.length > 1 && (
           <div className="flex items-center justify-end gap-2 mb-3">
+            {sortMode === 'manual' && (
+              <span className="flex items-center gap-1 text-[11px] font-medium text-gray-400 mr-1">
+                <GripVertical size={12} className="rotate-90 text-gray-300" />
+                Drag cards to reorder
+              </span>
+            )}
             <span className="text-xs font-medium text-gray-400">Order</span>
             <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
               <button
@@ -1578,36 +1645,41 @@ export default function WatchlistPage() {
 
         <div ref={stockAreaRef}>
           {watching.length > 0 && (
-            <div data-stock-grid="watching" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-fade-in-up stagger-4">
-              {displayWatching.map((stock, index) => {
-                const prev = displayWatching[index - 1];
-                const next = displayWatching[index + 1];
-                const manual = sortMode === 'manual';
-                return (
-                  <StockCard
-                    key={stock.ticker}
-                    stock={stock}
-                    quote={quotes[stock.ticker]}
-                    onRemove={removeStock}
-                    onMove={moveStock}
-                    onMoveOrder={moveStockOrder}
-                    onToggleStar={toggleStar}
-                    onUpdateNote={updateNote}
-                    onSyncNoteRows={syncNoteRows}
-                    noteExpanded={expandedNotes.has(stock.ticker)}
-                    onToggleNoteExpand={toggleNoteExpand}
-                    starred={!!stock.starred}
-                    canMoveLeft={manual && index > 0 && !!prev && !!prev.starred === !!stock.starred}
-                    canMoveRight={manual && index < displayWatching.length - 1 && !!next && !!next.starred === !!stock.starred}
-                    moving={movingTicker === stock.ticker}
-                    openCommentCount={reviewSummary[stock.ticker] || 0}
-                    author={reviewAuthors[stock.ticker] || null}
-                    commentsOpen={openCommentsTicker === stock.ticker}
-                    onToggleComments={(t) => setOpenCommentsTicker(prev => (prev === t ? null : t))}
-                  />
-                );
-              })}
-            </div>
+            <DndContext sensors={dragSensors} collisionDetection={closestCenter} onDragEnd={handleStockDragEnd}>
+              <SortableContext items={displayWatching.map(s => s.ticker)} strategy={rectSortingStrategy}>
+                <div data-stock-grid="watching" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-fade-in-up stagger-4">
+                  {displayWatching.map((stock, index) => {
+                    const prev = displayWatching[index - 1];
+                    const next = displayWatching[index + 1];
+                    const manual = sortMode === 'manual';
+                    return (
+                      <SortableStockCard
+                        key={stock.ticker}
+                        stock={stock}
+                        disabled={!manual}
+                        quote={quotes[stock.ticker]}
+                        onRemove={removeStock}
+                        onMove={moveStock}
+                        onMoveOrder={moveStockOrder}
+                        onToggleStar={toggleStar}
+                        onUpdateNote={updateNote}
+                        onSyncNoteRows={syncNoteRows}
+                        noteExpanded={expandedNotes.has(stock.ticker)}
+                        onToggleNoteExpand={toggleNoteExpand}
+                        starred={!!stock.starred}
+                        canMoveLeft={manual && index > 0 && !!prev && !!prev.starred === !!stock.starred}
+                        canMoveRight={manual && index < displayWatching.length - 1 && !!next && !!next.starred === !!stock.starred}
+                        moving={movingTicker === stock.ticker}
+                        openCommentCount={reviewSummary[stock.ticker] || 0}
+                        author={reviewAuthors[stock.ticker] || null}
+                        commentsOpen={openCommentsTicker === stock.ticker}
+                        onToggleComments={(t) => setOpenCommentsTicker(prev => (prev === t ? null : t))}
+                      />
+                    );
+                  })}
+                </div>
+              </SortableContext>
+            </DndContext>
           )}
         </div>
       </div>

@@ -11,6 +11,7 @@ import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
 import RichTextArea from '@/components/RichTextArea';
 import ReviewCommentsPanel from '@/components/ReviewCommentsPanel';
+import ResearchTaskPanel from '@/components/ResearchTaskPanel';
 import { RESEARCH_TABS } from '@/lib/researchProgress';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
@@ -1013,6 +1014,7 @@ export default function ResearchPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16">
+      <ResearchTaskPanel ticker={selectedTicker} companyName={selectedStock?.name} />
       <div className="flex items-center justify-between mb-8 animate-fade-in-up">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">
