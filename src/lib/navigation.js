@@ -1,6 +1,6 @@
 import {
   Briefcase, Search, Eye, FolderOpen, ClipboardList, ListChecks,
-  PieChart, DollarSign, Link2, Users, Target, Sparkles, LayoutDashboard, MessagesSquare,
+  PieChart, DollarSign, Link2, Users, Target, LayoutDashboard, MessagesSquare,
   GraduationCap,
 } from 'lucide-react';
 
@@ -24,7 +24,6 @@ export const NAV_GROUPS = [
     items: [
       { href: '/strategic-hub', label: 'Strategic Hub', icon: Target },
       { href: '/tasks', label: 'Tasks', icon: ListChecks },
-      { href: '/workspace', label: 'Workspace', icon: Sparkles },
       { href: '/lessons', label: 'Lessons Learned', icon: GraduationCap },
     ],
   },

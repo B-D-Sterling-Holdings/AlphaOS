@@ -5,7 +5,7 @@
   fund, same analytic voice) but fully fictional: "Blue Harbor Capital", run by
   Alex (PM) and Jordan (analyst). Every section the real workspace uses is
   populated — and the sections that are thin in the real workspace (contact
-  profiles, interactions, ideas, lessons, candidate positions) are deliberately
+  profiles, interactions, lessons, candidate positions) are deliberately
   built out so the demo shows each feature the way it's meant to look.
 
   The ticker cast intentionally does NOT overlap the CIO tenant's stored
@@ -540,23 +540,6 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
     link('l12', { ticker: 'DASH', url: 'https://transportweekly.demo/autonomous-delivery-economics-2026', title: 'Sidewalk Robots and Drone Delivery: Unit Economics Check-in', content_type: 'web_article', summary_status: 'pending' }, 22),
     link('l13', { url: 'https://howardmarks.demo/memos/the-illusion-of-knowing', title: 'The Illusion of Knowing', content_type: 'web_article', manual_summary: 'Read for the behavioral section of the lessons library: forecast confidence vs forecast accuracy. The anchoring section maps exactly to our NVDA miss.', summary_status: 'summarized', summary_method: 'manual', is_read: true }, 65),
     link('l14', { ticker: 'LLY', url: 'https://pharmaledger.demo/oral-glp1-supply-scale', title: 'Oral GLP-1: The Supply Question', source: 'Pharma Ledger', content_type: 'web_article', summary_status: 'pending' }, 9),
-  ];
-
-  /* ── Ideas (workspace sticky notes - beefed up) ──────────────── */
-  const idea = (label, fields, daysAgo) => ({
-    id: demoId(`idea:${label}`), title: '', content: '', color: 'yellow', category: 'idea',
-    tags: [], pinned: false, archived: false, position: 0,
-    created_at: ago(daysAgo), updated_at: ago(Math.max(0, daysAgo - 2)), ...fields,
-  });
-  T.ideas = [
-    idea('id1', { title: '3-sentence thesis rule', content: 'Any director could summarize the movie\'s money in 3 sentences (Spielberg via the TBPN interview). Same bar for us: if we can\'t state the thesis in 3 sentences at the top of the memo, we don\'t understand it yet. Added to the draft template - enforce it.', color: 'yellow', pinned: true, position: 0, tags: ['process'] }, 70),
-    idea('id2', { title: 'Boring toll booths basket', content: 'MCO, SPGI, FICO, V, MA, ICE, CME - businesses selling stamps, scores and rails. What would a permanent 30% sleeve of only these look like? Backtest the drawdown profile vs our current growth tilt.', color: 'blue', category: 'idea', pinned: true, position: 1, tags: ['portfolio-construction'] }, 55),
-    idea('id3', { title: 'India voice-AI consumer boom', content: 'Voice-first AI could leapfrog app-based UX for the next 500M Indian internet users. Who owns the rails - Jio? Google? Watch for a listed pure play; nothing investable yet.', color: 'green', position: 2, tags: ['EM', 'AI'] }, 90),
-    idea('id4', { title: 'Question: what kills Costco?', content: 'Seriously - inversion exercise for the ballast sleeve. Membership model survived Amazon, inflation, covid. Candidate answers: demographic cliff in suburban car culture? Instant delivery at Costco prices? Write the pre-mortem.', color: 'pink', category: 'question', position: 3 }, 40),
-    idea('id5', { title: 'Lessons library -> LP letter section', content: 'Mark reads the lessons section first. Institutionalize: every letter gets one post-mortem or process note from the library. Differentiator vs every other emerging manager deck.', color: 'purple', category: 'todo', position: 4, tags: ['LP', 'process'] }, 30),
-    idea('id6', { title: 'AI capex food chain map', content: 'We own the fab (TSM), a designer (AVGO), and a spender (MSFT). Map the middle: power, cooling, networking, memory. Where is pricing power moving next? Nate\'s grid report says the bottleneck is permits.', color: 'orange', position: 5, tags: ['AI-capex', 'market-map'] }, 25),
-    idea('id7', { title: 'Note: our edge is holding period', content: 'Every lesson so far reduces to the same thing - our advantage is not information, it is the willingness to hold through the middle of the thesis when the tape disagrees. Structure everything (sizing, cash, LP base) to protect that.', color: 'gray', category: 'note', position: 6 }, 18),
-    idea('id8', { title: 'Random: earnings-call diff tool', content: 'Dumb-simple tool idea - diff consecutive quarterly call transcripts and flag dropped phrases (guidance language that quietly disappears). The SPOT "content discipline" phrasing change is exactly what it would catch.', color: 'blue', category: 'random', position: 7 }, 12),
   ];
 
   /* ── Lessons learned (beefed up: 5 full entries + pattern library) ── */

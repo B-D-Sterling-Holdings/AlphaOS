@@ -123,7 +123,6 @@ export const config = {
     '/relationships/:path*',
     '/strategic-hub/:path*',
     '/tasks/:path*',
-    '/workspace/:path*',
     '/lessons/:path*',
     '/watchlist/:path*',
     '/draft-review/:path*',

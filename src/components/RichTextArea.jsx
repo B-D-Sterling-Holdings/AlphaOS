@@ -204,6 +204,12 @@ function EditableBlock({
     if (!ref.current) return;
     const html = ref.current.innerHTML;
     lastHTMLRef.current = html;
+    // Update the placeholder flag live from the actual content. The JSX-bound
+    // `data-empty` is derived from the `value` prop, which a parent may feed back
+    // debounced (e.g. sticky notes) — so on its own the "Take a note…" placeholder
+    // lingers over text until a save round-trips. Setting it here clears it the
+    // instant you type; React reconciles the same value on the next render.
+    ref.current.setAttribute('data-empty', isEmptyHTML(html) ? 'true' : 'false');
     onInput(html);
   };
 
@@ -381,7 +387,7 @@ function EditableBlock({
   );
 }
 
-function Toolbar({ onCommand, enableTables, sticky }) {
+function Toolbar({ onCommand, enableTables, sticky, compact }) {
   const [tableOpen, setTableOpen] = useState(false);
   const [hover, setHover] = useState({ r: 0, c: 0 });
   const TABLE_MAX = 6;
@@ -392,7 +398,11 @@ function Toolbar({ onCommand, enableTables, sticky }) {
     onCommand(cmd, val);
   };
 
-  const btn = `p-1.5 rounded-md hover:bg-emerald-50 text-gray-600 hover:text-emerald-700 transition-colors`;
+  // `compact` (sticky notes): seamless, no chrome — dark-grey icons that blend
+  // into the note, no boxed background.
+  const btn = compact
+    ? `p-1 rounded-md text-gray-700 hover:text-gray-900 hover:bg-black/5 transition-colors`
+    : `p-1.5 rounded-md hover:bg-emerald-50 text-gray-600 hover:text-emerald-700 transition-colors`;
 
   const insertTable = (rows, cols) => {
     setTableOpen(false);
@@ -402,11 +412,15 @@ function Toolbar({ onCommand, enableTables, sticky }) {
 
   return (
     <div
-      className={`flex items-center gap-1 mb-2 px-2 py-1.5 border border-gray-200 rounded-xl w-fit ${
-        sticky
-          ? 'sticky top-20 z-30 bg-white/95 backdrop-blur shadow-sm'
-          : 'bg-gray-50/80'
-      }`}
+      // compact: a borderless, background-free strip that sits flush with the note;
+      // otherwise the boxed toolbar used by Draft & Review / Issues.
+      className={
+        compact
+          ? 'flex items-center gap-0.5 flex-wrap mb-1.5'
+          : `flex items-center gap-1 mb-2 px-2 py-1.5 border border-gray-200 rounded-xl w-fit ${
+              sticky ? 'sticky top-20 z-30 bg-white/95 backdrop-blur shadow-sm' : 'bg-gray-50/80'
+            }`
+      }
       onMouseDown={(e) => e.preventDefault()}
     >
       <button type="button" className={btn} title="Bold (Ctrl+B)" onMouseDown={exec('bold')}>
@@ -421,22 +435,27 @@ function Toolbar({ onCommand, enableTables, sticky }) {
       <button type="button" className={btn} title="Bullet list" onMouseDown={exec('insertUnorderedList')}>
         <ListIcon size={14} />
       </button>
-      <div className="w-px h-5 bg-gray-200 mx-1" />
-      <Type size={13} className="text-gray-400" />
-      {FONT_SIZES.map(s => (
-        <button
-          key={s.value}
-          type="button"
-          title={s.title}
-          className={`${btn} text-[11px] font-bold min-w-[24px]`}
-          onMouseDown={exec('fontSize', s.value)}
-        >
-          {s.label}
-        </button>
-      ))}
-      {enableTables && (
+      {/* Font sizes are hidden in compact mode (kept for Draft & Review / Issues). */}
+      {!compact && (
         <>
           <div className="w-px h-5 bg-gray-200 mx-1" />
+          <Type size={13} className="text-gray-400" />
+          {FONT_SIZES.map(s => (
+            <button
+              key={s.value}
+              type="button"
+              title={s.title}
+              className={`${btn} text-[11px] font-bold min-w-[24px]`}
+              onMouseDown={exec('fontSize', s.value)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </>
+      )}
+      {enableTables && (
+        <>
+          {!compact && <div className="w-px h-5 bg-gray-200 mx-1" />}
           <div className="relative">
             <button
               type="button"
@@ -479,7 +498,7 @@ function Toolbar({ onCommand, enableTables, sticky }) {
   );
 }
 
-export default function RichTextArea({ value, onChange, ticker, placeholder, rows = 4, className = '', onBlur, onCommit, enableTables = false, stickyToolbar = false }) {
+export default function RichTextArea({ value, onChange, ticker, placeholder, rows = 4, className = '', onBlur, onCommit, enableTables = false, stickyToolbar = false, compact = false }) {
   const [uploading, setUploading] = useState(false);
   const [focusedBlockIdx, setFocusedBlockIdx] = useState(null);
   const lastFocusedIdxRef = useRef(null);
@@ -559,6 +578,12 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
         }
         document.execCommand('insertHTML', false, inlineImgTag(block.url, block.name));
         if (sel.rangeCount) savedRange = sel.getRangeAt(0).cloneRange();
+      }
+      // If an image ends up as the last node, there's no caret position after it,
+      // so typing can't continue (worst case: the image is the only content). Add a
+      // trailing line break to give the caret somewhere to land.
+      if (editorEl.lastChild && editorEl.lastChild.nodeName === 'IMG') {
+        editorEl.appendChild(document.createElement('br'));
       }
       const html = editorEl.innerHTML;
       const updated = normalizedBlocks.map((b, i) => i === blockIdx ? { ...b, value: html } : b);
@@ -655,7 +680,7 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
   const defaultTextClass = `w-full bg-gray-50/50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-200`;
 
   return (
-    <div>
+    <div className={compact ? 'rt-compact' : undefined}>
       <style jsx global>{`
         .rich-text-editor[data-empty="true"]::before {
           content: attr(data-placeholder);
@@ -702,6 +727,40 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
         .rich-text-editor img.rt-inline-img {
           display: inline-block;
         }
+        /* compact (sticky notes): make the editor a flex column that fills the
+           note body, so an image can be bounded by BOTH the note's width and its
+           available HEIGHT — the whole image fits with no scroll, and it scales
+           live as the card is resized (all definite heights flow from the card). */
+        .rt-compact {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          min-height: 0;
+        }
+        .rt-compact > .relative.group {          /* the data-rt-block wrapper */
+          flex: 1 1 auto;
+          min-height: 0;
+          display: flex;
+        }
+        .rt-compact > .relative.group > .relative.group {  /* EditableBlock wrapper */
+          flex: 1 1 auto;
+          min-height: 0;
+          width: 100%;
+          display: flex;
+        }
+        .rt-compact .rich-text-editor {
+          flex: 1 1 auto;
+          min-height: 0 !important;            /* beat the rows-based inline floor */
+          width: 100%;
+          overflow: auto;
+        }
+        .rt-compact .rich-text-editor img {
+          max-width: 100%;
+          max-height: 100%;
+          width: auto;
+          height: auto;
+          object-fit: contain;
+        }
         .rich-text-editor ul {
           list-style: disc;
           margin: 6px 0;
@@ -717,7 +776,9 @@ export default function RichTextArea({ value, onChange, ticker, placeholder, row
         }
       `}</style>
 
-      {focusedBlockIdx !== null && <Toolbar onCommand={runCommand} enableTables={enableTables} sticky={stickyToolbar} />}
+      {/* In compact mode (sticky notes) the toolbar is always shown so it reads as
+          part of the note; elsewhere it appears only while a block is focused. */}
+      {(compact || focusedBlockIdx !== null) && <Toolbar onCommand={runCommand} enableTables={enableTables} sticky={stickyToolbar} compact={compact} />}
 
       {normalizedBlocks.map((block, idx) => (
         <div key={idx} className="relative group" data-rt-block={idx}>

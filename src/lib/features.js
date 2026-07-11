@@ -24,7 +24,6 @@ export const FEATURES = [
   { key: 'relationships', label: 'Relationships', hrefs: ['/relationships'] },
   { key: 'strategic-hub', label: 'Strategic Hub', hrefs: ['/strategic-hub'] },
   { key: 'tasks', label: 'Tasks', hrefs: ['/tasks'] },
-  { key: 'workspace', label: 'Workspace', hrefs: ['/workspace'] },
   { key: 'lessons', label: 'Lessons Learned', hrefs: ['/lessons'] },
   {
     key: 'research',
@@ -132,8 +131,6 @@ export const API_FEATURES = {
   // Roster is shared by the Tasks board AND the per-company Research Task panel,
   // so it stays reachable whenever EITHER feature is on.
   '/api/assignees': ['tasks', 'research'],
-  // Workspace
-  '/api/ideas': ['workspace'],
   // Lessons
   '/api/lessons': ['lessons'],
   '/api/lesson-patterns': ['lessons'],
@@ -189,6 +186,8 @@ export const ROLE_GATED_API_ROUTES = [
     - /api/storage         : object proxy that enforces its OWN tenant-path
       check (isPathAllowedForTenant) before serving.
     - /api/issues          : the bug-reporter widget, offered on every page.
+    - /api/sticky-notes     : the app-wide Sticky Notes layer, offered on every
+      page; rows are per-user (created_by) and tenant-isolated by RLS.
   Prefixes match sub-paths, exactly like API_FEATURES.
 */
 export const COMMON_API_ROUTES = [
@@ -198,6 +197,7 @@ export const COMMON_API_ROUTES = [
   '/api/upload',
   '/api/storage',
   '/api/issues',
+  '/api/sticky-notes',
 ];
 
 /** Longest prefix in `prefixes` that owns `pathname` (or null). */
