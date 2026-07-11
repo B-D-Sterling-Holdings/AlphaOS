@@ -62,7 +62,7 @@ export async function GET(req) {
 export async function POST(req) {
   const supabase = await getDb();
   const body = await req.json();
-  const { title, priority = 'low', board_id = 'default' } = body;
+  const { title, priority = 'low', board_id = 'default', due_date = null } = body;
 
   if (!title?.trim()) {
     return apiBadRequest('Title is required');
@@ -85,9 +85,15 @@ export async function POST(req) {
   const { data: existing } = await query;
   const nextPos = existing?.length ? (existing[0].position || 0) + 1 : 0;
 
+  const row = { title: title.trim(), priority, position: nextPos, board_id, subtasks: [], updated_at: new Date().toISOString() };
+  // Only reference the due_date column when a date is actually supplied (Week
+  // view). This keeps plain Board-view creates working even before migration
+  // 036 adds the column.
+  if (due_date) row.due_date = due_date;
+
   const { data, error } = await supabase
     .from(TABLE)
-    .insert({ title: title.trim(), priority, position: nextPos, board_id, subtasks: [], updated_at: new Date().toISOString() })
+    .insert(row)
     .select()
     .single();
 

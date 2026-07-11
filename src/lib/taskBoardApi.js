@@ -25,11 +25,11 @@ export async function fetchTasksForBoard(boardId) {
   return readJson(res);
 }
 
-export async function createTask({ title, priority, boardId }) {
+export async function createTask({ title, priority, boardId, dueDate = null }) {
   const res = await fetch('/api/tasks', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ title, priority, board_id: boardId }),
+    body: JSON.stringify({ title, priority, board_id: boardId, due_date: dueDate }),
   });
   return { ok: res.ok, data: await readJson(res) };
 }

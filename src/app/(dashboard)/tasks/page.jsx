@@ -32,6 +32,8 @@ import {
   updateSubtask as updateSubtaskInTask,
   updateSubtasks as replaceTaskSubtasks,
 } from '@/lib/taskBoard';
+import WeekPlanner from '@/components/WeekPlanner';
+import Horizons from '@/components/Horizons';
 import {
   createTask,
   deleteTask,
@@ -525,6 +527,7 @@ export default function TaskBoardPage() {
   const [boards, setBoards] = useState([]);
   const [activeBoardId, setActiveBoardId] = useState(null);
   const [tasks, setTasks] = useState([]);
+  const [view, setView] = useState('board'); // 'board' (priority sections) | 'week' (Mon–Sun planner) | 'horizons' (long-term strategy)
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(null);
   const [newTaskTitle, setNewTaskTitle] = useState('');
@@ -847,6 +850,58 @@ export default function TaskBoardPage() {
       () => setTasks(prev => prev.map(t => t.id === id ? { ...t, status: task.status } : t)));
   };
 
+  // --- Week planner handlers (share the active board's task set) ---
+
+  // Set/clear a task's due_date (null = back to the Backlog). Drives drag-to-day.
+  const setDueDate = async (id, dueDate) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const next = dueDate || null;
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, due_date: next } : t));
+    await persistTask(id, { due_date: next },
+      () => setTasks(prev => prev.map(t => t.id === id ? { ...t, due_date: task.due_date ?? null } : t)));
+  };
+
+  const setPriority = async (id, priority) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task || task.priority === priority) return;
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, priority } : t));
+    await persistTask(id, { priority },
+      () => setTasks(prev => prev.map(t => t.id === id ? { ...t, priority: task.priority } : t)));
+  };
+
+  const renameTask = async (id, title) => {
+    const task = tasks.find(t => t.id === id);
+    const newTitle = title.trim();
+    if (!task || !newTitle || newTitle === task.title) return;
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, title: newTitle } : t));
+    await persistTask(id, { title: newTitle },
+      () => setTasks(prev => prev.map(t => t.id === id ? { ...t, title: task.title } : t)));
+  };
+
+  // Quick-add from a day column (or the Backlog when dueDate is null). Week tasks
+  // default to 'low' priority, which has no capacity cap on the board.
+  const createWeekTask = async ({ title, dueDate }) => {
+    const trimmed = title?.trim();
+    if (!trimmed) return;
+    try {
+      const { ok, data } = await createTask({ title: trimmed, priority: 'low', boardId: activeBoardId, dueDate: dueDate || null });
+      if (ok) setTasks(prev => [...prev, data]);
+    } catch (err) {
+      console.error('Failed to add task', err);
+    }
+  };
+
+  const weekHandlers = {
+    onCreateTask: createWeekTask,
+    onSetDueDate: setDueDate,
+    onToggleDone: toggleDone,
+    onUpdateAssignee: updateAssignee,
+    onSetPriority: setPriority,
+    onRename: renameTask,
+    onRemove: removeTask,
+  };
+
   // --- Subtask helpers ---
 
   const toggleExpanded = (id) => {
@@ -1056,18 +1111,43 @@ export default function TaskBoardPage() {
   return (
     <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16">
       {/* Header */}
-      <div className="mb-8 animate-fade-in-up">
-        <BoardSelector
-          boards={boards}
-          activeBoardId={activeBoardId}
-          onSwitch={switchBoard}
-          onCreate={createBoard}
-          onRename={renameBoard}
-          onDelete={deleteBoard}
-        />
-        <p className="text-sm text-gray-500 mt-1">{totalOpen} open task{totalOpen !== 1 ? 's' : ''}</p>
+      <div className="mb-8 animate-fade-in-up flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <BoardSelector
+            boards={boards}
+            activeBoardId={activeBoardId}
+            onSwitch={switchBoard}
+            onCreate={createBoard}
+            onRename={renameBoard}
+            onDelete={deleteBoard}
+          />
+          <p className="text-sm text-gray-500 mt-1">{totalOpen} open task{totalOpen !== 1 ? 's' : ''}</p>
+        </div>
+        {/* Board ⇄ Week view toggle */}
+        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+          {[
+            { key: 'board', label: 'Board' },
+            { key: 'week', label: 'Week' },
+            { key: 'horizons', label: 'Horizons' },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setView(key)}
+              className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                view === key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {view === 'horizons' ? (
+        <Horizons />
+      ) : view === 'week' ? (
+        <WeekPlanner tasks={tasks} savedAssignees={savedAssignees} handlers={weekHandlers} />
+      ) : (
       <DndContext
         sensors={sensors}
         collisionDetection={stableCollision}
@@ -1631,6 +1711,7 @@ export default function TaskBoardPage() {
         ) : null}
       </DragOverlay>
       </DndContext>
+      )}
 
     </div>
   );
