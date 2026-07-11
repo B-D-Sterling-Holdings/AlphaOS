@@ -15,6 +15,17 @@
   box-sizing: border-box;
 }
 
+/* ── Global text contrast bump ────────────────────────────────────
+   Muted body/secondary text across the app read a touch too light.
+   Darken the three muted gray text utilities by one Tailwind step each
+   (400→500, 500→600, 600→700) so all "quiet" text gains contrast in one
+   place. These live outside @layer, so they win over Tailwind's layered
+   utilities regardless of source order. Static text only — hover/focus
+   variants (e.g. hover:text-gray-500) are intentionally left untouched. */
+.text-gray-400 { color: #6b7280; } /* was #9ca3af */
+.text-gray-500 { color: #4b5563; } /* was #6b7280 */
+.text-gray-600 { color: #374151; } /* was #4b5563 */
+
 /* Hide number input spinners */
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
@@ -63,6 +74,18 @@ body {
 }
 
 .chart-container canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Expanded (modal) chart — fills most of the viewport height */
+.chart-container-lg {
+  position: relative;
+  width: 100%;
+  height: min(64vh, 620px);
+}
+
+.chart-container-lg canvas {
   width: 100% !important;
   height: 100% !important;
 }

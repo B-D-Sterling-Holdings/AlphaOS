@@ -5,7 +5,7 @@ import { Chart, registerables } from 'chart.js';
 
 Chart.register(...registerables);
 
-export default function LineChart({ labels, data, label = '', color = '#10b981', formatY, fillArea = true }) {
+export default function LineChart({ labels, data, label = '', color = '#10b981', formatY, fillArea = true, containerClassName = 'chart-container' }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const dragState = useRef({ dragging: false, startIdx: null, endIdx: null });
@@ -18,9 +18,17 @@ export default function LineChart({ labels, data, label = '', color = '#10b981',
 
     const ctx = canvasRef.current.getContext('2d');
 
-    const gradient = ctx.createLinearGradient(0, 0, 0, 280);
-    gradient.addColorStop(0, color + '25');
-    gradient.addColorStop(1, color + '02');
+    // Scriptable fill so the area gradient always spans the real plot height
+    // (fixed heights break when the chart is expanded into the modal).
+    const areaFill = (context) => {
+      const chart = context.chart;
+      const area = chart.chartArea;
+      if (!area) return color + '15';
+      const g = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+      g.addColorStop(0, color + '2e');
+      g.addColorStop(1, color + '02');
+      return g;
+    };
 
     // Plugin to draw drag selection overlay
     const dragOverlayPlugin = {
@@ -67,7 +75,7 @@ export default function LineChart({ labels, data, label = '', color = '#10b981',
           label,
           data,
           borderColor: color,
-          backgroundColor: fillArea ? gradient : 'transparent',
+          backgroundColor: fillArea ? areaFill : 'transparent',
           borderWidth: 2,
           fill: fillArea,
           tension: 0.3,
@@ -98,18 +106,19 @@ export default function LineChart({ labels, data, label = '', color = '#10b981',
         },
         scales: {
           x: {
-            grid: { color: '#f3f4f6' },
+            grid: { display: false },
             ticks: { color: '#9ca3af', maxTicksLimit: 8, font: { size: 10, family: 'Plus Jakarta Sans' } },
-            border: { color: '#e5e7eb' },
+            border: { display: false },
           },
           y: {
-            grid: { color: '#f3f4f6' },
+            grid: { color: '#f3f4f6', drawTicks: false },
             ticks: {
               color: '#9ca3af',
+              padding: 8,
               font: { size: 10, family: 'Plus Jakarta Sans' },
               callback: formatY || ((v) => v),
             },
-            border: { color: '#e5e7eb' },
+            border: { display: false },
           },
         },
       },
@@ -193,7 +202,7 @@ export default function LineChart({ labels, data, label = '', color = '#10b981',
   }
 
   return (
-    <div className="chart-container relative select-none" style={{ cursor: 'crosshair' }}>
+    <div className={`${containerClassName} relative select-none`} style={{ cursor: 'crosshair' }}>
       <canvas
         ref={canvasRef}
         onMouseDown={handleMouseDown}
