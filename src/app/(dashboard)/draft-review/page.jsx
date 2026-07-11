@@ -290,6 +290,7 @@ export default function DraftReviewPage() {
         reviewer: dr.reviewer,
         threads: dr.threads,
         threadIds: Array.isArray(threadIds) ? threadIds : undefined,
+        stage: 'draft',
       }),
     });
     const result = await res.json();

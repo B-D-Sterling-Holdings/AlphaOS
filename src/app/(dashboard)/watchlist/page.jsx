@@ -7,7 +7,7 @@ import { writeWatchlistCache, routeForStage, postWatchlist } from '@/lib/stageMo
 import { fetchThesis, saveThesisReconciled } from '@/lib/researchApi';
 import Toast from '@/components/Toast';
 import { formatMoneyPrecise, formatPct, formatLargeNumber } from '@/lib/formatters';
-import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft, RefreshCw } from 'lucide-react';
+import { Plus, X, ArrowRight, Eye, TrendingUp, TrendingDown, ChevronDown, ChevronUp, Pencil, Trash2, Check, List, ChevronRight, ChevronLeft, RefreshCw, Star, ArrowUpNarrowWide, MessageCircle } from 'lucide-react';
 import { Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -16,6 +16,8 @@ import {
   BarElement,
   Tooltip,
 } from 'chart.js';
+import WatchlistComments from '@/components/WatchlistComments';
+import { normalizeAutoNotify } from '@/lib/autoNotify';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip);
 
@@ -66,6 +68,11 @@ function autoExpand(el) {
   el.style.height = el.scrollHeight + 'px';
 }
 
+// Compact height (≈2 lines) for a collapsed "Why I'm interested" note. Notes default
+// to this; the per-card expand toggle grows a note — and every card sharing its visual
+// row — to fit the tallest content so the row stays aligned.
+const COLLAPSED_NOTE_HEIGHT = 68;
+
 function orderStocks(stocks = []) {
   return stocks
     .map((stock, index) => ({ stock, index }))
@@ -75,6 +82,79 @@ function orderStocks(stocks = []) {
       return aPos - bPos || a.index - b.index;
     })
     .map(({ stock }, position) => ({ ...stock, position }));
+}
+
+// Content signature of a watchlist payload with version tokens stripped, so two
+// payloads compare equal iff their meaningful data (list names + stocks) matches —
+// regardless of what `version` each carries. This is what lets a save tell a genuine
+// concurrent edit (content actually diverged) apart from a merely stale version token
+// (only the number moved, e.g. after navigating in from another page or tab).
+function watchlistContentSig(data) {
+  return JSON.stringify(
+    (data?.watchlists || [])
+      .map(w => ({ id: w.id, name: w.name || '', stocks: orderStocks(w.stocks || []) }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  );
+}
+
+const isWatching = (s) => s.stage === 'watching' || s.stage === 'researching';
+
+// Coerce a stock's (possibly absent) comment review into the full shape the
+// Draft & Review comment components expect: threads + author/reviewer people +
+// a normalized auto-notify config.
+function normalizeReview(review) {
+  const r = review || {};
+  return {
+    threads: Array.isArray(r.threads) ? r.threads : [],
+    author: { name: r.author?.name || '', email: r.author?.email || '' },
+    reviewer: { name: r.reviewer?.name || '', email: r.reviewer?.email || '' },
+    autoNotify: normalizeAutoNotify(r.autoNotify),
+  };
+}
+
+// Card badge count: unresolved threads that actually hold a posted comment. This
+// deliberately ignores empty stubs and un-posted composer drafts, so a half-started
+// or abandoned point never shows up as a "stale" comment.
+function openCommentCount(threads) {
+  return (threads || []).filter(t => !t.resolved && (t.messages || []).length > 0).length;
+}
+
+// Fold an edited author into the ticker→author map the cards read: set it when a
+// name/email exists, drop the key when it's been cleared — so the card flips back to
+// the "no author set" nudge (matching /api/review-summary, which omits empty authors).
+function setCardAuthor(map, ticker, author) {
+  const name = author?.name?.trim() || '';
+  const email = author?.email?.trim() || '';
+  if (!name && !email) {
+    if (!(ticker in map)) return map;
+    const next = { ...map };
+    delete next[ticker];
+    return next;
+  }
+  return { ...map, [ticker]: { name, email } };
+}
+
+// Stable-partition a list so pinned (starred) names float ahead of the rest while
+// each group keeps its incoming relative order. This is the single rule behind
+// "float to top": we apply it after every star toggle and every reorder so a dragged
+// card that crosses the pin boundary simply snaps to it rather than breaking the
+// invariant that all pinned names sit above all un-pinned ones.
+function starredFirst(list) {
+  return list
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => (Number(!!b.s.starred) - Number(!!a.s.starred)) || (a.i - b.i))
+    .map(({ s }) => s);
+}
+
+// Splice a new ordering of the watching names back into the full stock array,
+// leaving names in other pipeline stages exactly where they were, then renumber
+// every card by its final index so the new order persists (orderStocks sorts by
+// `position`, so the numbers — not the array order — are what stick).
+function applyWatchingOrder(allStocks, orderedWatching) {
+  const queue = [...orderedWatching];
+  return allStocks
+    .map((s) => (isWatching(s) ? queue.shift() : s))
+    .map((s, position) => ({ ...s, position }));
 }
 
 const DIP_PERIODS = [
@@ -99,23 +179,38 @@ const PERIOD_SUBTITLES = {
   '5y': 'Price change over the last 5 years',
 };
 
-/* ── Dip Finder Bar Chart (Chart.js) ──────────────────────────── */
-function DipFinder({ stocks, quotes }) {
+/* ── Shared % change source ───────────────────────────────────────
+   One function computes a name's % change for the selected period so the Dip
+   Finder graph and the "sort by % change" card order read from the SAME number
+   (that's what "line them up" means). Returns null when the datum isn't loaded. */
+function computePct(ticker, quote, period, periodData) {
+  if (period === '52w') {
+    if (!quote?.price || !quote?.fiftyTwoWeekHigh) return null;
+    return ((quote.price - quote.fiftyTwoWeekHigh) / quote.fiftyTwoWeekHigh) * 100;
+  }
+  if (period === '1d') {
+    return quote?.dayChangePct == null ? null : quote.dayChangePct;
+  }
+  const pct = (periodData[period] || {})[ticker];
+  return pct == null ? null : pct;
+}
+
+// Owns the period selector + on-demand fetch of non-quote periods (1M…5Y). Lifted
+// out of DipFinder so the page can share the exact same period + data with the card
+// sort. 52W/1D come straight from the live quotes and need no fetch.
+function usePeriodChanges(tickers) {
   const [period, setPeriod] = useState('52w');
   const [periodData, setPeriodData] = useState({});
-  const [periodLoading, setPeriodLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const fetchedPeriods = useRef({});
 
-  const tickers = useMemo(() => stocks.map(s => s.ticker).filter(Boolean), [stocks]);
-
-  // Fetch period data when period changes
   useEffect(() => {
     if (period === '52w' || period === '1d' || tickers.length === 0) return;
     if (fetchedPeriods.current[period]) {
       setPeriodData(prev => ({ ...prev, [period]: fetchedPeriods.current[period] }));
       return;
     }
-    setPeriodLoading(true);
+    setLoading(true);
     fetch(`/api/period-changes?tickers=${tickers.join(',')}&period=${period}`)
       .then(r => r.json())
       .then(data => {
@@ -123,38 +218,19 @@ function DipFinder({ stocks, quotes }) {
         setPeriodData(prev => ({ ...prev, [period]: data.changes || {} }));
       })
       .catch(() => {})
-      .finally(() => setPeriodLoading(false));
+      .finally(() => setLoading(false));
   }, [period, tickers]);
 
+  return { period, setPeriod, periodData, loading };
+}
+
+/* ── Dip Finder Bar Chart (Chart.js) ──────────────────────────── */
+function DipFinder({ stocks, quotes, period, setPeriod, periodData, periodLoading }) {
   const items = useMemo(() => {
-    if (period === '52w') {
-      return stocks
-        .map(s => {
-          const q = quotes[s.ticker];
-          if (!q?.price || !q?.fiftyTwoWeekHigh) return null;
-          const pct = ((q.price - q.fiftyTwoWeekHigh) / q.fiftyTwoWeekHigh) * 100;
-          return { ticker: s.ticker, pct };
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.pct - a.pct);
-    }
-    if (period === '1d') {
-      return stocks
-        .map(s => {
-          const q = quotes[s.ticker];
-          if (q?.dayChangePct == null) return null;
-          return { ticker: s.ticker, pct: q.dayChangePct };
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.pct - a.pct);
-    }
-    // Other periods from fetched data
-    const changes = periodData[period] || {};
     return stocks
       .map(s => {
-        const pct = changes[s.ticker];
-        if (pct == null) return null;
-        return { ticker: s.ticker, pct };
+        const pct = computePct(s.ticker, quotes[s.ticker], period, periodData);
+        return pct == null ? null : { ticker: s.ticker, pct };
       })
       .filter(Boolean)
       .sort((a, b) => b.pct - a.pct);
@@ -295,16 +371,30 @@ function StockCard({
   onRemove,
   onMove,
   onMoveOrder,
+  onToggleStar,
   onUpdateNote,
   onSyncNoteRows,
+  noteExpanded = false,
+  onToggleNoteExpand = () => {},
   canMoveLeft = false,
   canMoveRight = false,
   moving = false,
+  starred = false,
+  openCommentCount = 0,
+  author = null,
+  commentsOpen = false,
+  onToggleComments = () => {},
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const openThreadCount = openCommentCount;
 
   return (
-    <div data-stock-ticker={stock.ticker} className="relative h-full flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow p-5">
+    <div
+      data-stock-ticker={stock.ticker}
+      className={`relative h-full flex flex-col bg-white rounded-2xl border shadow-sm hover:shadow-md transition-shadow p-5 pb-3 ${
+        starred ? 'border-amber-300 ring-1 ring-amber-200' : 'border-gray-200'
+      }`}
+    >
       {/* Delete confirmation overlay */}
       {confirmDelete && (
         <div className="absolute inset-0 z-10 bg-white/95 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center gap-3 p-6">
@@ -329,12 +419,12 @@ function StockCard({
       )}
 
       {/* Header */}
-      <div className="flex items-start justify-between mb-3">
-        <div>
-          <div className="flex items-center gap-2">
+      <div className="flex items-start justify-between mb-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
             <span className="text-lg font-bold text-gray-900">{stock.ticker}</span>
             {quote?.shortName && (
-              <span className="text-sm text-gray-400 font-medium">({quote.shortName})</span>
+              <span className="text-sm text-gray-400 font-medium truncate">({quote.shortName})</span>
             )}
           </div>
           {quote?.price && (
@@ -355,14 +445,50 @@ function StockCard({
           {!quote?.price && (
             <div className="h-7 w-24 bg-gray-100 rounded animate-pulse mt-1" />
           )}
+          {/* Author — who owns the write-up for this name, or a quiet nudge to set
+              one. Comes from the thesis (same store as Draft & Review). */}
+          <div className="mt-1 flex items-center gap-1 text-[11px] min-w-0">
+            {author?.name || author?.email ? (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                <span className="text-gray-400 shrink-0">Author</span>
+                <span className="text-gray-600 font-medium truncate">{author.name || author.email}</span>
+              </>
+            ) : (
+              <span className="text-gray-300 italic">No author set yet</span>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => onToggleStar(stock.ticker)}
+            className={`transition-colors p-1 ${
+              starred ? 'text-amber-400 hover:text-amber-500' : 'text-gray-300 hover:text-amber-400'
+            }`}
+            title={starred ? 'Unpin from top' : 'Pin to top'}
+          >
+            <Star size={16} fill={starred ? 'currentColor' : 'none'} />
+          </button>
+          <button
+            onClick={() => onToggleComments(stock.ticker)}
+            className={`relative transition-colors p-1 ${
+              commentsOpen ? 'text-emerald-600' : openThreadCount > 0 ? 'text-emerald-500 hover:text-emerald-600' : 'text-gray-300 hover:text-gray-500'
+            }`}
+            title="Comments"
+          >
+            <MessageCircle size={16} />
+            {openThreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center tabular-nums">
+                {openThreadCount}
+              </span>
+            )}
+          </button>
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => onMoveOrder(stock.ticker, 'left')}
             disabled={!canMoveLeft}
             className="text-gray-300 hover:text-gray-600 disabled:opacity-25 disabled:hover:text-gray-300 transition-colors p-1"
-            title="Move left"
+            title="Move up"
           >
             <ChevronLeft size={16} />
           </button>
@@ -371,7 +497,7 @@ function StockCard({
             onClick={() => onMoveOrder(stock.ticker, 'right')}
             disabled={!canMoveRight}
             className="text-gray-300 hover:text-gray-600 disabled:opacity-25 disabled:hover:text-gray-300 transition-colors p-1"
-            title="Move right"
+            title="Move down"
           >
             <ChevronRight size={16} />
           </button>
@@ -392,7 +518,7 @@ function StockCard({
 
       {/* Key metrics row */}
       {quote?.price && (
-        <div className="flex gap-3 mt-3 text-[11px] text-gray-500">
+        <div className="flex gap-3 mt-2 text-[11px] text-gray-500">
           {quote.marketCap && <span>MCap {formatLargeNumber(quote.marketCap)}</span>}
           {quote.trailingPE && <span>PE {quote.trailingPE.toFixed(1)}</span>}
           {quote.forwardPE && <span>Fwd PE {quote.forwardPE.toFixed(1)}</span>}
@@ -400,23 +526,42 @@ function StockCard({
       )}
 
       {/* Why I'm interested */}
-      <div className="mt-4">
+      <div className="mt-2.5">
         <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Why I&apos;m Interested
         </label>
-        <textarea spellCheck={true}
-          data-watchlist-note
-          defaultValue={stock.note || ''}
-          placeholder="Quick note on why this stock is interesting..."
-          className="mt-1 w-full min-h-[68px] text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-all"
-          rows={2}
-          ref={(el) => { if (el) { autoExpand(el); onSyncNoteRows(); } }}
-          onInput={(e) => {
-            autoExpand(e.target);
-            onSyncNoteRows();
-          }}
-          onBlur={(e) => onUpdateNote(stock.ticker, e.target.value)}
-        />
+        <div className="relative mt-1">
+          <textarea spellCheck={true}
+            data-watchlist-note
+            defaultValue={stock.note || ''}
+            placeholder="Quick note on why this stock is interesting..."
+            className="w-full text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-all"
+            rows={2}
+            ref={(el) => {
+              if (!el) return;
+              if (noteExpanded) autoExpand(el);
+              else el.style.height = `${COLLAPSED_NOTE_HEIGHT}px`;
+              onSyncNoteRows();
+            }}
+            onInput={(e) => {
+              if (noteExpanded) autoExpand(e.target);
+              else e.target.style.height = `${COLLAPSED_NOTE_HEIGHT}px`;
+              onSyncNoteRows();
+            }}
+            onBlur={(e) => onUpdateNote(stock.ticker, e.target.value)}
+          />
+          {/* Anchored to the bottom-right corner of the note box; a matching
+              background keeps it legible over any text it overlaps. */}
+          <button
+            type="button"
+            onClick={() => onToggleNoteExpand(stock.ticker)}
+            className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-300 hover:text-emerald-600 bg-gray-50 rounded pl-1.5 py-0.5 transition-colors"
+            title={noteExpanded ? 'Collapse notes in this row' : 'Expand notes in this row'}
+          >
+            {noteExpanded ? 'Collapse' : 'Expand'}
+            {noteExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
+        </div>
       </div>
 
       {/* Actions */}
@@ -629,12 +774,35 @@ export default function WatchlistPage() {
   const [addError, setAddError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
+  // Grid ordering: 'manual' = drag/arrow order (pinned float to top); 'change' =
+  // sorted to mirror the Dip Finder graph's biggest-% -change-first ordering.
+  const [sortMode, setSortMode] = useState('manual');
+  // Ticker whose comments popover is open (null = none). Only one at a time.
+  const [openCommentsTicker, setOpenCommentsTicker] = useState(null);
+  const [loadedReview, setLoadedReview] = useState(null); // { ticker, thesis } backing the open popover
+  const [reviewSummary, setReviewSummary] = useState({}); // ticker -> open comment count (card badges)
+  const [reviewAuthors, setReviewAuthors] = useState({}); // ticker -> { name, email } (card author line)
+  // Tickers whose note is expanded to full height (default: compact). Toggling one
+  // card flips every card sharing its visual row so the row stays aligned.
+  const [expandedNotes, setExpandedNotes] = useState(() => new Set());
   const stockAreaRef = useRef(null);
   const prevPositionsRef = useRef(new Map());
   const movedTickersRef = useRef(new Set());
   const noteRowsFrameRef = useRef(null);
   const pendingScrollRef = useRef(null);
   const shouldAnimateRef = useRef(false);
+  // Freshest optimistic-concurrency version per watchlist id, and a promise chain that
+  // serializes writes. Together these stop a name's own back-to-back edits (rapid
+  // reorder clicks, a drag right after a star) from false-conflicting: saves run one
+  // at a time and each payload is re-stamped with the latest version just before send.
+  const latestVersionsRef = useRef({});
+  const saveChainRef = useRef(Promise.resolve());
+  // The last server-confirmed watchlist CONTENT (versions ignored). A 409 is only a
+  // *real* conflict when the server's content has diverged from this base; when only
+  // the version tokens advanced (stale bookkeeping — the common case after moving a
+  // name to another stage/page bumps the row), the save is safe to retry silently
+  // instead of nagging the user to redo a change nothing actually clobbered.
+  const serverTruthRef = useRef(null);
 
   const watchlists = (allData?.watchlists || []).toSorted((a, b) => {
     const aMain = a.name?.toLowerCase().includes('b.d. sterling') || a.name?.toLowerCase().includes('bd sterling') ? 0 : 1;
@@ -645,18 +813,85 @@ export default function WatchlistPage() {
   const activeWatchlist = watchlists.find(w => w.id === activeId);
   const stocks = useMemo(() => orderStocks(activeWatchlist?.stocks || []), [activeWatchlist]);
 
+  // The Watchlist tab only shows names still in the watching stage (promoted names
+  // live on their own tabs; their `stage` flips but no data is lost). 'researching'
+  // (the retired On Queue stage) folds back into Watching so nothing is stranded.
+  const watching = useMemo(() => stocks.filter(isWatching), [stocks]);
+  const watchingTickers = useMemo(() => watching.map(s => s.ticker).filter(Boolean), [watching]);
+
+  // Period selector + data shared with the Dip Finder graph so "sort by % change"
+  // reads the exact numbers the graph draws.
+  const { period, setPeriod, periodData, loading: periodLoading } = usePeriodChanges(watchingTickers);
+
+  const pctByTicker = useMemo(() => {
+    const map = {};
+    for (const s of watching) {
+      const pct = computePct(s.ticker, quotes[s.ticker], period, periodData);
+      if (pct != null) map[s.ticker] = pct;
+    }
+    return map;
+  }, [watching, quotes, period, periodData]);
+
+  // What the grid actually renders. Pinned names always float to the top; within
+  // each tier the order is the manual (drag/arrow) order, or — in "% change" mode —
+  // sorted to mirror the Dip Finder (biggest change first). Names still missing a
+  // datum sort last so the grid doesn't reshuffle while a period is loading.
+  const displayWatching = useMemo(() => {
+    if (sortMode !== 'change') return starredFirst(watching);
+    return watching
+      .map((s, i) => ({ s, i, pct: pctByTicker[s.ticker] }))
+      .sort((a, b) => {
+        const star = Number(!!b.s.starred) - Number(!!a.s.starred);
+        if (star) return star;
+        const aHas = a.pct != null, bHas = b.pct != null;
+        if (aHas && bHas) return b.pct - a.pct;
+        if (aHas !== bHas) return aHas ? -1 : 1;
+        return a.i - b.i;
+      })
+      .map(x => x.s);
+  }, [watching, sortMode, pctByTicker]);
+
+  // Card comment badges: counts live on the theses, not the watchlist payload, so
+  // fetch a batch summary of open comment counts for the visible names.
+  const watchingKey = watchingTickers.join(',');
+  useEffect(() => {
+    if (!watchingKey) return;
+    let cancelled = false;
+    fetch(`/api/review-summary?tickers=${encodeURIComponent(watchingKey)}`)
+      .then(r => r.json())
+      .then(d => {
+        if (cancelled) return;
+        if (d.summaries) setReviewSummary(prev => ({ ...prev, ...d.summaries }));
+        if (d.authors) setReviewAuthors(prev => ({ ...prev, ...d.authors }));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [watchingKey]);
+
+  // Record the authoritative version of each watchlist so the next save sends a
+  // current token rather than the one first loaded.
+  const rememberVersions = useCallback((data) => {
+    for (const w of data?.watchlists || []) {
+      if (w?.version != null) latestVersionsRef.current[w.id] = w.version;
+    }
+  }, []);
+
   // Load watchlist
   const loadData = useCallback(async () => {
     try {
       const cached = cache.get('watchlist_data');
       if (cached?.watchlists) {
         setAllData(cached);
+        rememberVersions(cached);
+        serverTruthRef.current = cached;
         setLoading(false);
         return cached;
       }
       const res = await fetch('/api/watchlist');
       const data = await res.json();
       setAllData(data);
+      rememberVersions(data);
+      serverTruthRef.current = data;
       writeWatchlistCache(cache, data);
       setLoading(false);
       return data;
@@ -664,22 +899,91 @@ export default function WatchlistPage() {
       setLoading(false);
       return null;
     }
-  }, [cache]);
+  }, [cache, rememberVersions]);
 
   // Save all data. Guarded by optimistic concurrency: if someone else changed the
   // watchlist first, the server returns the fresh state and we reload it — so their
   // edit is never silently lost. The local change is reverted (visibly, with a
   // notice) and can be redone against the up-to-date list.
-  const saveData = useCallback(async (updatedData) => {
+  const saveData = useCallback((updatedData) => {
+    // Optimistic UI right away so the grid feels instant…
     setAllData(updatedData);
     writeWatchlistCache(cache, updatedData);
-    const res = await postWatchlist(updatedData);
-    if (res.conflict && res.current) {
-      setAllData(res.current);
-      writeWatchlistCache(cache, res.current);
+
+    // …but serialize the network writes on a single chain. Each save waits for the
+    // previous to finish (which refreshes latestVersionsRef), then re-stamps the
+    // payload with the freshest version per list just before sending — so two of the
+    // user's own edits in quick succession can never collide on a stale token.
+    const task = saveChainRef.current.then(async () => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const stamped = {
+          ...updatedData,
+          watchlists: (updatedData.watchlists || []).map(w => {
+            const v = latestVersionsRef.current[w.id];
+            return v != null ? { ...w, version: v } : w;
+          }),
+        };
+        const res = await postWatchlist(stamped);
+
+        if (!res.conflict) {
+          // Success. Adopt the freshly-bumped tokens, and record our payload as the
+          // new server truth (content-wise it now equals what the server stored).
+          if (res.versions?.length) {
+            for (const v of res.versions) {
+              if (v?.version != null) latestVersionsRef.current[v.id] = v.version;
+            }
+            // Fold the new tokens into state/cache too, so a later save built from a
+            // fresh render (not through the ref) still carries a current version.
+            setAllData(prev => {
+              if (!prev) return prev;
+              const merged = {
+                ...prev,
+                watchlists: prev.watchlists.map(w => {
+                  const nv = latestVersionsRef.current[w.id];
+                  return nv != null ? { ...w, version: nv } : w;
+                }),
+              };
+              writeWatchlistCache(cache, merged);
+              return merged;
+            });
+          }
+          serverTruthRef.current = updatedData;
+          return;
+        }
+
+        // A 409 came back. Refresh tokens from the server's truth either way, then
+        // decide whether this is a REAL conflict or just a stale version token.
+        const server = res.current;
+        if (server) rememberVersions(server);
+        const base = serverTruthRef.current;
+        const diverged =
+          !server || !base ||
+          watchlistContentSig(server) !== watchlistContentSig(base);
+
+        if (!diverged) {
+          // No one actually changed the data — our version token was merely stale
+          // (e.g. a stage move on another page bumped the row). Re-stamp with the
+          // fresh tokens and retry silently; the user's change still lands, no nag.
+          serverTruthRef.current = server;
+          continue;
+        }
+
+        // Genuinely concurrent edit by someone else: adopt their state and let the
+        // user redo, so their change is never silently overwritten.
+        setAllData(server);
+        writeWatchlistCache(cache, server);
+        serverTruthRef.current = server;
+        setToast({ message: 'The watchlist was updated in another session — reloaded the latest. Please redo your change.', type: 'info' });
+        return;
+      }
+      // Still colliding after several silent retries (sustained contention) — surface
+      // it rather than spin forever.
       setToast({ message: 'The watchlist was updated in another session — reloaded the latest. Please redo your change.', type: 'info' });
-    }
-  }, [cache]);
+    });
+    // Keep the chain alive even if one save throws.
+    saveChainRef.current = task.catch(() => {});
+    return task;
+  }, [cache, rememberVersions]);
 
   // Helper: update active watchlist's stocks and save
   const saveStocks = useCallback(async (updatedStocks) => {
@@ -872,41 +1176,52 @@ export default function WatchlistPage() {
     }
   };
 
+  // Persist a new order of the watching names: splice it back into the full stock
+  // list (leaving other-stage names untouched) and save. Shared by drag, the arrows,
+  // and the star toggle. Always re-float pinned names first so the invariant holds.
+  const persistWatchingOrder = async (orderedWatching) => {
+    await saveStocks(applyWatchingOrder(stocks, starredFirst(orderedWatching)));
+  };
+
   const moveStockOrder = async (ticker, direction) => {
-    const clicked = stocks.find(s => s.ticker === ticker);
-    if (!clicked) return;
+    if (sortMode !== 'manual') return; // order is derived in "% change" mode
+    const list = displayWatching;
+    const idx = list.findIndex(s => s.ticker === ticker);
+    if (idx < 0) return;
 
-    const sameStage = stocks.filter(s => s.stage === clicked.stage);
-    const displayIdx = sameStage.findIndex(s => s.ticker === ticker);
-    if (displayIdx < 0) return;
+    const neighborIdx = direction === 'left' ? idx - 1 : idx + 1;
+    const neighbor = list[neighborIdx];
+    // Don't let an arrow hop the pin boundary — pinned names stay above un-pinned.
+    if (!neighbor || !!neighbor.starred !== !!list[idx].starred) return;
 
-    const neighborIdx = direction === 'left' ? displayIdx - 1 : displayIdx + 1;
-    const neighbor = sameStage[neighborIdx];
-    if (!neighbor) return;
-
-    const updated = [...stocks];
-    const aIdx = updated.findIndex(s => s.ticker === ticker);
-    const bIdx = updated.findIndex(s => s.ticker === neighbor.ticker);
-    if (aIdx < 0 || bIdx < 0) return;
-
+    // FLIP: snapshot current positions so the swap animates smoothly.
     const area = stockAreaRef.current;
     if (area) {
       const currentPositions = new Map();
       area.querySelectorAll('[data-stock-ticker]').forEach(el => {
-        const cardTicker = el.getAttribute('data-stock-ticker');
         const rect = el.getBoundingClientRect();
-        currentPositions.set(cardTicker, { x: rect.left, y: rect.top });
+        currentPositions.set(el.getAttribute('data-stock-ticker'), { x: rect.left, y: rect.top });
       });
       prevPositionsRef.current = currentPositions;
     }
 
-    [updated[aIdx], updated[bIdx]] = [updated[bIdx], updated[aIdx]];
-    const renumbered = updated.map((stock, position) => ({ ...stock, position }));
+    const moved = [...list];
+    [moved[idx], moved[neighborIdx]] = [moved[neighborIdx], moved[idx]];
 
     movedTickersRef.current = new Set([ticker, neighbor.ticker]);
     pendingScrollRef.current = { x: window.scrollX, y: window.scrollY };
     shouldAnimateRef.current = true;
-    await saveStocks(renumbered);
+    await persistWatchingOrder(moved);
+  };
+
+  const toggleStar = async (ticker) => {
+    // Flip the pin, then re-float. Base this on the MANUAL order (not the current
+    // view) so pinning while sorted by "% change" never overwrites the saved manual
+    // ordering — it only moves the toggled name to the boundary of its new tier.
+    const flipped = starredFirst(watching).map(s =>
+      s.ticker === ticker ? { ...s, starred: !s.starred } : s
+    );
+    await persistWatchingOrder(flipped);
   };
 
   const updateNote = async (ticker, note) => {
@@ -915,12 +1230,92 @@ export default function WatchlistPage() {
     ));
   };
 
-  // The Watchlist tab only shows names still in the watching stage. Names promoted
-  // to Draft & Review or Research live on their own tabs; their `stage` flips but no
-  // data is lost, so they reappear here untouched if demoted back to the watchlist.
-  // 'researching' (the old On Queue stage) is retired — fold any leftover names into
-  // Watching so they're never stranded and can promote straight to Draft.
-  const watching = stocks.filter(s => s.stage === 'watching' || s.stage === 'researching');
+  // Comments are ONE entity per ticker that follows it across every pipeline stage:
+  // they live on the thesis (thesis.underwriting.draftReview), the exact same store
+  // Draft & Review reads/writes. So a comment added on the Watchlist is the same
+  // comment in Draft & Review after promotion, a Draft & Review comment (open OR
+  // resolved) shows here after a demote, and saveThesisReconciled unions threads by
+  // id so nothing is lost. `openReviewThesis` holds the full thesis for the open
+  // popover (kept in a ref too so edits build on the freshest copy).
+  const loadedReviewRef = useRef(null);
+
+  // Load the thesis backing the open popover. Only sets state inside the async
+  // callback (no synchronous reset) — loading is derived by comparing tickers.
+  useEffect(() => {
+    if (!openCommentsTicker) return;
+    let cancelled = false;
+    fetchThesis(openCommentsTicker)
+      .then(t => { if (!cancelled) { const v = { ticker: openCommentsTicker, thesis: t || {} }; loadedReviewRef.current = v; setLoadedReview(v); } })
+      .catch(() => { if (!cancelled) { const v = { ticker: openCommentsTicker, thesis: {} }; loadedReviewRef.current = v; setLoadedReview(v); } });
+    return () => { cancelled = true; };
+  }, [openCommentsTicker]);
+
+  const reviewReady = !!openCommentsTicker && loadedReview?.ticker === openCommentsTicker;
+  const reviewLoading = !!openCommentsTicker && !reviewReady;
+  const openReview = reviewReady ? normalizeReview(loadedReview.thesis.underwriting?.draftReview) : null;
+
+  // Fold the popover's edits back into the thesis' draftReview (leaving `paper` and
+  // everything else untouched). persist=false = keystroke (local only); persist=true
+  // saves through the OCC-reconciled thesis save.
+  const updateReview = useCallback(async (ticker, nextReview, persist) => {
+    const cur = loadedReviewRef.current;
+    const base = (cur?.ticker === ticker ? cur.thesis : null) || {};
+    const dr = base.underwriting?.draftReview || {};
+    const nextThesis = {
+      ...base,
+      underwriting: {
+        ...(base.underwriting || {}),
+        draftReview: {
+          ...dr,
+          threads: nextReview.threads,
+          author: nextReview.author,
+          reviewer: nextReview.reviewer,
+          autoNotify: nextReview.autoNotify,
+        },
+      },
+    };
+    loadedReviewRef.current = { ticker, thesis: nextThesis };
+    setLoadedReview({ ticker, thesis: nextThesis });
+    setReviewSummary(s => ({ ...s, [ticker]: openCommentCount(nextReview.threads) }));
+    setReviewAuthors(a => setCardAuthor(a, ticker, nextReview.author));
+    if (persist) {
+      const res = await saveThesisReconciled(ticker, nextThesis);
+      const merged = res?.thesis;
+      if (merged) {
+        // Adopt the persisted/merged thesis (fresh version + any teammate threads
+        // unioned in) — only if the popover is still on the same ticker.
+        if (loadedReviewRef.current?.ticker === ticker) {
+          loadedReviewRef.current = { ticker, thesis: merged };
+          setLoadedReview({ ticker, thesis: merged });
+        }
+        setReviewSummary(s => ({ ...s, [ticker]: openCommentCount(merged.underwriting?.draftReview?.threads) }));
+        setReviewAuthors(a => setCardAuthor(a, ticker, merged.underwriting?.draftReview?.author));
+      }
+    }
+  }, []);
+
+  // Email the "who's up next" recipients for a stock's pending comments, reusing the
+  // same endpoint Draft & Review uses (it's ticker-generic).
+  const notifyStockComments = useCallback(async (ticker, threadIds) => {
+    const r = normalizeReview(loadedReviewRef.current?.thesis?.underwriting?.draftReview);
+    try {
+      const res = await fetch('/api/notify-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, author: r.author, reviewer: r.reviewer, threads: r.threads, threadIds, stage: 'watching' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.sent?.length) {
+        setToast({ message: `Emailed ${data.sent.map(s => s.role).join(' & ')} for ${ticker}`, type: 'success' });
+      } else if (data.skipped?.length) {
+        setToast({ message: `Couldn't send for ${ticker}: ${data.skipped[0].reason}`, type: 'error' });
+      }
+      return data;
+    } catch {
+      setToast({ message: `Failed to send notification for ${ticker}`, type: 'error' });
+      return { sent: [], skipped: [] };
+    }
+  }, []);
 
   const syncNoteRows = useCallback(() => {
     if (noteRowsFrameRef.current) return;
@@ -928,18 +1323,21 @@ export default function WatchlistPage() {
       noteRowsFrameRef.current = null;
       const area = stockAreaRef.current;
       if (!area) return;
+      const expanded = expandedNotes;
 
       const grids = [...area.querySelectorAll('[data-stock-grid]')];
       grids.forEach(grid => {
         const cards = [...grid.querySelectorAll('[data-stock-ticker]')];
         const rowGroups = [];
 
+        // Let every note shrink to its natural content height so we can measure it.
         cards.forEach(card => {
           const note = card.querySelector('[data-watchlist-note]');
-          if (!note) return;
-          note.style.height = 'auto';
+          if (note) note.style.height = 'auto';
         });
 
+        // Group notes by the visual row their card sits in, flagging a row as expanded
+        // if any card in it is expanded (an expanded card grows its whole row).
         cards.forEach(card => {
           const note = card.querySelector('[data-watchlist-note]');
           if (!note) return;
@@ -947,19 +1345,48 @@ export default function WatchlistPage() {
           const top = card.getBoundingClientRect().top;
           let row = rowGroups.find(group => Math.abs(group.top - top) < 2);
           if (!row) {
-            row = { top, notes: [] };
+            row = { top, notes: [], expanded: false };
             rowGroups.push(row);
           }
           row.notes.push(note);
+          if (expanded.has(card.getAttribute('data-stock-ticker'))) row.expanded = true;
         });
 
         rowGroups.forEach(row => {
-          const rowHeight = Math.max(68, ...row.notes.map(note => note.scrollHeight));
-          row.notes.forEach(note => {
-            note.style.height = `${rowHeight}px`;
-          });
+          // Expanded rows grow every note to the tallest content so they line up;
+          // collapsed rows sit at the compact height with the overflow clipped.
+          const height = row.expanded
+            ? Math.max(COLLAPSED_NOTE_HEIGHT, ...row.notes.map(note => note.scrollHeight))
+            : COLLAPSED_NOTE_HEIGHT;
+          row.notes.forEach(note => { note.style.height = `${height}px`; });
         });
       });
+    });
+  }, [expandedNotes]);
+
+  // Expand or collapse a note and — so the grid stays tidy — every other card sharing
+  // its visual row. Row membership is read from the DOM (cards at the same vertical
+  // offset), then those tickers flip together.
+  const toggleNoteExpand = useCallback((ticker) => {
+    const area = stockAreaRef.current;
+    let rowTickers = [ticker];
+    if (area) {
+      const cards = [...area.querySelectorAll('[data-stock-ticker]')];
+      const self = cards.find(c => c.getAttribute('data-stock-ticker') === ticker);
+      if (self) {
+        const top = self.getBoundingClientRect().top;
+        rowTickers = cards
+          .filter(c => Math.abs(c.getBoundingClientRect().top - top) < 2)
+          .map(c => c.getAttribute('data-stock-ticker'));
+      }
+    }
+    setExpandedNotes(prev => {
+      const willExpand = !prev.has(ticker);
+      const next = new Set(prev);
+      for (const t of rowTickers) {
+        if (willExpand) next.add(t); else next.delete(t);
+      }
+      return next;
     });
   }, []);
 
@@ -1111,32 +1538,93 @@ export default function WatchlistPage() {
         {/* Dip Finder */}
         {watching.length > 0 && Object.keys(quotes).length > 0 && (
           <div className="animate-fade-in-up stagger-2">
-            <DipFinder stocks={watching} quotes={quotes} />
+            <DipFinder
+              stocks={watching}
+              quotes={quotes}
+              period={period}
+              setPeriod={setPeriod}
+              periodData={periodData}
+              periodLoading={periodLoading}
+            />
+          </div>
+        )}
+
+        {/* Order controls */}
+        {watching.length > 1 && (
+          <div className="flex items-center justify-end gap-2 mb-3">
+            <span className="text-xs font-medium text-gray-400">Order</span>
+            <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+              <button
+                onClick={() => setSortMode('manual')}
+                className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-all ${
+                  sortMode === 'manual' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Manual
+              </button>
+              <button
+                onClick={() => setSortMode('change')}
+                className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-md transition-all ${
+                  sortMode === 'change' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+                title="Sort to match the Dip Finder graph (biggest % change first)"
+              >
+                <ArrowUpNarrowWide size={12} />
+                {DIP_PERIODS.find(p => p.key === period)?.label || '% from 52W High'}
+              </button>
+            </div>
           </div>
         )}
 
         <div ref={stockAreaRef}>
           {watching.length > 0 && (
             <div data-stock-grid="watching" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-fade-in-up stagger-4">
-              {watching.map((stock, index) => (
-                <StockCard
-                  key={stock.ticker}
-                  stock={stock}
-                  quote={quotes[stock.ticker]}
-                  onRemove={removeStock}
-                  onMove={moveStock}
-                  onMoveOrder={moveStockOrder}
-                  onUpdateNote={updateNote}
-                  onSyncNoteRows={syncNoteRows}
-                  canMoveLeft={index > 0}
-                  canMoveRight={index < watching.length - 1}
-                  moving={movingTicker === stock.ticker}
-                />
-              ))}
+              {displayWatching.map((stock, index) => {
+                const prev = displayWatching[index - 1];
+                const next = displayWatching[index + 1];
+                const manual = sortMode === 'manual';
+                return (
+                  <StockCard
+                    key={stock.ticker}
+                    stock={stock}
+                    quote={quotes[stock.ticker]}
+                    onRemove={removeStock}
+                    onMove={moveStock}
+                    onMoveOrder={moveStockOrder}
+                    onToggleStar={toggleStar}
+                    onUpdateNote={updateNote}
+                    onSyncNoteRows={syncNoteRows}
+                    noteExpanded={expandedNotes.has(stock.ticker)}
+                    onToggleNoteExpand={toggleNoteExpand}
+                    starred={!!stock.starred}
+                    canMoveLeft={manual && index > 0 && !!prev && !!prev.starred === !!stock.starred}
+                    canMoveRight={manual && index < displayWatching.length - 1 && !!next && !!next.starred === !!stock.starred}
+                    moving={movingTicker === stock.ticker}
+                    openCommentCount={reviewSummary[stock.ticker] || 0}
+                    author={reviewAuthors[stock.ticker] || null}
+                    commentsOpen={openCommentsTicker === stock.ticker}
+                    onToggleComments={(t) => setOpenCommentsTicker(prev => (prev === t ? null : t))}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
       </div>
+
+      {/* Comments drawer — one instance for whichever card is open, mounted at the page
+          level (not inside a card) so it slides in over the full viewport height. */}
+      {openCommentsTicker && (
+        <WatchlistComments
+          ticker={openCommentsTicker}
+          review={openReview}
+          loading={reviewLoading}
+          onChange={(next, persist) => updateReview(openCommentsTicker, next, persist)}
+          onNotify={(threadIds) => notifyStockComments(openCommentsTicker, threadIds)}
+          onClose={() => setOpenCommentsTicker(null)}
+        />
+      )}
+
       {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
     </div>
   );

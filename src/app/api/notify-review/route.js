@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { sendEmail, renderNotifyEmail, computePendingThreads } from '@/lib/email';
 import { getSession } from '@/lib/db';
 import { signStorageUrlsForTenant } from '@/lib/storage';
+import { STAGE_LABELS } from '@/lib/stageMove';
 
 /**
  * POST /api/notify-review
@@ -21,11 +22,16 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { ticker, author, reviewer, threads, threadIds } = await request.json();
+    const { ticker, author, reviewer, threads, threadIds, stage } = await request.json();
 
     if (!ticker) {
       return NextResponse.json({ error: 'Missing ticker' }, { status: 400 });
     }
+
+    // Which pipeline stage the name is viewed in (sent by the page that fired the
+    // notify), surfaced in the email so the recipient knows where it lives. Unknown
+    // stages fall through to the generic wording.
+    const stageLabel = STAGE_LABELS[stage] || null;
 
     const pending = computePendingThreads(threads);
 
@@ -58,6 +64,7 @@ export async function POST(request) {
         recipientName: person.name,
         role,
         threads: signedItems,
+        stageLabel,
       });
 
       try {

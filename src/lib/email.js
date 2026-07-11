@@ -79,10 +79,14 @@ const ROLE_COLOR = { reviewer: '#dc2626', author: '#059669' };
  * @param {'author'|'reviewer'} opts.role — the recipient's role / whose turn it is
  * @param {Array} opts.threads — threads awaiting this recipient, each { title, messages }
  */
-export function renderNotifyEmail({ ticker, recipientName, role, threads }) {
+export function renderNotifyEmail({ ticker, recipientName, role, threads, stageLabel }) {
   const roleLabel = ROLE_LABEL[role] || 'Reviewer';
   const count = threads.length;
-  const subject = `[${ticker}] ${count} comment${count === 1 ? '' : 's'} awaiting your response`;
+  // Surface the pipeline stage the name currently sits in (Watchlist, Draft & Review,
+  // …) so the recipient knows where the discussion lives. Optional: callers that don't
+  // know the stage (e.g. the auto-notify cron) omit it and get the generic wording.
+  const stageSuffix = stageLabel ? ` · ${stageLabel}` : '';
+  const subject = `[${ticker}${stageSuffix}] ${count} comment${count === 1 ? '' : 's'} awaiting your response`;
 
   const threadHtml = threads.map((thread, i) => {
     const messagesHtml = (thread.messages || []).map(msg => {
@@ -104,11 +108,17 @@ export function renderNotifyEmail({ ticker, recipientName, role, threads }) {
       </div>`;
   }).join('');
 
+  // Name where the comment currently lives so the recipient has the context. Falls
+  // back to the historical "draft review" wording when no stage was supplied.
+  const context = stageLabel
+    ? `on <strong>${escapeHtml(ticker)}</strong> — currently in the <strong>${escapeHtml(stageLabel)}</strong> stage`
+    : `on the <strong>${escapeHtml(ticker)}</strong> draft review`;
+
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#111827;">
       <p style="font-size:15px;margin:0 0 4px;">Hi ${escapeHtml(recipientName || roleLabel)},</p>
       <p style="font-size:15px;color:#374151;margin:0 0 16px;">
-        It's your turn to respond as <strong>${roleLabel}</strong> on the <strong>${escapeHtml(ticker)}</strong> draft review.
+        It's your turn to respond as <strong>${roleLabel}</strong> ${context}.
         There ${count === 1 ? 'is' : 'are'} <strong>${count}</strong> comment${count === 1 ? '' : 's'} awaiting your reply:
       </p>
       ${threadHtml}

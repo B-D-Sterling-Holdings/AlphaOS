@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { sendEmail, renderNotifyEmail } from '@/lib/email';
 import { selectDueReminders, computeNextSent } from '@/lib/autoNotify';
 import { signStorageUrlsForTenant } from '@/lib/storage';
+import { STAGE_LABELS, normalizeStage } from '@/lib/stageMove';
 
 /**
  * GET|POST /api/cron/auto-notify
@@ -53,6 +54,20 @@ async function runAutoNotify() {
     .select('tenant_id, ticker, underwriting');
   if (error) throw new Error(error.message);
 
+  // The comment threads live on the thesis, but the pipeline STAGE lives on the
+  // watchlist stock (a different table). To make these reminders read exactly like
+  // the manual "Email now" — which names the stage — load every tenant's watchlists
+  // once and index (tenant, ticker) → stage. Best-effort: a name with no watchlist
+  // entry (or a failed load) just falls back to the generic wording.
+  const stageByKey = new Map();
+  const stageKey = (tenantId, ticker) => `${tenantId}::${ticker}`;
+  const { data: wlRows } = await supabaseAdmin.from('watchlists').select('tenant_id, stocks');
+  for (const wl of wlRows || []) {
+    for (const stock of wl.stocks || []) {
+      if (stock?.ticker) stageByKey.set(stageKey(wl.tenant_id, stock.ticker), stock.stage);
+    }
+  }
+
   const summary = {
     scanned: rows?.length || 0,
     reviewsEnabled: 0,
@@ -72,6 +87,13 @@ async function runAutoNotify() {
     const author = draftReview.author || {};
     const reviewer = draftReview.reviewer || {};
     const emails = { author: author.email, reviewer: reviewer.email };
+
+    // Where the name currently sits (Watchlist / Draft & Review / …). Only labeled
+    // when the ticker is actually on a watchlist — an unknown stage stays generic so
+    // we never mislabel a name we can't locate. `normalizeStage` folds the legacy
+    // `researching` value into `watching` (→ "Watchlist"), matching the app.
+    const rawStage = stageByKey.get(stageKey(row.tenant_id, row.ticker));
+    const stageLabel = rawStage ? (STAGE_LABELS[normalizeStage(rawStage)] || null) : null;
 
     const due = selectDueReminders({ threads, autoNotify, emails, now });
     const remindedIds = [];
@@ -94,6 +116,7 @@ async function runAutoNotify() {
         recipientName: person.name,
         role,
         threads: signedItems,
+        stageLabel,
       });
       try {
         await sendEmail({ to: person.email, subject, html });

@@ -62,14 +62,23 @@ export async function saveWatchlist(data) {
   // trips VersionConflictError, which we re-raise carrying the fresh full state so
   // the route can hand it back (409) for the caller to reconcile. New lists have
   // no version (undefined) and take the plain-insert/legacy path.
+  //
+  // Each write returns the persisted row carrying its freshly-bumped `version`. We
+  // collect them so the caller can echo the new tokens back to the client — without
+  // that, the client keeps sending the version it first loaded and its NEXT save
+  // trips a false conflict against the row it just advanced.
+  const versions = [];
   for (const w of watchlists) {
     try {
-      await versionedWrite(supabase, 'watchlists', {
+      const row = await versionedWrite(supabase, 'watchlists', {
         match: { id: w.id },
         values: { name: w.name, stocks: orderStocks(w.stocks || []) },
         baseVersion: w.version,
         onConflict: 'tenant_id,id',
       });
+      if (row && typeof row.version === 'number') {
+        versions.push({ id: w.id, version: row.version });
+      }
     } catch (e) {
       if (e instanceof VersionConflictError) {
         throw new VersionConflictError(await loadWatchlist());
@@ -84,4 +93,6 @@ export async function saveWatchlist(data) {
     key: 'activeWatchlistId',
     value: activeWatchlistId || 'default',
   }, { onConflict: 'tenant_id,key' });
+
+  return { versions };
 }
