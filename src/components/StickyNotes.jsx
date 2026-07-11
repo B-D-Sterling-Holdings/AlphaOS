@@ -418,50 +418,58 @@ function PanelEditor({ note, onSave, onDelete, onBack }) {
   const c = colorOf(note);
   const [showColors, setShowColors] = useState(false);
   const pinned = note.pinned;
+  // A brand-new note (created via "New") opens empty — focus the title so the
+  // user can just start typing instead of hunting for where to click.
+  const isEmpty = !note.title?.trim() && !bodyToText(note.body).trim();
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
-      {/* Editor toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100">
+    // The whole editor takes the note's colour, so it reads as "you're editing
+    // THIS note" — not a separate boxed card floating inside the panel.
+    <div className={`flex-1 flex flex-col min-h-0 ${c.tint}`}>
+      {/* Header — one clear primary action (Done) + quick note actions. Done
+          saves and returns to the list (edits already autosave; unmounting the
+          editor flushes anything pending), so there's a single, obvious way out. */}
+      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-black/5">
         <button
           onClick={onBack}
-          title="Back to all notes (Esc)"
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-[12.5px] font-semibold text-gray-700 shadow-sm hover:bg-gray-100 hover:border-gray-400 transition-colors"
+          title="Done — save & back to all notes (Esc)"
+          className="flex items-center gap-1.5 pl-2.5 pr-3.5 py-1.5 rounded-lg bg-emerald-600 text-white text-[13px] font-semibold shadow-sm hover:bg-emerald-700 transition-colors"
         >
-          <ChevronLeft size={15} /> All notes
+          <Check size={15} /> Done
         </button>
         <div className="flex-1" />
+        <button
+          onClick={() => onSave({ pinned: !pinned })}
+          className={`flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ${pinned ? 'text-emerald-700 bg-emerald-100/70 hover:bg-emerald-100' : 'text-gray-500 hover:bg-black/5'}`}
+          title={pinned ? 'Unpin from workspace' : 'Pin to workspace'}
+        >
+          {pinned ? <Pin size={14} /> : <PinOff size={14} />}
+          {pinned ? 'Pinned' : 'Pin'}
+        </button>
         <div className="relative">
-          <button onClick={() => setShowColors(v => !v)} className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100" title="Colour">
-            <Palette size={15} />
+          <button onClick={() => setShowColors(v => !v)} className="p-1.5 rounded-lg text-gray-500 hover:bg-black/5" title="Note colour">
+            <Palette size={16} />
           </button>
           {showColors && (
             <ColorMenu current={note.color} onPick={(color) => onSave({ color })} onClose={() => setShowColors(false)} className="absolute top-full right-0 mt-1" />
           )}
         </div>
-        <button
-          onClick={() => onSave({ pinned: !pinned })}
-          className={`p-1.5 rounded-lg transition-colors ${pinned ? 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100' : 'text-gray-500 hover:bg-gray-100'}`}
-          title={pinned ? 'Unpin from workspace' : 'Pin to workspace'}
-        >
-          {pinned ? <Pin size={15} /> : <PinOff size={15} />}
-        </button>
       </div>
 
-      {/* Body */}
-      <div className={`flex-1 flex flex-col min-h-0 m-3 rounded-xl border ${c.card}`}>
+      {/* Content — title, ticker, then the rich body, all directly on the note. */}
+      <div className="flex-1 flex flex-col min-h-0">
         <SavingText
           singleLine
+          autoFocus={isEmpty}
           value={note.title}
           onCommit={(val) => onSave({ title: val })}
           placeholder="Title"
-          className="px-3 pt-3 pb-1 bg-transparent text-[15px] font-bold text-gray-900 outline-none placeholder:text-gray-400/70"
+          className="px-4 pt-3 pb-1 bg-transparent text-[16px] font-bold text-gray-900 outline-none placeholder:text-gray-400/70"
         />
-        {/* Ticker section — sits under the title */}
-        <div className="px-3 pb-2 pt-0.5 border-b border-black/5">
+        <div className="px-4 pb-2 pt-0.5">
           <TickerField value={note.ticker} onCommit={(t) => onSave({ ticker: t })} className="text-[13px] w-full" />
         </div>
-        <div className="flex-1 min-h-0 overflow-hidden px-2 py-2">
+        <div className="flex-1 min-h-0 overflow-hidden px-3 pb-2">
           <NoteBodyEditor
             key={note.id}
             note={note}
@@ -473,10 +481,12 @@ function PanelEditor({ note, onSave, onDelete, onBack }) {
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-t border-gray-100">
-        <span className="text-[11px] text-gray-400">Edited {timeAgo(note.updated_at)}</span>
-        <button onClick={() => onDelete(note)} className="flex items-center gap-1.5 text-[11px] font-semibold text-red-600 hover:text-red-700">
+      {/* Footer — passive autosave reassurance + delete. */}
+      <div className="flex items-center justify-between gap-2 px-4 py-2 border-t border-black/5">
+        <span className="flex items-center gap-1.5 text-[11px] text-gray-500">
+          <Check size={12} className="text-emerald-500" /> Saved · edited {timeAgo(note.updated_at)}
+        </span>
+        <button onClick={() => onDelete(note)} className="flex items-center gap-1.5 text-[11px] font-semibold text-red-600/90 hover:text-red-700" title="Delete note">
           <Trash2 size={13} /> Delete
         </button>
       </div>

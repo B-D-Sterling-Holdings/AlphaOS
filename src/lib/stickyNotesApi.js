@@ -16,12 +16,12 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 // floating card surface, its header/footer bars, and the little swatch used in
 // the list + colour picker. Tuned to sit calmly next to the app's emerald UI.
 export const STICKY_COLORS = {
-  yellow: { label: 'Yellow', swatch: 'bg-amber-300',   card: 'bg-amber-50 border-amber-200',   bar: 'bg-amber-100/80 border-amber-200',   ring: 'ring-amber-300' },
-  green:  { label: 'Green',  swatch: 'bg-emerald-300', card: 'bg-emerald-50 border-emerald-200', bar: 'bg-emerald-100/80 border-emerald-200', ring: 'ring-emerald-300' },
-  blue:   { label: 'Blue',   swatch: 'bg-sky-300',     card: 'bg-sky-50 border-sky-200',       bar: 'bg-sky-100/80 border-sky-200',       ring: 'ring-sky-300' },
-  pink:   { label: 'Pink',   swatch: 'bg-rose-300',    card: 'bg-rose-50 border-rose-200',     bar: 'bg-rose-100/80 border-rose-200',     ring: 'ring-rose-300' },
-  purple: { label: 'Purple', swatch: 'bg-violet-300',  card: 'bg-violet-50 border-violet-200', bar: 'bg-violet-100/80 border-violet-200', ring: 'ring-violet-300' },
-  gray:   { label: 'Gray',   swatch: 'bg-gray-300',    card: 'bg-gray-50 border-gray-200',     bar: 'bg-gray-100/80 border-gray-200',     ring: 'ring-gray-300' },
+  yellow: { label: 'Yellow', swatch: 'bg-amber-300',   card: 'bg-amber-50 border-amber-200',   bar: 'bg-amber-100/80 border-amber-200',   tint: 'bg-amber-50',   ring: 'ring-amber-300' },
+  green:  { label: 'Green',  swatch: 'bg-emerald-300', card: 'bg-emerald-50 border-emerald-200', bar: 'bg-emerald-100/80 border-emerald-200', tint: 'bg-emerald-50', ring: 'ring-emerald-300' },
+  blue:   { label: 'Blue',   swatch: 'bg-sky-300',     card: 'bg-sky-50 border-sky-200',       bar: 'bg-sky-100/80 border-sky-200',       tint: 'bg-sky-50',     ring: 'ring-sky-300' },
+  pink:   { label: 'Pink',   swatch: 'bg-rose-300',    card: 'bg-rose-50 border-rose-200',     bar: 'bg-rose-100/80 border-rose-200',     tint: 'bg-rose-50',    ring: 'ring-rose-300' },
+  purple: { label: 'Purple', swatch: 'bg-violet-300',  card: 'bg-violet-50 border-violet-200', bar: 'bg-violet-100/80 border-violet-200', tint: 'bg-violet-50',  ring: 'ring-violet-300' },
+  gray:   { label: 'Gray',   swatch: 'bg-gray-300',    card: 'bg-gray-50 border-gray-200',     bar: 'bg-gray-100/80 border-gray-200',     tint: 'bg-gray-50',    ring: 'ring-gray-300' },
 };
 
 export const COLOR_KEYS = Object.keys(STICKY_COLORS);

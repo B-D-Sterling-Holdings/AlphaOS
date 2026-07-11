@@ -32,7 +32,7 @@ const DEMO_TABLES = [
   'tasks', 'app_settings', 'research_links', 'documents',
   'theses', 'valuation_models', 'holdings', 'watchlists',
   'ticker_fundamentals', 'ticker_prices', 'fund_nav_data',
-  'strategic_notes', 'candidate_positions', 'ideas',
+  'strategic_notes', 'candidate_positions',
   'macro_regime_results', 'macro_regime_runs',
   'lessons', 'lesson_patterns',
 ];

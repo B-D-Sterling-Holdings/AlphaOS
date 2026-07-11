@@ -24,7 +24,6 @@ export const FEATURES = [
   { key: 'relationships', label: 'Relationships', hrefs: ['/relationships'] },
   { key: 'strategic-hub', label: 'Strategic Hub', hrefs: ['/strategic-hub'] },
   { key: 'tasks', label: 'Tasks', hrefs: ['/tasks'] },
-  { key: 'workspace', label: 'Workspace', hrefs: ['/workspace'] },
   { key: 'lessons', label: 'Lessons Learned', hrefs: ['/lessons'] },
   {
     key: 'research',
@@ -132,8 +131,6 @@ export const API_FEATURES = {
   // Roster is shared by the Tasks board AND the per-company Research Task panel,
   // so it stays reachable whenever EITHER feature is on.
   '/api/assignees': ['tasks', 'research'],
-  // Workspace
-  '/api/ideas': ['workspace'],
   // Lessons
   '/api/lessons': ['lessons'],
   '/api/lesson-patterns': ['lessons'],
