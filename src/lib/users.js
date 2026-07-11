@@ -184,8 +184,8 @@ const USER_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export async function createUser({ username, password, role = 'user', tenantId = null, createdBy = null, disabledFeatures = [] }) {
   const uname = String(username || '').trim();
   if (!uname) throw new Error('username is required');
-  if (!password || String(password).length < 6) {
-    throw new Error('password must be at least 6 characters');
+  if (!password || String(password).length < 5) {
+    throw new Error('password must be at least 5 characters');
   }
   if (!ROLES.includes(role)) throw new Error('invalid role');
 
@@ -281,8 +281,8 @@ export async function renameWorkspace(tenantId, name) {
 /** Reset a user's password. Callers must enforce authz (admin/owner-scoped). */
 export async function setUserPassword(id, password) {
   if (!id) throw new Error('id is required');
-  if (!password || String(password).length < 6) {
-    throw new Error('password must be at least 6 characters');
+  if (!password || String(password).length < 5) {
+    throw new Error('password must be at least 5 characters');
   }
   const password_hash = bcrypt.hashSync(String(password), 10);
   const { error } = await supabaseAdmin
