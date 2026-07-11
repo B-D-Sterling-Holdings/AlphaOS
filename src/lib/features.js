@@ -128,6 +128,7 @@ export const API_FEATURES = {
   // Tasks (prefix covers /api/tasks/reorder)
   '/api/tasks': ['tasks'],
   '/api/task-boards': ['tasks'],
+  '/api/horizons': ['tasks'],
   // Roster is shared by the Tasks board AND the per-company Research Task panel,
   // so it stays reachable whenever EITHER feature is on.
   '/api/assignees': ['tasks', 'research'],

@@ -194,6 +194,7 @@ function AssigneePicker({ current, roster, onSelect, onAddPerson, onRemovePerson
   return createPortal(
     <div
       ref={ref}
+      data-rtp-popover
       style={{ position: 'fixed', top: pos.top, left: pos.left }}
       className="z-[9999] bg-white border border-gray-200 rounded-xl shadow-lg py-1 min-w-[180px] max-h-[300px] overflow-y-auto"
     >
@@ -521,6 +522,8 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
   const [saved, setSaved] = useState(false); // transient "Saved" confirmation pill
   const loadSeq = useRef(0);
   const savedTimer = useRef(null);
+  const panelRef = useRef(null);
+  const tabRef = useRef(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -576,6 +579,23 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
     savedTimer.current = setTimeout(() => setSaved(false), 1600);
   }, []);
   useEffect(() => () => clearTimeout(savedTimer.current), []);
+
+  // Click-off-to-close: while the panel is open, a click anywhere on the main
+  // screen collapses it. Clicks on the panel itself, its protruding TASKS tab, or
+  // any portaled popover it owns (the assignee picker, tagged `data-rtp-popover`)
+  // are ignored so interacting with the panel never closes it.
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (e) => {
+      const t = e.target;
+      if (panelRef.current?.contains(t)) return;
+      if (tabRef.current?.contains(t)) return;
+      if (t.closest?.('[data-rtp-popover]')) return;
+      toggleOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [open, toggleOpen]);
 
   /* ---- task mutations (optimistic, last-write-wins) ----
      Apply the change locally, then persist with a plain PUT. No version tokens:
@@ -704,6 +724,7 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
           to the panel's right edge (still vertically centred, still protruding),
           and its arrow flips to point back in. Above the panel so it never clips. */}
       <button
+        ref={tabRef}
         onClick={() => toggleOpen(!open)}
         style={{ left: open ? PANEL_LEFT : '0px' }}
         className="fixed top-1/2 -translate-y-1/2 z-[9999] flex flex-col items-center gap-1.5 bg-white border border-l-0 border-gray-200 rounded-r-xl py-3 px-1.5 shadow-md hover:shadow-lg hover:pl-2.5 transition-all duration-300 group"
@@ -714,7 +735,7 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
 
       {!open ? null : (
       // Expanded: the full rail. Fixed + overlay, so the page underneath never moves.
-      <aside className="fixed left-0 top-20 bottom-0 z-[9998] w-[22rem] max-w-[85vw] bg-white border-r border-gray-200 shadow-xl flex flex-col animate-fade-in-up">
+      <aside ref={panelRef} className="fixed left-0 top-20 bottom-0 z-[9998] w-[22rem] max-w-[85vw] bg-white border-r border-gray-200 shadow-xl flex flex-col animate-fade-in-up">
       {/* Header — which company this list belongs to. The collapse control is the
           protruding tab on the right edge, so there's none in the corner. */}
       <div className="px-4 py-3 border-b border-gray-100">
