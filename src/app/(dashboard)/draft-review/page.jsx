@@ -13,6 +13,7 @@ import TickerSearchSelect from '@/components/TickerSearchSelect';
 import { useCache } from '@/lib/CacheContext';
 import { normalizeAutoNotify } from '@/lib/autoNotify';
 import { useTickerData } from '@/lib/useTickerData';
+import ResearchTaskPanel from '@/components/ResearchTaskPanel';
 import { persistStageMove, writeWatchlistCache, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { startGeneration, isGenerating, subscribeGeneration } from '@/lib/generateTickerJob';
 import {
@@ -373,6 +374,7 @@ export default function DraftReviewPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16">
+      <ResearchTaskPanel ticker={selectedTicker} companyName={selectedStock?.name} />
       <div className="flex items-center justify-between mb-8 animate-fade-in-up">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Draft &amp; Review</h1>

@@ -128,7 +128,9 @@ export const API_FEATURES = {
   // Tasks (prefix covers /api/tasks/reorder)
   '/api/tasks': ['tasks'],
   '/api/task-boards': ['tasks'],
-  '/api/assignees': ['tasks'],
+  // Roster is shared by the Tasks board AND the per-company Research Task panel,
+  // so it stays reachable whenever EITHER feature is on.
+  '/api/assignees': ['tasks', 'research'],
   // Workspace
   '/api/ideas': ['workspace'],
   // Lessons
@@ -146,6 +148,8 @@ export const API_FEATURES = {
   '/api/validate-ticker': ['research'],
   '/api/ticker': ['research'],
   '/api/generate-data': ['research'],
+  // Per-company research to-do list (Research Task panel on the workflow pages).
+  '/api/research-tasks': ['research'],
   // Documents / Link Database / Financials
   '/api/documents': ['documents'],
   '/api/links': ['link-database'],

@@ -326,23 +326,23 @@ export default function WatchlistComments({ ticker, review, loading = false, onC
                   {autoEnabled && (
                     <div className="mt-2.5 space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600">
+                        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-600 shrink-0">
                           <Clock size={12} className="text-gray-400" /> Remind
                         </span>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 min-w-0">
                           <select
                             value={cfg.everyDays ?? 1}
                             onChange={(e) => setAutoNotify({ everyDays: Number(e.target.value), tz: browserTz() })}
-                            className="bg-white border border-gray-200 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 cursor-pointer"
+                            className="min-w-0 bg-white border border-gray-200 rounded-lg px-1.5 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 cursor-pointer"
                           >
                             {AUTO_CADENCE_OPTIONS.map(o => <option key={o.days} value={o.days}>{o.label}</option>)}
                           </select>
-                          <span className="text-[11px] text-gray-400">at</span>
+                          <span className="text-[11px] text-gray-400 shrink-0">at</span>
                           <input
                             type="time" step={1800}
                             value={minutesToHHMM(cfg.atMinutes)}
                             onChange={(e) => setAutoNotify({ atMinutes: hhmmToMinutes(e.target.value), tz: browserTz() })}
-                            className="bg-white border border-gray-200 rounded-lg px-2 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 cursor-pointer"
+                            className="w-[74px] shrink-0 bg-white border border-gray-200 rounded-lg px-1.5 py-1 text-[11px] font-medium text-gray-700 outline-none focus:ring-1 focus:ring-blue-300 cursor-pointer [&::-webkit-calendar-picker-indicator]:hidden"
                           />
                         </div>
                       </div>

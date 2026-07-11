@@ -14,6 +14,7 @@ import { formatMoney, formatLargeNumber, formatShareCount, formatNumber } from '
 import { useCache } from '@/lib/CacheContext';
 import ValuationModel from '@/components/ValuationModel';
 import RichTextArea from '@/components/RichTextArea';
+import ResearchTaskPanel from '@/components/ResearchTaskPanel';
 import { migrateNewsImages } from '@/lib/migrateNewsImages';
 import { persistStageMove, writeWatchlistCache, persistHoldingsBackfill, STAGE_LABELS, routeForStage } from '@/lib/stageMove';
 import { startGeneration, isGenerating, subscribeGeneration } from '@/lib/generateTickerJob';
@@ -845,6 +846,7 @@ export default function ResearchPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 lg:px-12 pb-16">
+      <ResearchTaskPanel ticker={selectedTicker} companyName={selectedPositionStock?.name} />
       {/* Header */}
       <div className="flex items-center justify-between mb-8 animate-fade-in-up">
         <div>
