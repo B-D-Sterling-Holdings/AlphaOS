@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Card from '@/components/Card';
 import LineChart from './LineChart';
 import BarChart from './BarChart';
+import ChartModal, { ExpandButton } from './ChartModal';
 
 const QUARTER_OPTIONS = [
   { label: '1Y', quarters: 4 },
@@ -50,6 +51,41 @@ function computeCAGR(labels, data, targetYears) {
   return (Math.pow(endVal / startVal, 1 / actualYears) - 1) * 100;
 }
 
+function TimeframeToggle({ value, onChange }) {
+  return (
+    <div className="flex gap-0.5 bg-gray-100 rounded-lg p-0.5">
+      {QUARTER_OPTIONS.map(opt => (
+        <button
+          key={opt.label}
+          onClick={() => onChange(opt.label)}
+          className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all duration-200 ${
+            value === opt.label
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-400 hover:text-gray-600'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function CagrRow({ cagrs, cagrLabel }) {
+  return (
+    <div className="flex gap-4 mt-4 pt-3 border-t border-gray-100">
+      {cagrs.map(c => (
+        <div key={c.label} className="text-center">
+          <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold block">{c.label} {cagrLabel}</span>
+          <span className={`text-sm font-bold ${c.value == null ? 'text-gray-300' : c.value >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+            {c.value != null ? `${c.value >= 0 ? '+' : ''}${c.value.toFixed(2)}%` : '—'}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function FundamentalChart({
   title,
   labels,
@@ -64,6 +100,7 @@ export default function FundamentalChart({
   cagrLabel = 'CAGR',
 }) {
   const [timeframe, setTimeframe] = useState('5Y');
+  const [expanded, setExpanded] = useState(false);
 
   const selectedQ = QUARTER_OPTIONS.find(o => o.label === timeframe)?.quarters || 20;
   const sliceCount = selectedQ === Infinity ? labels.length : Math.min(selectedQ, labels.length);
@@ -76,46 +113,39 @@ export default function FundamentalChart({
     { label: '2Y', value: computeCAGR(labels, data, 2) },
     { label: '5Y', value: computeCAGR(labels, data, 5) },
   ] : [];
+  const hasCagr = showCagr && cagrs.some(c => c.value !== null);
 
   const ChartComponent = chartType === 'line' ? LineChart : BarChart;
-  const chartProps = chartType === 'line'
-    ? { labels: slicedLabels, data: slicedData, label, color, formatY }
-    : { labels: slicedLabels, data: slicedData, label, formatY, colorPositive, colorNegative };
+  const renderChart = (containerClassName) => {
+    const chartProps = chartType === 'line'
+      ? { labels: slicedLabels, data: slicedData, label, color, formatY, containerClassName }
+      : { labels: slicedLabels, data: slicedData, label, formatY, colorPositive, colorNegative, containerClassName };
+    return <ChartComponent {...chartProps} />;
+  };
+
+  const toggle = <TimeframeToggle value={timeframe} onChange={setTimeframe} />;
 
   return (
-    <Card
-      title={title}
-      actions={
-        <div className="flex gap-0.5 bg-gray-100 rounded-lg p-0.5">
-          {QUARTER_OPTIONS.map(opt => (
-            <button
-              key={opt.label}
-              onClick={() => setTimeframe(opt.label)}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all duration-200 ${
-                timeframe === opt.label
-                  ? 'bg-white text-gray-900 shadow-sm'
-                  : 'text-gray-400 hover:text-gray-600'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      }
-    >
-      <ChartComponent {...chartProps} />
-      {showCagr && cagrs.some(c => c.value !== null) && (
-        <div className="flex gap-4 mt-4 pt-3 border-t border-gray-100">
-          {cagrs.map(c => (
-            <div key={c.label} className="text-center">
-              <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold block">{c.label} {cagrLabel}</span>
-              <span className={`text-sm font-bold ${c.value == null ? 'text-gray-300' : c.value >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                {c.value != null ? `${c.value >= 0 ? '+' : ''}${c.value.toFixed(2)}%` : '—'}
-              </span>
-            </div>
-          ))}
-        </div>
+    <>
+      <Card
+        title={title}
+        actions={
+          <div className="flex items-center gap-2">
+            {toggle}
+            <ExpandButton onClick={() => setExpanded(true)} />
+          </div>
+        }
+      >
+        {renderChart('chart-container')}
+        {hasCagr && <CagrRow cagrs={cagrs} cagrLabel={cagrLabel} />}
+      </Card>
+
+      {expanded && (
+        <ChartModal title={title} actions={toggle} onClose={() => setExpanded(false)}>
+          {renderChart('chart-container-lg')}
+          {hasCagr && <CagrRow cagrs={cagrs} cagrLabel={cagrLabel} />}
+        </ChartModal>
       )}
-    </Card>
+    </>
   );
 }
