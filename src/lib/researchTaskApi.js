@@ -1,7 +1,7 @@
 // Client-side fetch helpers for the per-company Research Task panel.
-// Mirrors src/lib/taskBoardApi.js: PUTs carry the optimistic-concurrency
-// `baseVersion` and surface a 409 as { ok:false, conflict:true, current } so the
-// caller can adopt the fresh row instead of clobbering a concurrent edit.
+// Edits are plain last-write-wins (the server does a direct UPDATE), so there's
+// no version token to carry and no 409 to reconcile — a PUT just returns the
+// saved row.
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -25,17 +25,13 @@ export async function createResearchTask(ticker, { title, status, assignee, tags
   return { ok: res.ok, data: await readJson(res) };
 }
 
-export async function updateResearchTask(id, updates, baseVersion) {
+export async function updateResearchTask(id, updates) {
   const res = await fetch('/api/research-tasks', {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ id, ...updates, baseVersion }),
+    body: JSON.stringify({ id, ...updates }),
   });
-  const data = await readJson(res);
-  if (res.status === 409 && data.conflict) {
-    return { ok: false, conflict: true, current: data.current, data };
-  }
-  return { ok: res.ok, data };
+  return { ok: res.ok, data: await readJson(res) };
 }
 
 export async function deleteResearchTask(id) {

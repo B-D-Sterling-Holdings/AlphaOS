@@ -13,11 +13,11 @@
 // otherwise. Persistence, concurrency and the assignee roster all reuse existing
 // app infrastructure (see researchTaskApi + /api/assignees).
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft, ChevronRight, Plus, X, Trash2, User, Tag as TagIcon, ChevronDown,
-  ClipboardList, GripVertical, Flag,
+  ClipboardList, GripVertical, Flag, Check,
 } from 'lucide-react';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -49,12 +49,21 @@ const STATUS_META = {
   done:        { label: 'Done',        dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700' },
 };
 
+// Priority is chosen from the pill dropdown on each card. The list is kept
+// ordered by tier — High at the top, Medium in the middle, Low at the bottom —
+// and drag-to-reorder only works WITHIN a tier (dragging a card into a different
+// tier is rejected on drop).
 const PRIORITY_ORDER = ['high', 'medium', 'low'];
 const PRIORITY_META = {
   high:   { label: 'High',   dot: 'bg-red-500',    chip: 'bg-red-50 text-red-700' },
   medium: { label: 'Medium', dot: 'bg-amber-500',  chip: 'bg-amber-50 text-amber-700' },
   low:    { label: 'Low',    dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700' },
 };
+// A task's tier, normalising any unexpected value to 'medium'.
+const tierOf = (t) => (t?.priority === 'high' || t?.priority === 'low' ? t.priority : 'medium');
+// One tier's tasks in manual (position) order.
+const tasksInTier = (tasks, tier) =>
+  tasks.filter(t => tierOf(t) === tier).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
 
 // The contents of the little protruding "TASKS" tab — icon, vertical label,
 // arrow and open-count. The SAME tab is shown whether the panel is collapsed or
@@ -324,17 +333,78 @@ function TagEditor({ tags, onChange }) {
 }
 
 /* ------------------------------------------------------------------ *
+ * EditableText — a self-contained auto-saving, auto-growing text field. This is
+ * the ONE place text-field save behaviour lives, so every editable text in the
+ * panel saves the same, reliable way:
+ *
+ *   • The live value is mirrored into a ref on every keystroke, and commits read
+ *     that ref — never React state — so "type then click off immediately" saves
+ *     the exact text on screen (no lost last keystroke, no stale-state skip).
+ *   • Commits fire on blur, on Enter (single-line), AND on unmount — so switching
+ *     company or collapsing the panel with an uncommitted edit still saves it.
+ *   • It only calls onCommit when the value actually changed, so viewing a task
+ *     never triggers a needless write.
+ *   • It auto-grows to fit its content (long titles/notes are fully visible).
+ * ------------------------------------------------------------------ */
+function EditableText({ initialValue = '', onCommit, singleLine = false, minRows = 1, className = '', ...props }) {
+  const [value, setValue] = useState(initialValue);
+  const valueRef = useRef(initialValue);       // live value, updated synchronously
+  const committedRef = useRef(initialValue);   // last value handed to onCommit
+  const onCommitRef = useRef(onCommit);         // freshest callback (set in effect)
+  const taRef = useRef(null);
+
+  useEffect(() => { onCommitRef.current = onCommit; });
+
+  const resize = useCallback(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+  useLayoutEffect(() => { resize(); }, [value, resize]);
+
+  const commit = useCallback(() => {
+    const raw = valueRef.current;
+    const cleaned = singleLine ? raw.trim() : raw;
+    if (cleaned === committedRef.current) return;      // nothing changed
+    if (singleLine && !cleaned) {                       // never save an empty title
+      valueRef.current = committedRef.current;
+      setValue(committedRef.current);
+      return;
+    }
+    committedRef.current = cleaned;
+    onCommitRef.current?.(cleaned);
+  }, [singleLine]);
+
+  // Flush a pending edit if the field unmounts (ticker switch / panel collapse).
+  useEffect(() => () => commit(), [commit]);
+
+  return (
+    <textarea
+      ref={taRef}
+      value={value}
+      rows={minRows}
+      onChange={(e) => { valueRef.current = e.target.value; setValue(e.target.value); }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (singleLine && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); e.target.blur(); }
+      }}
+      className={`resize-none overflow-hidden ${className}`}
+      {...props}
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * Task card — one to-do item. Sortable: it renders its own drag handle
  * (matching the /tasks board) via dnd-kit's useSortable.
  * ------------------------------------------------------------------ */
-function TaskCard({ task, roster, onPatch, onDelete, onOpenAssignee }) {
-  // Local edit buffers for the free-text fields; committed to the server on blur.
-  // The parent keys this card by `${id}:${version}`, so when a save (or a
-  // conflict reload) bumps the version the card remounts and re-initialises from
-  // fresh props — that's how server truth is adopted, no sync effect needed.
-  const [title, setTitle] = useState(task.title);
-  const [notes, setNotes] = useState(task.notes || '');
+function TaskCard({ task, roster, onPatch, onChangePriority, onDelete, onOpenAssignee }) {
+  // The card is keyed by id only (it does NOT remount on save). Text fields own
+  // their own edit state inside EditableText and save themselves reliably, so all
+  // this card does is forward the committed value up via onPatch.
   const [showNotes, setShowNotes] = useState(Boolean(task.notes));
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const assigneeAnchor = useRef(null);
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
@@ -351,15 +421,6 @@ function TaskCard({ task, roster, onPatch, onDelete, onOpenAssignee }) {
 
   const done = task.status === 'done';
 
-  const commitTitle = () => {
-    const t = title.trim();
-    if (t && t !== task.title) onPatch(task, { title: t });
-    else if (!t) setTitle(task.title);
-  };
-  const commitNotes = () => {
-    if ((notes || '') !== (task.notes || '')) onPatch(task, { notes });
-  };
-
   return (
     <div
       ref={setNodeRef}
@@ -375,27 +436,45 @@ function TaskCard({ task, roster, onPatch, onDelete, onOpenAssignee }) {
         >
           <GripVertical size={14} />
         </button>
-        <textarea
-          value={title}
-          onChange={e => setTitle(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.blur(); } }}
-          rows={1}
-          className={`flex-1 text-sm bg-transparent outline-none resize-none leading-snug ${done ? 'line-through text-gray-400' : 'text-gray-900'}`}
+        <EditableText
+          initialValue={task.title}
+          onCommit={val => onPatch(task, { title: val })}
+          singleLine
+          placeholder="Task…"
+          className={`flex-1 min-w-0 text-sm bg-transparent outline-none leading-snug break-words ${done ? 'line-through text-gray-400' : 'text-gray-900'}`}
         />
-        <button
-          onClick={() => onDelete(task)}
-          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all flex-shrink-0 mt-0.5"
-          title="Delete task"
-        >
-          <Trash2 size={13} />
-        </button>
+        {confirmDelete ? (
+          <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
+            <button
+              onClick={() => onDelete(task)}
+              className="text-[10px] font-bold text-white bg-red-500 hover:bg-red-600 px-1.5 py-0.5 rounded transition-colors"
+              title="Confirm delete"
+            >
+              Delete
+            </button>
+            <button
+              onClick={() => setConfirmDelete(false)}
+              className="text-gray-300 hover:text-gray-500 transition-colors"
+              title="Cancel"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all flex-shrink-0 mt-0.5"
+            title="Delete task"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-2 mt-2">
         <div className="flex items-center gap-1.5">
           <SelectPill value={task.status} order={STATUS_ORDER} meta={STATUS_META} fallback="todo" onChange={s => onPatch(task, { status: s })} />
-          <SelectPill value={task.priority} order={PRIORITY_ORDER} meta={PRIORITY_META} fallback="medium" icon={Flag} onChange={p => onPatch(task, { priority: p })} />
+          <SelectPill value={tierOf(task)} order={PRIORITY_ORDER} meta={PRIORITY_META} fallback="medium" icon={Flag} onChange={p => onChangePriority(task, p)} />
         </div>
         <AssigneeTag
           assignee={task.assignee}
@@ -410,13 +489,13 @@ function TaskCard({ task, roster, onPatch, onDelete, onOpenAssignee }) {
       </div>
 
       {showNotes ? (
-        <textarea
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          onBlur={commitNotes}
-          rows={2}
+        <EditableText
+          initialValue={task.notes || ''}
+          onCommit={val => onPatch(task, { notes: val })}
+          minRows={2}
           placeholder="Notes…"
-          className="mt-2 w-full text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-emerald-200 resize-none"
+          autoFocus={!task.notes}
+          className="mt-2 w-full text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-emerald-200"
         />
       ) : (
         <button onClick={() => setShowNotes(true)} className="mt-1.5 text-[11px] text-gray-400 hover:text-gray-600">
@@ -439,7 +518,9 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
   const [newTitle, setNewTitle] = useState('');
   const [notice, setNotice] = useState('');
   const [assigneeFor, setAssigneeFor] = useState(null); // { task, anchorRef }
+  const [saved, setSaved] = useState(false); // transient "Saved" confirmation pill
   const loadSeq = useRef(0);
+  const savedTimer = useRef(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -455,25 +536,25 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
     });
   }, [cache]);
 
-  // Load this ticker's tasks whenever the selected company changes (and only
-  // once the panel has been opened — no point fetching for a company the user
-  // never expands the rail on). A monotonic sequence guards against a slow
-  // response for a previously-selected company landing after a newer one; state
-  // is only ever set from the async callback, so `loading` is derived below
-  // from `loadedTicker` rather than flipped synchronously here.
+  // Load this ticker's tasks whenever the selected company changes — even while
+  // collapsed, so the count badge on the tab is accurate before the panel is ever
+  // opened. A monotonic sequence guards against a slow response for a previously-
+  // selected company landing after a newer one; state is only ever set from the
+  // async callback, so `loading` is derived below from `loadedTicker` rather than
+  // flipped synchronously here.
   useEffect(() => {
-    if (!upper || !open) return;
+    if (!upper) return;
     const seq = ++loadSeq.current;
     fetchResearchTasks(upper).then(rows => {
       if (seq !== loadSeq.current) return; // superseded by a newer load
       setTasks(rows);
       setLoadedTicker(upper);
     });
-  }, [upper, open]);
+  }, [upper]);
 
   // Skeleton shows until the CURRENT ticker's tasks have arrived, which also
   // hides the previous company's list during a switch.
-  const loading = open && !!upper && loadedTicker !== upper;
+  const loading = !!upper && loadedTicker !== upper;
 
   // Roster is company-independent; load it once the panel is open.
   useEffect(() => {
@@ -487,23 +568,33 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
     setNotice(msg);
   }, []);
 
-  /* ---- task mutations (optimistic + OCC) ---- */
-  const patchTask = useCallback(async (task, updates) => {
+  // Brief "Saved" confirmation, shown after a successful edit (blur/Enter save,
+  // status/priority/tag/assignee change). Auto-hides after a moment.
+  const flashSaved = useCallback(() => {
+    setSaved(true);
+    clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 1600);
+  }, []);
+  useEffect(() => () => clearTimeout(savedTimer.current), []);
+
+  /* ---- task mutations (optimistic, last-write-wins) ----
+     Apply the change locally, then persist with a plain PUT. No version tokens:
+     the server does a direct UPDATE, so a save always lands and rapid back-to-back
+     edits never bounce off a stale-version 409. */
+  const patchTask = async (task, updates) => {
     setNotice('');
     setTasks(prev => prev.map(t => (t.id === task.id ? { ...t, ...updates } : t)));
-    const res = await updateResearchTask(task.id, updates, task.version);
+    const res = await updateResearchTask(task.id, updates);
     if (res.ok) {
-      setTasks(prev => prev.map(t => (t.id === task.id ? res.data : t)));
-    } else if (res.conflict && res.current) {
-      setTasks(prev => prev.map(t => (t.id === task.id ? res.current : t)));
-      flash('This task changed elsewhere — reloaded the latest, please redo your edit.');
+      setTasks(prev => prev.map(t => (t.id === task.id ? { ...t, ...res.data } : t)));
+      flashSaved();
     } else {
-      // Roll back to server truth to avoid a stuck optimistic state.
+      // Reload server truth so the UI can't get stuck showing an unsaved value.
       const fresh = await fetchResearchTasks(upper);
       setTasks(fresh);
-      flash('Could not save that change.');
+      flash('Could not save that change — please try again.');
     }
-  }, [upper, flash]);
+  };
 
   const addTask = useCallback(async () => {
     const title = newTitle.trim();
@@ -536,35 +627,56 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
     setRoster(prev => { const next = removeAssigneeFromList(prev, name); saveRoster(next); return next; });
   }, []);
 
-  /* ---- drag-and-drop reorder (single flat list, dnd-kit like /tasks) ----
-     Deliberately NOT memoised: it reads `tasks` from the render closure so it
-     always sees the latest order, and DndContext re-takes it each render. */
+  /* ---- drag-and-drop reorder, constrained to a single priority tier ----
+     Reordering only happens WITHIN a tier (high/medium/low). Dragging a card over
+     a card in another tier is rejected on drop, so it snaps back. Priority itself
+     is changed via the card's priority pill, not by dragging. Computed on drop
+     from a render-closure snapshot; NOT memoised so it always sees fresh `tasks`. */
   const handleDragEnd = async (event) => {
     const { active, over } = event;
-    if (!over || active.id === over.id) return;
+    if (!over || over.id === active.id) return;
 
     const snapshot = tasks;
-    const oldIndex = snapshot.findIndex(t => t.id === active.id);
-    const newIndex = snapshot.findIndex(t => t.id === over.id);
-    if (oldIndex < 0 || newIndex < 0) return;
+    const activeTask = snapshot.find(t => t.id === active.id);
+    const overTask = snapshot.find(t => t.id === over.id);
+    if (!activeTask || !overTask) return;
 
-    // Optimistically apply the new order + contiguous positions. Versions are
-    // left untouched so cards don't remount mid-animation.
-    const reordered = arrayMove(snapshot, oldIndex, newIndex).map((t, i) => ({ ...t, position: i }));
-    setTasks(reordered);
+    // Cross-tier drags don't reorder — only same-tier moves are allowed.
+    const tier = tierOf(activeTask);
+    if (tier !== tierOf(overTask)) return;
 
-    const res = await reorderResearchTasks(reordered.map(t => ({ id: t.id, position: t.position })));
-    if (!res.ok) {
-      setTasks(snapshot);
-      flash('Could not reorder tasks.');
-      return;
+    const items = tasksInTier(snapshot, tier);
+    const oldIndex = items.findIndex(t => t.id === active.id);
+    const newIndex = items.findIndex(t => t.id === over.id);
+    if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
+
+    // Reorder within the tier and give the tier contiguous positions.
+    const reordered = arrayMove(items, oldIndex, newIndex).map((t, i) => ({ ...t, position: i }));
+    const pos = new Map(reordered.map(t => [t.id, t.position]));
+    setTasks(snapshot.map(t => (pos.has(t.id) ? { ...t, position: pos.get(t.id) } : t)));
+
+    const changed = reordered
+      .filter(t => { const o = snapshot.find(s => s.id === t.id); return o && o.position !== t.position; })
+      .map(t => ({ id: t.id, position: t.position }));
+    if (changed.length) {
+      const res = await reorderResearchTasks(changed);
+      if (!res.ok) { setTasks(snapshot); flash('Could not reorder tasks.'); return; }
     }
-    // The positional write bumped each row's version server-side; resync quietly
-    // so later field edits carry a fresh baseVersion (no lost-update false 409s).
+    // Resync quietly so positions reflect exactly what the server stored.
     const seq = ++loadSeq.current;
     fetchResearchTasks(upper).then(rows => {
       if (seq === loadSeq.current) setTasks(rows);
     });
+  };
+
+  // Change a card's priority from its pill. The task moves to the bottom of its
+  // new tier (a fresh position past everything already there), carried on the
+  // same OCC-guarded PUT that sets the priority.
+  const changePriority = async (task, p) => {
+    if (tierOf(task) === p) return;
+    const dest = tasksInTier(tasks, p);
+    const nextPos = dest.length ? Math.max(...dest.map(t => t.position ?? 0)) + 1 : 0;
+    await patchTask(task, { priority: p, position: nextPos });
   };
 
   const counts = useMemo(() => {
@@ -572,7 +684,12 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
     return { open: openCount, total: tasks.length };
   }, [tasks]);
 
-  const taskIds = useMemo(() => tasks.map(t => t.id), [tasks]);
+  // Tasks grouped by tier for rendering — High, then Medium, then Low — each in
+  // its own manual (position) order.
+  const byTier = useMemo(
+    () => PRIORITY_ORDER.map(tier => ({ tier, items: tasksInTier(tasks, tier) })),
+    [tasks]
+  );
 
   if (!upper) return null;
 
@@ -647,21 +764,27 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
             <div className="text-xs text-gray-400">Add research to-dos for {upper} — build the model, analyze utilization rates, and so on.</div>
           </div>
         ) : (
+          // One continuous list ordered High → Medium → Low. Each tier is its own
+          // SortableContext, so a card only reorders among its own tier's cards;
+          // dragging across tiers is rejected on drop (snaps back).
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
-              <div className="space-y-2.5">
-                {tasks.map(task => (
-                  <TaskCard
-                    key={`${task.id}:${task.version}`}
-                    task={task}
-                    roster={roster}
-                    onPatch={patchTask}
-                    onDelete={removeTask}
-                    onOpenAssignee={(t, anchorRef) => setAssigneeFor({ task: t, anchorRef })}
-                  />
-                ))}
-              </div>
-            </SortableContext>
+            <div className="space-y-2.5">
+              {byTier.map(({ tier, items }) => (
+                <SortableContext key={tier} items={items.map(t => t.id)} strategy={verticalListSortingStrategy}>
+                  {items.map(task => (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      roster={roster}
+                      onPatch={patchTask}
+                      onChangePriority={changePriority}
+                      onDelete={removeTask}
+                      onOpenAssignee={(t, anchorRef) => setAssigneeFor({ task: t, anchorRef })}
+                    />
+                  ))}
+                </SortableContext>
+              ))}
+            </div>
           </DndContext>
         )}
       </div>
@@ -677,6 +800,16 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
           onClose={() => setAssigneeFor(null)}
         />
       )}
+
+      {/* Transient "Saved" confirmation — appears when an edit is committed
+          (clicking off a field, pressing Enter, or changing status/priority). */}
+      <div
+        className={`pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-900 text-white text-[11px] font-semibold shadow-lg transition-all duration-200 ${
+          saved ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'
+        }`}
+      >
+        <Check size={12} className="text-emerald-400" /> Saved
+      </div>
       </aside>
       )}
     </>

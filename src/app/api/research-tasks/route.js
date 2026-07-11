@@ -1,6 +1,5 @@
 import { getDb } from '@/lib/db';
-import { apiBadRequest, apiCreated, apiError, apiJson, apiOk, conflictResponse } from '@/lib/apiResponses';
-import { versionedWrite, VersionConflictError } from '@/lib/concurrency';
+import { apiBadRequest, apiCreated, apiError, apiJson, apiOk } from '@/lib/apiResponses';
 
 /*
   Per-company research to-do items behind the collapsible Research Task panel
@@ -11,8 +10,11 @@ import { versionedWrite, VersionConflictError } from '@/lib/concurrency';
   only make sense alongside a specific name's thesis, so they are keyed by ticker
   rather than board_id and carry a status/tags/assignee tailored to research work.
 
-  Edits are version-guarded (OCC) exactly like /api/tasks — two analysts editing
-  the same item get a canonical 409 instead of a silent last-write-wins.
+  Edits are plain last-write-wins updates (NOT version-guarded). This is a
+  lightweight per-company checklist where two people editing the exact same item
+  field at once is a non-event — and OCC's stale-version 409s made rapid
+  single-user edits (type, click off, type again) fail to save. Simplicity and
+  "it always saves" win here over conflict detection.
 */
 
 const TABLE = 'research_tasks';
@@ -94,11 +96,12 @@ export async function POST(req) {
   return apiCreated(data);
 }
 
-// PUT — update a task (title, status, assignee, tags, notes, position).
+// PUT — update a task (title, status, assignee, tags, notes, position). Plain
+// last-write-wins UPDATE, scoped to the caller's tenant by RLS.
 export async function PUT(req) {
   const supabase = await getDb();
   const body = await req.json();
-  const { id, baseVersion } = body;
+  const { id } = body;
 
   if (!id) return apiBadRequest('id is required');
 
@@ -106,15 +109,15 @@ export async function PUT(req) {
   if (Object.keys(updates).length === 0) return apiBadRequest('no valid fields to update');
   updates.updated_at = new Date().toISOString();
 
-  try {
-    const data = await versionedWrite(supabase, TABLE, {
-      match: { id }, values: updates, baseVersion, onConflict: 'id',
-    });
-    return apiJson(data);
-  } catch (e) {
-    if (e instanceof VersionConflictError) return conflictResponse(e.current);
-    return apiError(e);
-  }
+  const { data, error } = await supabase
+    .from(TABLE)
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) return apiError(error);
+  return apiJson(data);
 }
 
 // DELETE — remove a task.

@@ -29,13 +29,15 @@ function getTransport() {
   return _transport;
 }
 
-export async function sendEmail({ to, subject, html }) {
+export async function sendEmail({ to, cc, subject, html }) {
   const transport = getTransport();
   if (!transport) {
     throw new Error('Email is not configured — set GMAIL_USER and GMAIL_APP_PASSWORD in the environment.');
   }
   const from = process.env.EMAIL_FROM || process.env.GMAIL_USER;
-  return transport.sendMail({ from, to, subject, html });
+  const message = { from, to, subject, html };
+  if (cc) message.cc = cc;
+  return transport.sendMail(message);
 }
 
 /* ── HTML rendering helpers ── */
