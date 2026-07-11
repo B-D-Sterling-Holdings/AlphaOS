@@ -140,6 +140,7 @@ export const API_FEATURES = {
   '/api/model': ['research'],
   '/api/research': ['research'],
   '/api/notify-review': ['research'],
+  '/api/review-summary': ['research', 'strategic-hub'],
   '/api/period-changes': ['research'],
   '/api/saved-emails': ['research'],
   '/api/validate-ticker': ['research'],

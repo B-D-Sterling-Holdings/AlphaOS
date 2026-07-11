@@ -39,7 +39,8 @@ export const STAGE_LABELS = {
 // Each pipeline stage lives on its own page/tab. Promoting or demoting a name should
 // carry the analyst along to the destination tab with the same name focused, so the
 // pipeline reads as one continuous flow rather than a name vanishing from the current
-// tab. Every one of these pages honors a `?ticker=XYZ` deep link.
+// tab. The three detail pages (Draft & Review, Research, Position Review) honor a
+// `?ticker=XYZ` deep link to select that name.
 export const STAGE_ROUTES = {
   watching: '/watchlist',
   draft: '/draft-review',
@@ -47,11 +48,19 @@ export const STAGE_ROUTES = {
   position: '/position-review',
 };
 
-// Build the destination URL for a stage move, pre-selecting the moved name.
+// The Watchlist is a grid where every name is already visible — there's nothing to
+// "focus" — so a `?ticker=` there would just be an inert, stale query param. Only the
+// detail pages consume it, so we only attach it for them.
+const STAGES_WITH_TICKER_DEEP_LINK = new Set(['draft', 'research', 'position']);
+
+// Build the destination URL for a stage move, pre-selecting the moved name on the
+// pages that support it.
 export function routeForStage(stage, ticker) {
   const path = STAGE_ROUTES[stage];
   if (!path) return null;
-  return ticker ? `${path}?ticker=${encodeURIComponent(ticker)}` : path;
+  return ticker && STAGES_WITH_TICKER_DEEP_LINK.has(stage)
+    ? `${path}?ticker=${encodeURIComponent(ticker)}`
+    : path;
 }
 
 // Normalize the legacy/retired `researching` stage into `watching`.
@@ -90,14 +99,32 @@ export function workspaceHasContent(ws) {
 }
 
 // Pure: return a copy of the watchlist payload with one stock's stage changed.
+//
+// Demoting a name back to the Watchlist (newStage === 'watching') also floats it to
+// the top-left: it's given a position below every other name so `orderStocks` sorts
+// it first. Without this a stage move preserves `position`, so a name that round-trips
+// through the pipeline would silently drop back wherever it used to sit — the analyst
+// who just pulled it back wants it front-and-center, not buried mid-grid. (Pinned
+// names still float above it — the star is an explicit "keep on top" the demote
+// shouldn't override.)
 export function withStageChange(watchlistData, watchlistId, ticker, newStage) {
   return {
     ...watchlistData,
-    watchlists: (watchlistData?.watchlists || []).map(w =>
-      w.id === watchlistId
-        ? { ...w, stocks: (w.stocks || []).map(s => s.ticker === ticker ? { ...s, stage: newStage } : s) }
-        : w
-    ),
+    watchlists: (watchlistData?.watchlists || []).map(w => {
+      if (w.id !== watchlistId) return w;
+      const stocks = w.stocks || [];
+      const toFront = newStage === 'watching';
+      const positions = stocks.map(s => (Number.isFinite(s.position) ? s.position : 0));
+      const frontPos = positions.length ? Math.min(...positions) - 1 : 0;
+      return {
+        ...w,
+        stocks: stocks.map(s =>
+          s.ticker === ticker
+            ? { ...s, stage: newStage, ...(toFront ? { position: frontPos } : {}) }
+            : s
+        ),
+      };
+    }),
   };
 }
 
@@ -149,7 +176,28 @@ export async function postWatchlist(payload) {
     const data = await res.json().catch(() => ({}));
     return { conflict: true, current: data.current || null };
   }
-  return { conflict: false, ok: res.ok };
+  const data = await res.json().catch(() => ({}));
+  // `versions` lets the caller refresh its per-list optimistic-concurrency tokens
+  // after a successful save (see saveWatchlist / issue: false self-conflicts).
+  return { conflict: false, ok: res.ok, versions: data.versions || null };
+}
+
+// Fold the server's freshly-bumped version tokens back into a watchlist payload so
+// the copy a caller returns/caches carries CURRENT versions. Without this, a page
+// that saves a stage move then caches its pre-save payload leaves stale tokens in the
+// shared cache — and the next writer (e.g. reordering on the Watchlist page) sends a
+// stale version and trips a false conflict.
+export function applyVersions(payload, versions) {
+  if (!payload || !versions?.length) return payload;
+  const byId = new Map(
+    versions.filter(v => v?.id != null && v?.version != null).map(v => [v.id, v.version])
+  );
+  return {
+    ...payload,
+    watchlists: (payload.watchlists || []).map(w =>
+      byId.has(w.id) ? { ...w, version: byId.get(w.id) } : w
+    ),
+  };
 }
 
 /**
@@ -169,7 +217,7 @@ export async function persistStageMove({ watchlistData, watchlistId, ticker, new
   let next = withStageChange(base, watchlistId, ticker, newStage);
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await postWatchlist(next);
-    if (!res.conflict) break;
+    if (!res.conflict) { next = applyVersions(next, res.versions); break; } // carry fresh tokens forward
     base = res.current || base;                                   // adopt teammate's fresh state…
     next = withStageChange(base, watchlistId, ticker, newStage);  // …re-apply our flip on top
   }
@@ -223,7 +271,7 @@ export async function persistHoldingsBackfill({ watchlistData, holdings }) {
   if (!next) return null;
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await postWatchlist(next);
-    if (!res.conflict) break;
+    if (!res.conflict) { next = applyVersions(next, res.versions); break; } // carry fresh tokens forward
     base = res.current || base;
     next = withHoldingsBackfilled(base, holdings);
     if (!next) return base; // everything already present after adopting server state

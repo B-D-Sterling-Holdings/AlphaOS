@@ -14,8 +14,11 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    await saveWatchlist(body);
-    return NextResponse.json({ success: true, ...body });
+    const result = await saveWatchlist(body);
+    // Hand back the freshly-bumped version tokens so the client can refresh the
+    // ones it holds; otherwise its next save re-sends a now-stale version and
+    // false-conflicts against the row it just wrote.
+    return NextResponse.json({ success: true, versions: result?.versions || [] });
   } catch (e) {
     if (e instanceof VersionConflictError) {
       // A concurrent writer changed a list first — hand back the fresh full state
