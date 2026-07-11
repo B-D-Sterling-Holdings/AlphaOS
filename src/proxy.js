@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { verifySession, SESSION_COOKIE_NAME } from '@/lib/auth';
+import { verifySession, SESSION_COOKIE_NAME, isAdminWorkspaceTenant } from '@/lib/auth';
 import { featureForPath, isApiAllowed, sanitizeFeatureKeys } from '@/lib/features';
 import { canManageUsers, isUnrestrictedRole } from '@/lib/roles';
 
@@ -27,7 +27,7 @@ export async function proxy(request) {
       if (!token) return NextResponse.next();
       const session = await verifySession(token);
       if (!session) return NextResponse.next();
-      if (!canManageUsers(session.role)) {
+      if (!canManageUsers(session.role, isAdminWorkspaceTenant(session.tenantId))) {
         const url = request.nextUrl.clone();
         url.pathname = '/';
         url.search = '';
@@ -44,8 +44,8 @@ export async function proxy(request) {
     if (!token) return NextResponse.next();
     const session = await verifySession(token);
     if (!session) return NextResponse.next();
-    // Admins and workspace owners are never feature-restricted.
-    if (isUnrestrictedRole(session.role)) return NextResponse.next();
+    // Global admins and members of the admin workspace are never restricted.
+    if (isUnrestrictedRole(session.role, isAdminWorkspaceTenant(session.tenantId))) return NextResponse.next();
 
     if (sanitizeFeatureKeys(session.disabledFeatures).includes(feature.key)) {
       const url = request.nextUrl.clone();
@@ -93,7 +93,7 @@ export async function proxy(request) {
   // user before the request ever touches the handler. Role-gated, not
   // feature-gated: there is no feature key for user management.
   if (pathname === '/api/admin' || pathname.startsWith('/api/admin/')) {
-    if (!canManageUsers(session.role)) {
+    if (!canManageUsers(session.role, isAdminWorkspaceTenant(session.tenantId))) {
       return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
     }
     return NextResponse.next();
@@ -103,7 +103,7 @@ export async function proxy(request) {
   // must not be able to fetch a disabled area's API directly with their
   // cookie. Same signed-JWT denylist as the page gate above; admins exempt.
   if (
-    !isUnrestrictedRole(session.role) &&
+    !isUnrestrictedRole(session.role, isAdminWorkspaceTenant(session.tenantId)) &&
     !isApiAllowed(pathname, sanitizeFeatureKeys(session.disabledFeatures))
   ) {
     return NextResponse.json({ error: 'Feature disabled for this account' }, { status: 403 });

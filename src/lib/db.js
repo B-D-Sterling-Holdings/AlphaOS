@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { getTenantClient } from './supabaseTenant';
-import { SESSION_COOKIE_NAME, verifySession } from './auth';
+import { SESSION_COOKIE_NAME, verifySession, isAdminWorkspaceTenant } from './auth';
 import { getUserAuthState, getSessionNotBefore } from './users';
 import { normalizeRole } from './roles';
 
@@ -113,12 +113,20 @@ export async function getDb() {
   const { tenantId, role, username, userId } = session;
   const client = await getTenantClient(tenantId);
 
+  // Every member of the admin workspace (the CIO tenant) is an admin *within
+  // that tenant*. `isWorkspaceAdmin` gates tenant-scoped admin surfaces (the
+  // feedback board); `isAdmin` stays reserved for the global superadmin role,
+  // which is what cross-tenant operations must check.
+  const isAdminWorkspace = isAdminWorkspaceTenant(tenantId);
+
   return {
     tenantId,
     role,
     username,
     userId,
     isAdmin: role === 'admin',
+    isAdminWorkspace,
+    isWorkspaceAdmin: role === 'admin' || isAdminWorkspace,
     from(table) {
       return client.from(table);
     },

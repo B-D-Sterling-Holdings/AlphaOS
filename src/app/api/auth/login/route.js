@@ -4,6 +4,7 @@ import {
   createSession,
   setSessionCookie,
   CIO_TENANT_ID,
+  isAdminWorkspaceTenant,
 } from '@/lib/auth';
 import { findUserByUsername } from '@/lib/users';
 import { resetDemoTenant } from '@/lib/demoSeed';
@@ -66,10 +67,11 @@ export async function POST(request) {
           console.error('[demo] reset failed, logging in with existing data:', err);
         }
       }
-      // Only global admins are never feature-restricted; for owners and users
-      // this seeds the hard middleware gate so deep-links are blocked from the
-      // very first request.
-      const disabledFeatures = isUnrestrictedRole(user.role)
+      // Global admins and members of the admin workspace (the CIO tenant) are
+      // never feature-restricted; for other owners and users this seeds the hard
+      // middleware gate so deep-links are blocked from the very first request.
+      const isAdminWorkspace = isAdminWorkspaceTenant(user.tenant_id);
+      const disabledFeatures = isUnrestrictedRole(user.role, isAdminWorkspace)
         ? []
         : sanitizeFeatureKeys(user.disabled_features);
       const token = await createSession({
@@ -79,7 +81,7 @@ export async function POST(request) {
         role: user.role,
         disabledFeatures,
       });
-      return withSession({ ok: true, role: user.role, disabledFeatures }, token);
+      return withSession({ ok: true, role: user.role, isAdminWorkspace, disabledFeatures }, token);
     }
 
     // ── 2. Bootstrap CIO admin from env — owns the CIO tenant (existing data). ──
@@ -93,7 +95,7 @@ export async function POST(request) {
         tenantId: CIO_TENANT_ID,
         role: 'admin',
       });
-      return withSession({ ok: true, role: 'admin' }, token);
+      return withSession({ ok: true, role: 'admin', isAdminWorkspace: true }, token);
     }
 
     // Local preview fallback only. This lets the shared dev server be reviewed
@@ -107,7 +109,7 @@ export async function POST(request) {
         tenantId: CIO_TENANT_ID,
         role: 'admin',
       });
-      return withSession({ ok: true, role: 'admin' }, token);
+      return withSession({ ok: true, role: 'admin', isAdminWorkspace: true }, token);
     }
 
     recordLoginFailure(ip, username);
