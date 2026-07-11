@@ -103,6 +103,7 @@ function TaskChip({ task, savedAssignees, handlers, expandable = false, expanded
   const [title, setTitle] = useState(task.title);
   const [menuOpen, setMenuOpen] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const inputRef = useRef(null);
   const titleRef = useRef(null);
 
@@ -237,13 +238,31 @@ function TaskChip({ task, savedAssignees, handlers, expandable = false, expanded
         )}
       </div>
 
-      <button
-        onClick={() => handlers.onRemove(task.id)}
-        className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-        aria-label="Delete task"
-      >
-        <X size={11} />
-      </button>
+      {confirming ? (
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={() => handlers.onRemove(task.id)}
+            className="text-[10px] font-semibold text-white bg-red-500 px-1.5 py-0.5 rounded hover:bg-red-600 transition-colors"
+          >
+            Delete
+          </button>
+          <button
+            onClick={() => setConfirming(false)}
+            className="text-gray-400 hover:text-gray-600"
+            aria-label="Cancel delete"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={() => setConfirming(true)}
+          className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+          aria-label="Delete task"
+        >
+          <X size={11} />
+        </button>
+      )}
     </div>
   );
 }

@@ -42,6 +42,7 @@ function PriorityCard({ priority, onPatchLocal, onCommit, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [adding, setAdding] = useState(false);
   const [overflows, setOverflows] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const titleRef = useRef(null);
   const notesRef = useRef(null);
   const hasNotes = !!priority.detail?.trim();
@@ -84,13 +85,30 @@ function PriorityCard({ priority, onPatchLocal, onCommit, onDelete }) {
           placeholder="Priority…"
           className="flex-1 min-w-0 resize-none overflow-hidden text-sm font-semibold text-gray-900 placeholder-gray-300 leading-snug bg-transparent outline-none"
         />
-        <button
-          onClick={() => onDelete(priority.id)}
-          className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-          aria-label="Delete priority"
-        >
-          <X size={14} />
-        </button>
+        {confirming ? (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={() => setConfirming(false)}
+              className="text-[11px] font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-md hover:bg-gray-200 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onDelete(priority.id)}
+              className="text-[11px] font-semibold text-white bg-red-500 px-2 py-0.5 rounded-md hover:bg-red-600 transition-colors"
+            >
+              Delete
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirming(true)}
+            className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+            aria-label="Delete priority"
+          >
+            <X size={14} />
+          </button>
+        )}
       </div>
 
       {/* Notes — a preview that expands to reveal the rest when there's more. */}
