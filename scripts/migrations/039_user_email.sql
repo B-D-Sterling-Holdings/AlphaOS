@@ -1,0 +1,26 @@
+-- ============================================================
+-- 039 — USER EMAIL (contact address for notify/assign)
+-- Run in the Supabase SQL Editor any time after 005_multitenancy.sql.
+-- Idempotent: safe to run repeatedly; never drops user data.
+-- ============================================================
+--
+-- WHAT THIS DOES
+-- --------------
+-- Adds an optional `email` to each login. Until now the app had no idea who its
+-- users actually were by email: notifications and review assignments were driven
+-- by FREE-TEXT names + emails typed by hand (the old /api/saved-emails address
+-- book and the /api/assignees roster). This migration moves email onto the user
+-- record so every "notify this person" / "assign this person" picker can be
+-- sourced from the workspace's real logins instead.
+--
+--   users.email — nullable contact address, managed in the Admin panel by a
+--            global admin (any user) or a workspace owner (its own members).
+--            NULL / '' means "no email set": the app still lets you assign the
+--            person, but a notify attempt reports "email is not set up" rather
+--            than silently sending nowhere.
+--
+-- No format constraint at the DB level — the app validates loosely on write and
+-- treats an empty string the same as NULL. The `users` table stays locked to the
+-- service role (see 005_multitenancy.sql); this column inherits that.
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email text;

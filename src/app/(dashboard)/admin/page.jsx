@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/AuthContext';
 import {
   UserPlus, ShieldCheck, Loader2, Users, SlidersHorizontal, Lock, Check,
   Trash2, KeyRound, Building2, Plus, X, Crown, MoreHorizontal, Power,
-  Eye, EyeOff, Pencil,
+  Eye, EyeOff, Pencil, Mail,
 } from 'lucide-react';
 import { FEATURES } from '@/lib/features';
 import { createAdminUser, deleteAdminUser, fetchAdminUsers, patchAdminUser } from '@/lib/adminClient';
@@ -97,7 +97,7 @@ function ActionMenu({ items, ariaLabel }) {
 // One login row: identity on the left, access + actions on the right.
 // `onSetRole` is admin-only: promote a member/solo login to workspace owner
 // or demote an owner back to member.
-function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, onToggleActive, onDelete, onSetRole, onRename }) {
+function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, onToggleActive, onDelete, onSetRole, onRename, onSetEmail }) {
   const restrictable = u.role !== 'admin' && !u.builtin;
   const enabledCount = FEATURES.length - (u.disabledFeatures?.length || 0);
   return (
@@ -107,6 +107,19 @@ function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, o
         <span className="font-medium text-gray-800 truncate">{u.username}</span>
         <RoleChip label={label} />
         <StatusChip active={u.isActive} />
+        {!u.builtin && (
+          u.email ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-gray-500 truncate" title={u.email}>
+              <Mail size={11} className="shrink-0 text-gray-400" />
+              <span className="truncate max-w-[180px]">{u.email}</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[11px] text-amber-600" title="No email set — this person can be assigned but not notified until an email is added">
+              <Mail size={11} className="shrink-0" />
+              No email set
+            </span>
+          )
+        )}
       </div>
       {u.builtin ? (
         <span className="text-[11px] text-gray-400 px-1" title="Credentials come from the server's environment variables — this login cannot be edited or deleted here">
@@ -147,6 +160,9 @@ function UserRow({ u, label, editing, deleting, onEditAccess, onResetPassword, o
                     label: u.role === 'owner' ? 'Make member' : 'Make owner',
                     onClick: () => onSetRole(u),
                   }]
+                : []),
+              ...(onSetEmail
+                ? [{ icon: Mail, label: u.email ? 'Edit email' : 'Set email', onClick: () => onSetEmail(u) }]
                 : []),
               { icon: KeyRound, label: 'Reset password', onClick: () => onResetPassword(u) },
               { icon: Power, label: u.isActive ? 'Disable login' : 'Enable login', onClick: () => onToggleActive(u) },
@@ -473,6 +489,26 @@ export default function AdminPage() {
     }
   }
 
+  // Set (or clear) the contact email notify/assign uses for this login. Same
+  // access as a password reset — admins for anyone, owners for their own
+  // members. Clearing it (empty input) is allowed.
+  async function handleSetEmail(u) {
+    const email = window.prompt(
+      `Contact email for "${u.username}":\n\nUsed when this person is notified about a review. Leave blank to clear it.`,
+      u.email || ''
+    );
+    if (email === null) return;
+    setError('');
+    setNotice('');
+    try {
+      const data = await patchAdminUser({ id: u.id, email }, 'Failed to update email');
+      setNotice(data.email ? `Email for "${u.username}" set to ${data.email}.` : `Cleared email for "${u.username}".`);
+      loadUsers();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   async function handleDelete(u) {
     // A member sharing a workspace only loses their login; deleting an
     // owner/solo login erases the whole workspace (and its team).
@@ -588,6 +624,7 @@ export default function AdminPage() {
     onResetPassword: resetPassword,
     onToggleActive: toggleActive,
     onDelete: handleDelete,
+    onSetEmail: handleSetEmail,
     onSetRole: isAdmin ? handleSetRole : null,
     onRename: isAdmin ? handleRenameUser : null,
   };

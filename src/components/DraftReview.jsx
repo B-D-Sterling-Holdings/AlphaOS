@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { FileText, MessageCircle, Plus, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2, Clock, Star, Calculator } from 'lucide-react';
+import { FileText, MessageCircle, Plus, ChevronDown, ChevronRight, ChevronLeft, Bell, Users, Loader2, Clock, Calculator } from 'lucide-react';
 import Card from '@/components/Card';
 import RichTextArea from '@/components/RichTextArea';
 import PersonSearchSelect from '@/components/PersonSearchSelect';
@@ -95,45 +95,29 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
   const [notifyOpen, setNotifyOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const notifyRef = useRef(null);
-  const safeAuthor = author || { name: '', email: '' };
-  const safeReviewer = reviewer || { name: '', email: '' };
+  const safeAuthor = author || { userId: '', name: '' };
+  const safeReviewer = reviewer || { userId: '', name: '' };
 
-  // A small per-tenant address book of people you regularly add to reviews, so you
-  // can pick the Author/Reviewer from a dropdown instead of retyping (and remembering)
-  // their email every time. Loaded once and kept in sync on save.
-  const [savedPeople, setSavedPeople] = useState([]);
+  // The Author/Reviewer are picked from the workspace's users (managed in Admin).
+  // Their email lives on the user record, so we resolve "does this person have an
+  // email" from this roster rather than storing an address on the review.
+  const [people, setPeople] = useState([]);
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/saved-emails')
+    fetch('/api/workspace-users')
       .then(r => r.json())
-      .then(data => { if (!cancelled && Array.isArray(data.people)) setSavedPeople(data.people); })
+      .then(data => { if (!cancelled && Array.isArray(data.users)) setPeople(data.users); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
-  const persistSavedPeople = useCallback((people) => {
-    setSavedPeople(people);
-    fetch('/api/saved-emails', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ people }),
-    }).catch(() => {});
-  }, []);
-
-  // Add (or refresh) a person in the address book, de-duped by lowercased email.
-  const saveContact = useCallback((person) => {
-    const name = (person?.name || '').trim();
-    const email = (person?.email || '').trim();
-    if (!email) return;
-    const key = email.toLowerCase();
-    const next = [{ name, email }, ...savedPeople.filter(p => (p.email || '').toLowerCase() !== key)];
-    persistSavedPeople(next);
-  }, [savedPeople, persistSavedPeople]);
-
-  const removeContact = useCallback((email) => {
-    const key = (email || '').toLowerCase();
-    persistSavedPeople(savedPeople.filter(p => (p.email || '').toLowerCase() !== key));
-  }, [savedPeople, persistSavedPeople]);
+  // Whether a picked person (by userId) currently has an email set in Admin.
+  const hasEmailFor = useCallback((person) => {
+    if (!person?.userId) return false;
+    return !!people.find(p => p.id === person.userId)?.hasEmail;
+  }, [people]);
+  const authorHasEmail = hasEmailFor(safeAuthor);
+  const reviewerHasEmail = hasEmailFor(safeReviewer);
 
   // Unresolved comments waiting on a response: a comment waits on whoever should
   // speak next (opposite of the last message's role). Empty comments (no replies
@@ -209,7 +193,13 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
   const autoStateRef = useRef(null);
   autoStateRef.current = {
     cfg, threads, onNotify, onAutoNotifyChange,
-    emails: { reviewer: safeReviewer.email, author: safeAuthor.email },
+    // selectDueReminders only needs to know whether a role is reachable; the
+    // server resolves the actual address at send time. Pass a truthy marker when
+    // the person has an email set, empty otherwise.
+    emails: {
+      reviewer: reviewerHasEmail ? '1' : '',
+      author: authorHasEmail ? '1' : '',
+    },
   };
 
   const runAutoNotify = useCallback(async () => {
@@ -246,8 +236,8 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
   }, [autoEnabled, cfg.everyDays, cfg.atMinutes, cfg.tz, cfg.roles?.author, cfg.roles?.reviewer, pendingSignature, runAutoNotify]);
 
   const autoMissingEmail =
-    (cfg.roles?.reviewer !== false && !safeReviewer.email) ||
-    (cfg.roles?.author !== false && !safeAuthor.email);
+    (cfg.roles?.reviewer !== false && !reviewerHasEmail) ||
+    (cfg.roles?.author !== false && !authorHasEmail);
 
   // Display order only (stored order is untouched): resolved threads sink to the
   // bottom, with relative order preserved within each group (Array.sort is stable).
@@ -403,13 +393,16 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
                             if (!items.length) return null;
                             const meta = ROLE_META[role];
                             const person = role === 'reviewer' ? safeReviewer : safeAuthor;
+                            const roleUser = person.userId ? people.find(p => p.id === person.userId) : null;
+                            const roleEmail = roleUser?.hasEmail ? roleUser.email : '';
                             return (
                               <div key={role}>
                                 <div className="flex items-center gap-1.5 mb-1 px-1">
                                   <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
                                   <span className={`text-[11px] font-semibold ${meta.text}`}>{meta.label}</span>
-                                  <span className={`text-[10px] truncate ${person.email ? 'text-gray-400' : 'text-amber-500'}`}>
-                                    {person.email || 'no email set'}
+                                  {person.name && <span className="text-[10px] text-gray-500 truncate">{person.name}</span>}
+                                  <span className={`text-[10px] truncate ${roleEmail ? 'text-gray-400' : 'text-amber-500'}`}>
+                                    {roleEmail || 'email is not set up'}
                                   </span>
                                 </div>
                                 <div className="space-y-0.5">
@@ -544,64 +537,27 @@ export default function DraftReview({ ticker, paper, threads, author, reviewer, 
           {showConfig && (
             <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3.5 space-y-3">
               <p className="text-[11px] text-gray-400">
-                Pick from saved people or type someone new and <Star size={10} className="inline -mt-0.5" /> to save them.
+                Choose the Author and Reviewer from the people in this workspace. Emails are managed in Admin — a person with no email can be chosen but can’t be notified until one is set.
               </p>
               {[
-                { role: 'reviewer', person: safeReviewer, onChange: onReviewerChange, dot: ROLE_META.reviewer },
-                { role: 'author', person: safeAuthor, onChange: onAuthorChange, dot: ROLE_META.author },
-              ].map(({ role, person, onChange, dot }) => {
-                const trimmedEmail = (person.email || '').trim();
-                const isSaved = !!trimmedEmail && savedPeople.some(p => (p.email || '').toLowerCase() === trimmedEmail.toLowerCase());
-                return (
-                <div key={role} className="space-y-2">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                    <span className={`flex items-center gap-1.5 text-[11px] font-semibold w-20 shrink-0 ${dot.text}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${dot.dot}`} />
-                      {dot.label}
-                    </span>
-                    {savedPeople.length > 0 && (
-                      <PersonSearchSelect
-                        people={savedPeople}
-                        value={isSaved ? trimmedEmail : ''}
-                        onSelect={(picked) => onChange?.({ name: picked.name || '', email: picked.email || '' }, true)}
-                      />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 sm:pl-[5.5rem]">
-                    <input
-                      value={person.name}
-                      onChange={(e) => onChange?.({ ...person, name: e.target.value })}
-                      onBlur={(e) => onChange?.({ ...person, name: e.target.value }, true)}
-                      placeholder="Name"
-                      className="flex-1 min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
-                    />
-                    <input
-                      type="email"
-                      value={person.email}
-                      onChange={(e) => onChange?.({ ...person, email: e.target.value })}
-                      onBlur={(e) => onChange?.({ ...person, email: e.target.value }, true)}
-                      placeholder="email@example.com"
-                      className="flex-[1.4] min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300 focus:border-transparent"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => isSaved ? removeContact(trimmedEmail) : saveContact(person)}
-                      disabled={!trimmedEmail}
-                      title={!trimmedEmail ? 'Enter an email to save this person' : isSaved ? 'Remove from saved people' : 'Save this person for reuse'}
-                      className={`shrink-0 p-1.5 rounded-lg transition-colors ${
-                        !trimmedEmail
-                          ? 'text-gray-200 cursor-not-allowed'
-                          : isSaved
-                            ? 'text-amber-500 hover:bg-amber-50'
-                            : 'text-gray-300 hover:text-amber-500 hover:bg-amber-50'
-                      }`}
-                    >
-                      <Star size={15} fill={isSaved ? 'currentColor' : 'none'} />
-                    </button>
-                  </div>
+                { role: 'reviewer', person: safeReviewer, onChange: onReviewerChange, hasEmail: reviewerHasEmail, dot: ROLE_META.reviewer },
+                { role: 'author', person: safeAuthor, onChange: onAuthorChange, hasEmail: authorHasEmail, dot: ROLE_META.author },
+              ].map(({ role, person, onChange, hasEmail, dot }) => (
+                <div key={role} className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <span className={`flex items-center gap-1.5 text-[11px] font-semibold w-20 shrink-0 ${dot.text}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${dot.dot}`} />
+                    {dot.label}
+                  </span>
+                  <PersonSearchSelect
+                    people={people}
+                    value={person.userId || ''}
+                    onSelect={(picked) => onChange?.({ userId: picked.id, name: picked.name }, true)}
+                  />
+                  {person.userId && !hasEmail && (
+                    <span className="text-[11px] text-amber-600">⚠ email is not set up</span>
+                  )}
                 </div>
-                );
-              })}
+              ))}
             </div>
           )}
 

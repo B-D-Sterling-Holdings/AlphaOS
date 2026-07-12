@@ -12,6 +12,18 @@ import { CIO_TENANT_ID, isAdminWorkspaceTenant } from './auth';
   these helpers do not.
 */
 
+// ── users.email (migration 039) — graceful degradation ──────────────────────
+// The email column may not exist yet (repo convention: newer migrations ship
+// ahead of being applied). We probe once, cache the result, and fall back to a
+// column-less read so every email-aware path shows "no email set" instead of
+// 500-ing before 039 is applied. null = not yet probed.
+let usersEmailColumnPresent = null;
+
+function isMissingEmailColumn(error) {
+  // Postgres undefined_column (42703), surfaced through PostgREST.
+  return !!error && (error.code === '42703' || /column .*email.* does not exist/i.test(error.message || ''));
+}
+
 export async function findUserByUsername(username) {
   if (!username) return null;
   const { data, error } = await supabaseAdmin
@@ -137,6 +149,9 @@ export async function getBuiltinCioUser() {
     isActive: true,
     disabledFeatures: [],
     createdAt: null,
+    // The bootstrap login has no users row, so no editable email. Notifications
+    // to the CIO use AUTO_NOTIFY / mail env config, not a per-user address.
+    email: null,
   };
 }
 
@@ -145,13 +160,25 @@ export async function getBuiltinCioUser() {
  * tenantId — this helper does not know who is asking.
  */
 export async function listUsers({ tenantId } = {}) {
-  let query = supabaseAdmin
-    .from('users')
-    .select('id, username, role, tenant_id, is_active, disabled_features, created_at, tenants(name)')
-    .order('created_at', { ascending: true });
-  if (tenantId) query = query.eq('tenant_id', tenantId);
-  const { data, error } = await query;
+  const base = 'id, username, role, tenant_id, is_active, disabled_features, created_at, tenants(name)';
+  const run = (withEmail) => {
+    let query = supabaseAdmin
+      .from('users')
+      .select(withEmail ? `${base}, email` : base)
+      .order('created_at', { ascending: true });
+    if (tenantId) query = query.eq('tenant_id', tenantId);
+    return query;
+  };
+
+  let { data, error } = await run(usersEmailColumnPresent !== false);
+  if (isMissingEmailColumn(error)) {
+    usersEmailColumnPresent = false;
+    ({ data, error } = await run(false));
+  } else if (!error) {
+    usersEmailColumnPresent = true;
+  }
   if (error) throw new Error(error.message);
+
   return (data || []).map((u) => ({
     id: u.id,
     username: u.username,
@@ -161,7 +188,79 @@ export async function listUsers({ tenantId } = {}) {
     isActive: u.is_active,
     disabledFeatures: sanitizeFeatureKeys(u.disabled_features),
     createdAt: u.created_at,
+    email: u.email ?? null,
   }));
+}
+
+/**
+ * The logins in ONE workspace, shaped for the assign/notify pickers:
+ * `[{ id, username, email }]`. Service-role read scoped to the tenant — never
+ * exposes password hashes. Degrades to `email: null` before migration 039.
+ * Callers must have verified the requester belongs to `tenantId`.
+ */
+export async function getWorkspaceUsers(tenantId) {
+  if (!TENANT_UUID_RE.test(tenantId || '')) return [];
+  const run = (withEmail) =>
+    supabaseAdmin
+      .from('users')
+      .select(withEmail ? 'id, username, email' : 'id, username')
+      .eq('tenant_id', tenantId)
+      .eq('is_active', true)
+      .order('username', { ascending: true });
+
+  let { data, error } = await run(usersEmailColumnPresent !== false);
+  if (isMissingEmailColumn(error)) {
+    usersEmailColumnPresent = false;
+    ({ data, error } = await run(false));
+  } else if (!error) {
+    usersEmailColumnPresent = true;
+  }
+  if (error) throw new Error(error.message);
+  return (data || []).map((u) => ({ id: u.id, username: u.username, email: u.email ?? null }));
+}
+
+/**
+ * Map a set of user ids to their current email (id -> email|null), scoped to a
+ * tenant so a notify caller can only resolve addresses inside its own workspace.
+ * Used by the notify-review route and the auto-notify cron. Empty map before 039.
+ */
+export async function getEmailsForUserIds(ids, tenantId) {
+  const clean = [...new Set((ids || []).filter((id) => USER_UUID_RE.test(id || '')))];
+  if (!clean.length || !TENANT_UUID_RE.test(tenantId || '')) return new Map();
+
+  let query = supabaseAdmin.from('users').select('id, email').in('id', clean).eq('tenant_id', tenantId);
+  let { data, error } = await query;
+  if (isMissingEmailColumn(error)) {
+    usersEmailColumnPresent = false;
+    return new Map();
+  }
+  if (error) throw new Error(error.message);
+  usersEmailColumnPresent = true;
+  const out = new Map();
+  for (const row of data || []) out.set(row.id, row.email || null);
+  return out;
+}
+
+/**
+ * Set (or clear) a login's contact email. Empty string clears it. Non-empty
+ * values get a light format check. Callers enforce authz (admin/owner-scoped).
+ * Throws a friendly error if migration 039 has not been applied yet.
+ */
+export async function setUserEmail(id, email) {
+  if (!id) throw new Error('id is required');
+  const clean = String(email || '').trim();
+  if (clean && !/.+@.+\..+/.test(clean)) {
+    throw new Error('that does not look like a valid email address');
+  }
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({ email: clean || null, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (isMissingEmailColumn(error)) {
+    throw new Error('Email storage is not available yet — apply migration 039_user_email.sql');
+  }
+  if (error) throw new Error(error.message);
+  return clean || null;
 }
 
 // created_by must reference a real users row; bootstrap ids ('cio-admin') are

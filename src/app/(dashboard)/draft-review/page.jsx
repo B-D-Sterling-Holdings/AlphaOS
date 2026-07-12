@@ -47,8 +47,15 @@ function normalizeThread(thread) {
   };
 }
 
+// Author/Reviewer are workspace users now: a stable userId plus a display-name
+// snapshot. A legacy record may still carry an `email` (typed in before the
+// switch) — keep it so old reviews can still notify until they're re-picked.
 function normalizePerson(person) {
-  return { name: person?.name || '', email: person?.email || '' };
+  return {
+    userId: person?.userId || '',
+    name: person?.name || '',
+    ...(person?.email ? { email: person.email } : {}),
+  };
 }
 
 function buildDraftReview(thesis) {
@@ -405,7 +412,7 @@ export default function DraftReviewPage() {
 
           {selectedStock && draftReview.author?.name?.trim() && (
             <span
-              title={draftReview.author.email ? `Author · ${draftReview.author.email}` : 'Author'}
+              title="Author"
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold"
             >
               <User size={13} className="shrink-0" />

@@ -7,9 +7,7 @@ import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, DragOv
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  COLOR_PALETTE,
   PRIORITY_SECTIONS,
-  addAssignee as addAssigneeToList,
   addSubtask as addSubtaskToTask,
   completedTasks as selectCompletedTasks,
   createBoard as createBoardState,
@@ -20,7 +18,6 @@ import {
   insertBlankSubtaskAfter,
   moveTaskAcrossPriority,
   openTaskCount,
-  removeAssignee as removeAssigneeFromList,
   removeBoard as removeBoardState,
   removeEmptySubtask,
   removeSubtask as removeSubtaskFromTask,
@@ -34,16 +31,17 @@ import {
 } from '@/lib/taskBoard';
 import WeekPlanner from '@/components/WeekPlanner';
 import Horizons from '@/components/Horizons';
+import AssigneeColorDot from '@/components/AssigneeColorDot';
 import {
   createTask,
   deleteTask,
   deleteTasksForBoard,
-  fetchAssigneesForBoard,
+  fetchWorkspaceUsers,
   fetchTaskBoards,
   fetchTasksForBoard,
   reorderTasks,
-  saveAssigneesForBoard,
   saveTaskBoardsMeta,
+  saveWorkspaceUserColor,
   updateTask,
 } from '@/lib/taskBoardApi';
 
@@ -71,11 +69,11 @@ function AssigneeTag({ assignee, onClick, size = 'normal', savedAssignees = [] }
   );
 }
 
-function AssigneePicker({ current, onSelect, onClose, anchorRef, savedAssignees = [], onAddAssignee, onRemoveAssignee }) {
-  const [customValue, setCustomValue] = useState('');
-  const [selectedColor, setSelectedColor] = useState(COLOR_PALETTE[0]);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [confirmingRemove, setConfirmingRemove] = useState(null);
+// Pick an assignee from the workspace's users (`people`: [{ name, color }]).
+// People are managed in Admin, not typed in here. Clicking a person's colour dot
+// recolours their tag (onSetColor).
+function AssigneePicker({ current, onSelect, onClose, anchorRef, savedAssignees = [], onSetColor }) {
+  const people = savedAssignees;
   const ref = useRef(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
 
@@ -88,113 +86,36 @@ function AssigneePicker({ current, onSelect, onClose, anchorRef, savedAssignees 
 
   useEffect(() => {
     const handler = (e) => {
+      // Ignore clicks inside the portaled colour palette — it lives outside this
+      // popover's DOM subtree but is logically part of it.
+      if (e.target.closest?.('[data-assignee-color-pop]')) return;
       if (ref.current && !ref.current.contains(e.target)) onClose();
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const handleAddPerson = () => {
-    const name = customValue.trim();
-    if (!name) return;
-    if (onAddAssignee) onAddAssignee(name, selectedColor);
-    onSelect(name);
-    onClose();
-  };
-
   return createPortal(
-    <div ref={ref} style={{ position: 'fixed', top: pos.top, left: pos.left, transform: 'translateX(-100%)' }} className="z-[9999] bg-white border border-gray-200 rounded-xl shadow-lg py-1 min-w-[160px]">
-      {savedAssignees.map(({ name, color }) => (
-        <div
-          key={name}
-          className="group/row flex items-center hover:bg-gray-50 transition-colors"
-        >
-          <button
-            onClick={() => { onSelect(name); onClose(); }}
-            className={`flex-1 text-left px-3 py-1.5 text-sm flex items-center gap-2 ${
+    <div ref={ref} style={{ position: 'fixed', top: pos.top, left: pos.left, transform: 'translateX(-100%)' }} className="z-[9999] bg-white border border-gray-200 rounded-xl shadow-lg py-1 min-w-[160px] max-h-72 overflow-y-auto">
+      {people.length === 0 ? (
+        <div className="px-3 py-2 text-xs text-gray-400">
+          No people in this workspace yet. Add users in Admin.
+        </div>
+      ) : (
+        people.map(({ name, color }) => (
+          <div
+            key={name}
+            className={`w-full px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-gray-50 transition-colors ${
               current?.toLowerCase() === name.toLowerCase() ? 'font-semibold' : ''
             }`}
           >
-            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-            {name}
-          </button>
-          {onRemoveAssignee && confirmingRemove === name ? (
-            <div className="flex items-center gap-1 pr-2" onClick={e => e.stopPropagation()}>
-              <button
-                onClick={() => setConfirmingRemove(null)}
-                className="text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded hover:bg-gray-200 transition-colors"
-              >
-                No
-              </button>
-              <button
-                onClick={() => { onRemoveAssignee(name); setConfirmingRemove(null); }}
-                className="text-[10px] font-semibold text-white bg-red-500 px-1.5 py-0.5 rounded hover:bg-red-600 transition-colors"
-              >
-                Yes
-              </button>
-            </div>
-          ) : onRemoveAssignee ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); setConfirmingRemove(name); }}
-              className="opacity-0 group-hover/row:opacity-100 pr-2 text-gray-300 hover:text-red-500 transition-all"
-              title={`Remove ${name}`}
-            >
-              <X size={12} />
+            <AssigneeColorDot color={color} onPick={onSetColor ? (c) => onSetColor(name, c) : undefined} />
+            <button onClick={() => { onSelect(name); onClose(); }} className="flex-1 text-left">
+              {name}
             </button>
-          ) : null}
-        </div>
-      ))}
-
-      <div className="border-t border-gray-100 mt-1 pt-1">
-        {!showAddForm ? (
-          <button
-            onClick={() => setShowAddForm(true)}
-            className="w-full text-left px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-colors flex items-center gap-2"
-          >
-            <Plus size={12} />
-            Add person...
-          </button>
-        ) : (
-          <div className="px-2.5 pb-2 pt-1 space-y-2">
-            <input
-              type="text" spellCheck={true}
-              placeholder="Name..."
-              value={customValue}
-              onChange={e => setCustomValue(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') handleAddPerson();
-                if (e.key === 'Escape') { setShowAddForm(false); setCustomValue(''); }
-              }}
-              autoFocus
-              className="w-full text-sm px-2 py-1 border border-gray-200 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500"
-            />
-            <div className="flex flex-wrap gap-1.5">
-              {COLOR_PALETTE.map(c => (
-                <button
-                  key={c}
-                  onClick={() => setSelectedColor(c)}
-                  className={`w-5 h-5 rounded-full transition-all ${selectedColor === c ? 'ring-2 ring-offset-1 ring-gray-400 scale-110' : 'hover:scale-110'}`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-            <div className="flex items-center gap-1.5">
-              {customValue.trim() && (
-                <span className="text-xs px-2 py-0.5 rounded-full text-white font-medium" style={{ backgroundColor: selectedColor }}>
-                  {customValue.trim()}
-                </span>
-              )}
-              <button
-                onClick={handleAddPerson}
-                disabled={!customValue.trim()}
-                className="ml-auto text-xs px-2 py-1 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-30 transition-colors"
-              >
-                Add
-              </button>
-            </div>
           </div>
-        )}
-      </div>
+        ))
+      )}
 
       {current && (
         <button
@@ -254,6 +175,9 @@ function StatusPicker({ current, onSelect, onClose, anchorRef }) {
 
   useEffect(() => {
     const handler = (e) => {
+      // Ignore clicks inside the portaled colour palette — it lives outside this
+      // popover's DOM subtree but is logically part of it.
+      if (e.target.closest?.('[data-assignee-color-pop]')) return;
       if (ref.current && !ref.current.contains(e.target)) onClose();
     };
     document.addEventListener('mousedown', handler);
@@ -612,20 +536,24 @@ export default function TaskBoardPage() {
     }
   }, [activeBoardId]);
 
-  const fetchAssignees = useCallback(async (boardId) => {
-    const bid = boardId || activeBoardId;
+  // The assignable people are the workspace's users (managed in Admin), shared
+  // across every board — so this loads once, independent of the active board.
+  const fetchPeople = useCallback(async () => {
     try {
-      const data = await fetchAssigneesForBoard(bid);
-      if (Array.isArray(data.assignees) && data.assignees.length > 0) {
-        setSavedAssignees(data.assignees);
-      } else {
-        setSavedAssignees([]);
-      }
+      const people = await fetchWorkspaceUsers();
+      setSavedAssignees(Array.isArray(people) ? people : []);
     } catch (err) {
-      console.error('Failed to load assignees', err);
+      console.error('Failed to load workspace users', err);
       setSavedAssignees([]);
     }
-  }, [activeBoardId]);
+  }, []);
+
+  // Recolour a person's assignee tag: optimistically update the roster, persist
+  // per-tenant. Applies everywhere the tag is shown (board, week, backlog).
+  const setAssigneeColor = useCallback((name, color) => {
+    setSavedAssignees(prev => prev.map(p => p.name === name ? { ...p, color } : p));
+    saveWorkspaceUserColor(name, color).catch(err => console.error('Failed to save assignee color', err));
+  }, []);
 
   const fetchBoards = useCallback(async () => {
     try {
@@ -644,7 +572,7 @@ export default function TaskBoardPage() {
     (async () => {
       const boardId = await fetchBoards();
       fetchTasks(boardId);
-      fetchAssignees(boardId);
+      fetchPeople();
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -659,10 +587,8 @@ export default function TaskBoardPage() {
   const switchBoard = async (boardId) => {
     if (boardId === activeBoardId) return;
     setActiveBoardId(boardId);
-    setSavedAssignees([]);
     saveBoardsMeta(undefined, boardId);
     fetchTasks(boardId);
-    fetchAssignees(boardId);
   };
 
   const createBoard = async (name) => {
@@ -670,7 +596,6 @@ export default function TaskBoardPage() {
     setBoards(next.boards);
     setActiveBoardId(next.activeBoardId);
     setTasks([]);
-    setSavedAssignees([]);
     saveBoardsMeta(next.boards, next.activeBoardId);
   };
 
@@ -693,27 +618,6 @@ export default function TaskBoardPage() {
       console.error('Failed to delete board tasks', err);
     }
   };
-
-  const addAssignee = useCallback(async (name, color) => {
-    const updated = addAssigneeToList(savedAssignees, name, color);
-    if (updated === savedAssignees) return;
-    setSavedAssignees(updated);
-    try {
-      await saveAssigneesForBoard(activeBoardId, updated);
-    } catch (err) {
-      console.error('Failed to save assignees', err);
-    }
-  }, [savedAssignees, activeBoardId]);
-
-  const removeAssignee = useCallback(async (name) => {
-    const updated = removeAssigneeFromList(savedAssignees, name);
-    setSavedAssignees(updated);
-    try {
-      await saveAssigneesForBoard(activeBoardId, updated);
-    } catch (err) {
-      console.error('Failed to save assignees', err);
-    }
-  }, [savedAssignees, activeBoardId]);
 
   useEffect(() => {
     if (editingId && editRef.current) {
@@ -900,6 +804,7 @@ export default function TaskBoardPage() {
     onSetPriority: setPriority,
     onRename: renameTask,
     onRemove: removeTask,
+    onSetColor: setAssigneeColor,
   };
 
   // --- Subtask helpers ---
@@ -1347,8 +1252,7 @@ export default function TaskBoardPage() {
                                       onClose={() => setAssigneePickerOpen(null)}
                                       anchorRef={{ current: assigneeAnchorRefs.current[`task-${task.id}`] }}
                                       savedAssignees={savedAssignees}
-                                      onAddAssignee={addAssignee}
-                                      onRemoveAssignee={removeAssignee}
+                                      onSetColor={setAssigneeColor}
                                     />
                                   )}
                                 </div>
@@ -1525,8 +1429,7 @@ export default function TaskBoardPage() {
                                             onClose={() => setAssigneePickerOpen(null)}
                                             anchorRef={{ current: assigneeAnchorRefs.current[pickerKey] }}
                                             savedAssignees={savedAssignees}
-                                            onAddAssignee={addAssignee}
-                                            onRemoveAssignee={removeAssignee}
+                                            onSetColor={setAssigneeColor}
                                           />
                                         )}
                                       </div>

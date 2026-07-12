@@ -10,6 +10,7 @@ import {
   setUserActive,
   setUserFeatures,
   setUserPassword,
+  setUserEmail,
   setUserRole,
   setUsername,
   renameWorkspace,
@@ -119,7 +120,7 @@ export async function PATCH(request) {
   if (gate.error) return apiError(gate.error, gate.status);
 
   try {
-    const { id, isActive, disabledFeatures, password, role, username, tenantId, name } = await request.json();
+    const { id, isActive, disabledFeatures, password, email, role, username, tenantId, name } = await request.json();
 
     // Workspace rename (display name only). Admin-only.
     if (tenantId !== undefined) {
@@ -163,6 +164,14 @@ export async function PATCH(request) {
     if (password !== undefined) {
       await setUserPassword(id, password);
       return apiOk();
+    }
+
+    // Contact email — the address notify/assign uses. Same scope as a password
+    // reset: admins may set anyone's, owners only their own members' (scoped
+    // above). Empty string clears it.
+    if (email !== undefined) {
+      const stored = await setUserEmail(id, email);
+      return apiJson({ ok: true, email: stored });
     }
 
     // Feature access update (the "guard" toggles). Separate from active/disabled.

@@ -128,9 +128,10 @@ export const API_FEATURES = {
   '/api/tasks': ['tasks'],
   '/api/task-boards': ['tasks'],
   '/api/horizons': ['tasks'],
-  // Roster is shared by the Tasks board AND the per-company Research Task panel,
-  // so it stays reachable whenever EITHER feature is on.
-  '/api/assignees': ['tasks', 'research'],
+  // The workspace people-picker (assign on the Tasks board / Research Task panel,
+  // pick author+reviewer in Draft & Review) is shared, so it stays reachable
+  // whenever EITHER feature is on.
+  '/api/workspace-users': ['tasks', 'research'],
   // Lessons
   '/api/lessons': ['lessons'],
   '/api/lesson-patterns': ['lessons'],
@@ -142,7 +143,6 @@ export const API_FEATURES = {
   '/api/notify-review': ['research'],
   '/api/review-summary': ['research', 'strategic-hub'],
   '/api/period-changes': ['research'],
-  '/api/saved-emails': ['research'],
   '/api/validate-ticker': ['research'],
   '/api/ticker': ['research'],
   '/api/generate-data': ['research'],
