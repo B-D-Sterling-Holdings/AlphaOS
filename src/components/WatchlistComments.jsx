@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { MessageCircle, Plus, ChevronDown, ChevronRight, Bell, Users, Loader2, Clock, Star, X } from 'lucide-react';
+import { MessageCircle, Plus, ChevronDown, ChevronRight, Bell, Users, Loader2, Clock, X } from 'lucide-react';
 import PersonSearchSelect from '@/components/PersonSearchSelect';
 import CommentThread, { ROLE_META, makeId } from '@/components/CommentThread';
 import { DEFAULT_AUTO_NOTIFY } from '@/lib/autoNotify';
@@ -71,8 +71,8 @@ const browserTz = () => {
 
 export default function WatchlistComments({ ticker, review, loading = false, onChange, onNotify, onClose }) {
   const threads = useMemo(() => (Array.isArray(review?.threads) ? review.threads : []), [review]);
-  const author = review?.author || { name: '', email: '' };
-  const reviewer = review?.reviewer || { name: '', email: '' };
+  const author = review?.author || { userId: '', name: '' };
+  const reviewer = review?.reviewer || { userId: '', name: '' };
   const cfg = review?.autoNotify || DEFAULT_AUTO_NOTIFY;
 
   const patchReview = (updates, persist = false) => onChange({ ...review, threads, author, reviewer, autoNotify: cfg, ...updates }, persist);
@@ -118,33 +118,23 @@ export default function WatchlistComments({ ticker, review, loading = false, onC
   // Display order only: resolved threads sink to the bottom (stable within groups).
   const orderedThreads = [...threads].sort((a, b) => Number(!!a.resolved) - Number(!!b.resolved));
 
-  // ── Saved people (address book) ──
-  const [savedPeople, setSavedPeople] = useState([]);
+  // ── Workspace people (Author/Reviewer are picked from the workspace's users;
+  //    emails live on the user record and are managed in Admin) ──
+  const [people, setPeople] = useState([]);
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/saved-emails')
+    fetch('/api/workspace-users')
       .then(r => r.json())
-      .then(data => { if (!cancelled && Array.isArray(data.people)) setSavedPeople(data.people); })
+      .then(data => { if (!cancelled && Array.isArray(data.users)) setPeople(data.users); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
-  const persistSavedPeople = useCallback((people) => {
-    setSavedPeople(people);
-    fetch('/api/saved-emails', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ people }),
-    }).catch(() => {});
-  }, []);
-  const saveContact = useCallback((person) => {
-    const name = (person?.name || '').trim();
-    const email = (person?.email || '').trim();
-    if (!email) return;
-    const key = email.toLowerCase();
-    persistSavedPeople([{ name, email }, ...savedPeople.filter(p => (p.email || '').toLowerCase() !== key)]);
-  }, [savedPeople, persistSavedPeople]);
-  const removeContact = useCallback((email) => {
-    const key = (email || '').toLowerCase();
-    persistSavedPeople(savedPeople.filter(p => (p.email || '').toLowerCase() !== key));
-  }, [savedPeople, persistSavedPeople]);
+  const hasEmailFor = useCallback((person) => {
+    if (!person?.userId) return false;
+    return !!people.find(p => p.id === person.userId)?.hasEmail;
+  }, [people]);
+  const authorHasEmail = hasEmailFor(author);
+  const reviewerHasEmail = hasEmailFor(reviewer);
 
   // ── Notify (email now) ──
   const [notifying, setNotifying] = useState(false);
@@ -198,8 +188,8 @@ export default function WatchlistComments({ ticker, review, loading = false, onC
 
   const autoEnabled = !!cfg.enabled;
   const autoMissingEmail =
-    (cfg.roles?.reviewer !== false && !reviewer.email) ||
-    (cfg.roles?.author !== false && !author.email);
+    (cfg.roles?.reviewer !== false && !reviewerHasEmail) ||
+    (cfg.roles?.author !== false && !authorHasEmail);
 
   if (loading) {
     return (
@@ -274,13 +264,16 @@ export default function WatchlistComments({ ticker, review, loading = false, onC
                         if (!items.length) return null;
                         const meta = ROLE_META[role];
                         const person = role === 'reviewer' ? reviewer : author;
+                        const roleUser = person.userId ? people.find(p => p.id === person.userId) : null;
+                        const roleEmail = roleUser?.hasEmail ? roleUser.email : '';
                         return (
                           <div key={role}>
                             <div className="flex items-center gap-1.5 mb-1 px-1">
                               <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
                               <span className={`text-[11px] font-semibold ${meta.text}`}>{meta.label}</span>
-                              <span className={`text-[10px] truncate ${person.email ? 'text-gray-400' : 'text-amber-500'}`}>
-                                {person.email || 'no email set'}
+                              {person.name && <span className="text-[10px] text-gray-500 truncate">{person.name}</span>}
+                              <span className={`text-[10px] truncate ${roleEmail ? 'text-gray-400' : 'text-amber-500'}`}>
+                                {roleEmail || 'email is not set up'}
                               </span>
                             </div>
                             <div className="space-y-0.5">
@@ -378,7 +371,7 @@ export default function WatchlistComments({ ticker, review, loading = false, onC
           </div>
           <button
             onClick={() => setShowConfig(v => !v)}
-            title="Set author & reviewer emails"
+            title="Choose author & reviewer"
             className={`flex items-center p-1.5 rounded-lg transition-colors ${showConfig ? 'text-emerald-600 bg-emerald-50' : 'text-gray-300 hover:text-gray-600 hover:bg-gray-50'}`}
           >
             <Users size={14} />
@@ -393,55 +386,26 @@ export default function WatchlistComments({ ticker, review, loading = false, onC
         {showConfig && (
           <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3 space-y-3">
             <p className="text-[11px] text-gray-400">
-              Pick a saved person or type someone new and <Star size={10} className="inline -mt-0.5" /> to save them.
+              Choose the Author and Reviewer from this workspace’s people. Emails are managed in Admin — someone with no email can be chosen but can’t be notified until one is set.
             </p>
             {[
-              { role: 'reviewer', person: reviewer, key: 'reviewer', meta: ROLE_META.reviewer },
-              { role: 'author', person: author, key: 'author', meta: ROLE_META.author },
-            ].map(({ role, person, key, meta }) => {
-              const trimmedEmail = (person.email || '').trim();
-              const isSaved = !!trimmedEmail && savedPeople.some(p => (p.email || '').toLowerCase() === trimmedEmail.toLowerCase());
+              { role: 'reviewer', person: reviewer, key: 'reviewer', hasEmail: reviewerHasEmail, meta: ROLE_META.reviewer },
+              { role: 'author', person: author, key: 'author', hasEmail: authorHasEmail, meta: ROLE_META.author },
+            ].map(({ role, person, key, hasEmail, meta }) => {
               const onPersonChange = (value, persist = false) => patchReview({ [key]: value }, persist);
               return (
-                <div key={role} className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className={`flex items-center gap-1.5 text-[11px] font-semibold w-16 shrink-0 ${meta.text}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />{meta.label}
-                    </span>
-                    {savedPeople.length > 0 && (
-                      <PersonSearchSelect
-                        people={savedPeople}
-                        value={isSaved ? trimmedEmail : ''}
-                        onSelect={(picked) => onPersonChange({ name: picked.name || '', email: picked.email || '' }, true)}
-                      />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={person.name}
-                      onChange={(e) => onPersonChange({ ...person, name: e.target.value })}
-                      onBlur={(e) => onPersonChange({ ...person, name: e.target.value }, true)}
-                      placeholder="Name"
-                      className="flex-1 min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300"
-                    />
-                    <input
-                      type="email"
-                      value={person.email}
-                      onChange={(e) => onPersonChange({ ...person, email: e.target.value })}
-                      onBlur={(e) => onPersonChange({ ...person, email: e.target.value }, true)}
-                      placeholder="email@example.com"
-                      className="flex-[1.4] min-w-0 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:ring-1 focus:ring-emerald-300"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => isSaved ? removeContact(trimmedEmail) : saveContact(person)}
-                      disabled={!trimmedEmail}
-                      title={!trimmedEmail ? 'Enter an email to save' : isSaved ? 'Remove from saved' : 'Save for reuse'}
-                      className={`shrink-0 p-1.5 rounded-lg transition-colors ${!trimmedEmail ? 'text-gray-200 cursor-not-allowed' : isSaved ? 'text-amber-500 hover:bg-amber-50' : 'text-gray-300 hover:text-amber-500 hover:bg-amber-50'}`}
-                    >
-                      <Star size={14} fill={isSaved ? 'currentColor' : 'none'} />
-                    </button>
-                  </div>
+                <div key={role} className="flex items-center gap-2">
+                  <span className={`flex items-center gap-1.5 text-[11px] font-semibold w-16 shrink-0 ${meta.text}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />{meta.label}
+                  </span>
+                  <PersonSearchSelect
+                    people={people}
+                    value={person.userId || ''}
+                    onSelect={(picked) => onPersonChange({ userId: picked.id, name: picked.name }, true)}
+                  />
+                  {person.userId && !hasEmail && (
+                    <span className="text-[11px] text-amber-600">⚠ email is not set up</span>
+                  )}
                 </div>
               );
             })}

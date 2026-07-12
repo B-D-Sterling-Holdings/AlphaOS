@@ -1,12 +1,20 @@
 import { NextResponse } from 'next/server';
 import { sendEmail, renderNotifyEmail, computePendingThreads } from '@/lib/email';
 import { getSession } from '@/lib/db';
+import { getEmailsForUserIds } from '@/lib/users';
 import { signStorageUrlsForTenant } from '@/lib/storage';
 import { STAGE_LABELS } from '@/lib/stageMove';
 
 /**
  * POST /api/notify-review
- * Body: { ticker, author: {name, email}, reviewer: {name, email}, threads: [...] }
+ * Body: { ticker, author: {userId, name}, reviewer: {userId, name}, threads: [...] }
+ *
+ * Author/reviewer are now workspace users: their email is resolved live from the
+ * users table (see /api/workspace-users + the Admin email field), scoped to the
+ * session's tenant, rather than a typed-in address. A person with no email set
+ * is reported as skipped with reason "email is not set up". Legacy records that
+ * still carry a `person.email` (pre-migration) fall back to it so old theses
+ * keep working.
  *
  * Looks at every unresolved thread, works out whose turn it is to respond next,
  * and sends each person (author / reviewer) a single email bundling all the
@@ -43,6 +51,13 @@ export async function POST(request) {
     }
     const roles = { author, reviewer };
 
+    // Resolve each role's email from their workspace user record (scoped to this
+    // tenant), falling back to any legacy typed-in address on the record.
+    const ids = [author?.userId, reviewer?.userId].filter(Boolean);
+    const emailById = await getEmailsForUserIds(ids, session.tenantId);
+    const emailFor = (person) =>
+      (person?.userId && emailById.get(person.userId)) || person?.email || null;
+
     const sent = [];
     const skipped = [];
 
@@ -51,8 +66,9 @@ export async function POST(request) {
       if (!items.length) continue;
 
       const person = roles[role] || {};
-      if (!person.email) {
-        skipped.push({ role, count: items.length, reason: 'no email set' });
+      const personEmail = emailFor(person);
+      if (!personEmail) {
+        skipped.push({ role, count: items.length, reason: 'email is not set up' });
         continue;
       }
 
@@ -60,8 +76,9 @@ export async function POST(request) {
       // copied when the reviewer is emailed, and vice versa. Skip when the
       // counterpart has no email, or is the same address as the recipient.
       const counterpart = roles[role === 'reviewer' ? 'author' : 'reviewer'] || {};
-      const cc = counterpart.email && counterpart.email.toLowerCase() !== person.email.toLowerCase()
-        ? counterpart.email
+      const counterpartEmail = emailFor(counterpart);
+      const cc = counterpartEmail && counterpartEmail.toLowerCase() !== personEmail.toLowerCase()
+        ? counterpartEmail
         : undefined;
 
       // Rewrite inline-image references into signed URLs the recipient's
@@ -76,8 +93,8 @@ export async function POST(request) {
       });
 
       try {
-        await sendEmail({ to: person.email, cc, subject, html });
-        sent.push({ role, email: person.email, cc: cc || null, count: items.length });
+        await sendEmail({ to: personEmail, cc, subject, html });
+        sent.push({ role, email: personEmail, cc: cc || null, count: items.length });
       } catch (e) {
         skipped.push({ role, count: items.length, reason: e.message });
       }

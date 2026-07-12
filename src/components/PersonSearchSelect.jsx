@@ -1,13 +1,18 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, memo } from 'react';
-import { Search, Check } from 'lucide-react';
+import { Search, Check, AlertTriangle } from 'lucide-react';
 
-// A compact search-to-select picker for saved people (name + email), styled as a
-// smaller sibling of TickerSearchSelect. Type to filter by name or email; the match
-// is highlighted, Enter picks the top hit, Escape/blur closes. `people` is a list
-// of { name, email }; selection is keyed on email.
-const PersonSearchSelect = memo(function PersonSearchSelect({ people, value, onSelect, placeholder = 'Saved people…' }) {
+// A compact search-to-select picker for the workspace's users, used to choose the
+// Author / Reviewer on a review. Type to filter by name or email; Enter picks the
+// top hit, Escape/blur closes. `people` is the workspace roster
+// [{ id, name, email, hasEmail }] (from /api/workspace-users); `value` is the
+// selected user's id; `onSelect` is called with the chosen user object.
+//
+// A user with no email set is still selectable (you can assign them), but is shown
+// with a warning — notifying them reports "email is not set up" until an admin
+// adds one.
+const PersonSearchSelect = memo(function PersonSearchSelect({ people, value, onSelect, placeholder = 'Choose a person…' }) {
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
@@ -24,16 +29,17 @@ const PersonSearchSelect = memo(function PersonSearchSelect({ people, value, onS
   const options = useMemo(() => {
     const seen = new Set();
     return (people || []).filter(p => {
-      const key = (p?.email || p?.name || '').toLowerCase();
+      const key = String(p?.id || '');
       if (!key || seen.has(key)) return false;
       seen.add(key);
       return true;
     });
   }, [people]);
 
-  const selectedKey = (value || '').toLowerCase();
-  const selected = options.find(p => (p.email || '').toLowerCase() === selectedKey);
-  const selectedLabel = selected ? (selected.name ? `${selected.name} — ${selected.email}` : selected.email) : '';
+  const selected = options.find(p => p.id === value);
+  const selectedLabel = selected
+    ? (selected.email ? `${selected.name} — ${selected.email}` : selected.name)
+    : '';
 
   const q = search.trim().toLowerCase();
   const filtered = options.filter(p =>
@@ -85,27 +91,31 @@ const PersonSearchSelect = memo(function PersonSearchSelect({ people, value, onS
         >
           {filtered.length === 0 ? (
             <div className="px-3 py-2 text-[12px] text-gray-400 text-center">
-              {options.length === 0 ? 'No saved people yet' : 'No matches'}
+              {options.length === 0 ? 'No people in this workspace' : 'No matches'}
             </div>
           ) : filtered.map(p => {
-            const isActive = (p.email || '').toLowerCase() === selectedKey;
+            const isActive = p.id === value;
             return (
               <button
-                key={(p.email || p.name).toLowerCase()}
+                key={p.id}
                 type="button"
                 onMouseDown={e => e.preventDefault()}
                 onClick={() => commit(p)}
                 className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors ${isActive ? 'bg-emerald-50' : 'hover:bg-gray-50'}`}
               >
                 <span className="min-w-0">
-                  {p.name && (
-                    <span className={`block text-[12px] font-semibold truncate ${isActive ? 'text-emerald-700' : 'text-gray-700'}`}>
-                      {highlight(p.name)}
+                  <span className={`block text-[12px] font-semibold truncate ${isActive ? 'text-emerald-700' : 'text-gray-700'}`}>
+                    {highlight(p.name)}
+                  </span>
+                  {p.hasEmail ? (
+                    <span className={`block text-[11px] truncate ${isActive ? 'text-emerald-600' : 'text-gray-400'}`}>
+                      {highlight(p.email)}
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[11px] text-amber-500 truncate">
+                      <AlertTriangle size={10} className="shrink-0" /> email not set up
                     </span>
                   )}
-                  <span className={`block text-[11px] truncate ${isActive ? 'text-emerald-600' : 'text-gray-400'}`}>
-                    {highlight(p.email)}
-                  </span>
                 </span>
                 {isActive && <Check size={13} className="text-emerald-500 shrink-0" />}
               </button>

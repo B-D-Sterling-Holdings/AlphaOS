@@ -500,20 +500,20 @@ export function buildDemoDataset({ now = new Date(), quotes = {} } = {}) {
     task('o4', 'Set up the quarterly LP report template so letters stop being ad-hoc', { board_id: 'board_demo_ops', priority: 'medium', assignee: 'Both', done: true, position: 3 }, 45),
   ];
 
-  /* ── App settings (boards, assignees, saved emails, accounting, and all
-     per-tenant config) ──
+  /* ── App settings (boards, accounting, and all per-tenant config) ──
      app_settings.value is JSONB — store native objects/arrays/strings, not
      stringified JSON. The single-row config tables were folded in here by
      migration 024; the macro/allocation/sector/factor blocks below push their
-     keys onto this array. */
-  const assigneeList = [{ name: 'Alex', color: '#2563eb' }, { name: 'Jordan', color: '#dc2626' }, { name: 'Both', color: '#16a34a' }];
+     keys onto this array.
+
+     NOTE: assignees and review author/reviewer are now workspace users (picked
+     from /api/workspace-users, managed in Admin), not a free-text roster — so
+     there is no assignee/saved-email seed here anymore. The seeded task
+     assignees and thesis author/reviewer names below are display snapshots. */
   T.app_settings = [
     { key: 'activeWatchlistId', value: 'default' },
     { key: 'activeTaskBoardId', value: 'default' },
     { key: 'task_boards', value: [{ id: 'default', name: 'Blue Harbor Tasks' }, { id: 'board_demo_ops', name: 'Fund Operations' }] },
-    { key: 'assignees', value: assigneeList },
-    { key: 'assignees_board_demo_ops', value: assigneeList },
-    { key: 'saved_emails', value: [{ name: 'Alex', email: 'alex@blueharbor.demo' }, { name: 'Jordan', email: 'jordan@blueharbor.demo' }] },
     { key: 'fund-accounting-state', value: accountingState(now) },
     { key: 'portfolio_cash', value: { cash: 6180.42 } },
   ];

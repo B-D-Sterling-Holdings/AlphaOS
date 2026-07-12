@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db';
 /**
  * GET /api/review-summary?tickers=A,B,C
  *
- * Returns { summaries: { TICKER: openCommentCount }, authors: { TICKER: {name, email} } }
+ * Returns { summaries: { TICKER: openCommentCount }, authors: { TICKER: {name} } }
  * for the Watchlist cards — the badge count and the "who's the author" line. Comments
  * are one entity per ticker living on thesis.underwriting.draftReview (the same store
  * Draft & Review reads/writes), so this counts unresolved threads that hold at least
@@ -40,9 +40,10 @@ export async function GET(request) {
         t => !t.resolved && (t.messages || []).length > 0
       ).length;
       // Only report an author when one is actually set, so the card can show the
-      // "no author yet" nudge for names that have none.
+      // "no author yet" nudge for names that have none. Author is a workspace user
+      // ({ userId, name }); the card shows the display name.
       const a = dr.author || {};
-      if (a.name || a.email) authors[row.ticker] = { name: a.name || '', email: a.email || '' };
+      if (a.name || a.userId) authors[row.ticker] = { name: a.name || '' };
     }
 
     return NextResponse.json({ summaries, authors });

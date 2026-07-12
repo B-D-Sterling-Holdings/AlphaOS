@@ -4,14 +4,15 @@
 // Research, and Position Review pages. It is a structured to-do list scoped to
 // the company currently open (one ticker): "build the model", "analyze
 // utilization rates", etc. Each item carries a status, an optional assignee (the
-// person responsible, picked from the same saved-assignee roster the /tasks board
-// uses), free-form tags, and notes.
+// person responsible, picked from the workspace's users — the same people the
+// /tasks board assigns from, sourced from /api/workspace-users), free-form tags,
+// and notes.
 //
 // It is a fixed overlay: collapsing/expanding only toggles visibility, it never
 // reflows the page underneath (per the design — "nothing moves around, it's just
 // visible or not"). Render it only when a ticker is selected; it returns null
-// otherwise. Persistence, concurrency and the assignee roster all reuse existing
-// app infrastructure (see researchTaskApi + /api/assignees).
+// otherwise. Persistence and concurrency reuse existing app infrastructure (see
+// researchTaskApi).
 
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
@@ -23,12 +24,9 @@ import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from 
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useCache } from '@/lib/CacheContext';
-import {
-  COLOR_PALETTE,
-  getAssigneeInlineStyle,
-  addAssignee as addAssigneeToList,
-  removeAssignee as removeAssigneeFromList,
-} from '@/lib/taskBoard';
+import { getAssigneeInlineStyle } from '@/lib/taskBoard';
+import { fetchWorkspaceUsers, saveWorkspaceUserColor } from '@/lib/taskBoardApi';
+import AssigneeColorDot from '@/components/AssigneeColorDot';
 import {
   fetchResearchTasks,
   createResearchTask,
@@ -36,10 +34,6 @@ import {
   deleteResearchTask,
   reorderResearchTasks,
 } from '@/lib/researchTaskApi';
-
-// The roster lives under its own board key so it's shared across every company's
-// research tasks but kept separate from the /tasks board's roster.
-const ROSTER_BOARD = 'research-tasks';
 
 const STATUS_ORDER = ['todo', 'in_progress', 'blocked', 'done'];
 const STATUS_META = {
@@ -87,27 +81,6 @@ function TaskHandleContents({ openCount, collapse }) {
       )}
     </>
   );
-}
-
-/* ------------------------------------------------------------------ *
- * Assignee roster API (app_settings via /api/assignees)
- * ------------------------------------------------------------------ */
-async function fetchRoster() {
-  try {
-    const res = await fetch(`/api/assignees?board_id=${ROSTER_BOARD}`);
-    const data = await res.json().catch(() => ({}));
-    return Array.isArray(data.assignees) ? data.assignees : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRoster(assignees) {
-  return fetch('/api/assignees', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ assignees, board_id: ROSTER_BOARD }),
-  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -160,15 +133,11 @@ function SelectPill({ value, order, meta, onChange, fallback, icon: Icon }) {
 }
 
 /* ------------------------------------------------------------------ *
- * Assignee picker — pick from the roster, or add / remove people
+ * Assignee picker — pick from the workspace's users (managed in Admin)
  * ------------------------------------------------------------------ */
-function AssigneePicker({ current, roster, onSelect, onAddPerson, onRemovePerson, onClose, anchorRef }) {
+function AssigneePicker({ current, roster, onSelect, onSetColor, onClose, anchorRef }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const [showAdd, setShowAdd] = useState(false);
-  const [name, setName] = useState('');
-  const [color, setColor] = useState(COLOR_PALETTE[0]);
-  const [confirmRemove, setConfirmRemove] = useState(null);
 
   useEffect(() => {
     if (anchorRef?.current) {
@@ -178,18 +147,13 @@ function AssigneePicker({ current, roster, onSelect, onAddPerson, onRemovePerson
   }, [anchorRef]);
 
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    const handler = (e) => {
+      if (e.target.closest?.('[data-assignee-color-pop]')) return;
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
-
-  const commitAdd = () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    onAddPerson(trimmed, color);
-    onSelect(trimmed);
-    onClose();
-  };
 
   return createPortal(
     <div
@@ -206,64 +170,22 @@ function AssigneePicker({ current, roster, onSelect, onAddPerson, onRemovePerson
           <X size={12} /> Unassign
         </button>
       )}
-      {roster.map(({ name: n, color: c }) => (
-        <div key={n} className="group/row flex items-center hover:bg-gray-50">
-          <button
-            onClick={() => { onSelect(n); onClose(); }}
-            className={`flex-1 text-left px-3 py-1.5 text-sm flex items-center gap-2 ${current?.toLowerCase() === n.toLowerCase() ? 'font-semibold' : ''}`}
-          >
-            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: c }} />
-            {n}
-          </button>
-          {confirmRemove === n ? (
-            <div className="flex items-center gap-1 pr-2" onClick={e => e.stopPropagation()}>
-              <button onClick={() => setConfirmRemove(null)} className="text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded hover:bg-gray-200">No</button>
-              <button onClick={() => { onRemovePerson(n); setConfirmRemove(null); }} className="text-[10px] font-semibold text-white bg-red-500 px-1.5 py-0.5 rounded hover:bg-red-600">Yes</button>
-            </div>
-          ) : (
-            <button
-              onClick={(e) => { e.stopPropagation(); setConfirmRemove(n); }}
-              className="opacity-0 group-hover/row:opacity-100 pr-2 text-gray-300 hover:text-red-500 transition-all"
-              title={`Remove ${n}`}
-            >
-              <X size={12} />
-            </button>
-          )}
-        </div>
-      ))}
-
-      {showAdd ? (
-        <div className="px-3 py-2 border-t border-gray-100 mt-1" onClick={e => e.stopPropagation()}>
-          <input
-            autoFocus
-            value={name}
-            onChange={e => setName(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') commitAdd(); }}
-            placeholder="Name"
-            className="w-full text-sm px-2 py-1 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-200 mb-2"
-          />
-          <div className="flex items-center gap-1.5 mb-2 flex-wrap">
-            {COLOR_PALETTE.map(c => (
-              <button
-                key={c}
-                onClick={() => setColor(c)}
-                className={`w-5 h-5 rounded-full transition-transform ${color === c ? 'ring-2 ring-offset-1 ring-gray-400 scale-110' : ''}`}
-                style={{ backgroundColor: c }}
-              />
-            ))}
-          </div>
-          <div className="flex gap-1.5">
-            <button onClick={commitAdd} className="flex-1 text-xs font-semibold text-white bg-emerald-600 rounded-lg py-1 hover:bg-emerald-700">Add</button>
-            <button onClick={() => { setShowAdd(false); setName(''); }} className="text-xs text-gray-500 px-2 hover:text-gray-700">Cancel</button>
-          </div>
+      {roster.length === 0 ? (
+        <div className="px-3 py-2 text-xs text-gray-400">
+          No people in this workspace yet. Add users in Admin.
         </div>
       ) : (
-        <button
-          onClick={() => setShowAdd(true)}
-          className="w-full text-left px-3 py-1.5 text-xs text-emerald-600 hover:bg-emerald-50 flex items-center gap-2 border-t border-gray-100 mt-1"
-        >
-          <Plus size={12} /> Add person
-        </button>
+        roster.map(({ name: n, color: c }) => (
+          <div
+            key={n}
+            className={`w-full px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-gray-50 ${current?.toLowerCase() === n.toLowerCase() ? 'font-semibold' : ''}`}
+          >
+            <AssigneeColorDot color={c} onPick={onSetColor ? (color) => onSetColor(n, color) : undefined} />
+            <button onClick={() => { onSelect(n); onClose(); }} className="flex-1 text-left">
+              {n}
+            </button>
+          </div>
+        ))
       )}
     </div>,
     document.body,
@@ -559,13 +481,20 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
   // hides the previous company's list during a switch.
   const loading = !!upper && loadedTicker !== upper;
 
-  // Roster is company-independent; load it once the panel is open.
+  // The assignable people are the workspace's users (managed in Admin), shared
+  // across every company; load them once the panel is open.
   useEffect(() => {
     if (!open) return;
     let alive = true;
-    fetchRoster().then(r => { if (alive) setRoster(r); });
+    fetchWorkspaceUsers().then(r => { if (alive) setRoster(r); }).catch(() => {});
     return () => { alive = false; };
   }, [open]);
+
+  // Recolour a person's assignee tag: optimistic roster update + persist per-tenant.
+  const setAssigneeColor = useCallback((name, color) => {
+    setRoster(prev => prev.map(p => p.name === name ? { ...p, color } : p));
+    saveWorkspaceUserColor(name, color).catch(() => {});
+  }, []);
 
   const flash = useCallback((msg) => {
     setNotice(msg);
@@ -638,14 +567,6 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
       flash('Could not delete that task.');
     }
   }, [upper, flash]);
-
-  /* ---- roster mutations ---- */
-  const addPerson = useCallback((name, color) => {
-    setRoster(prev => { const next = addAssigneeToList(prev, name, color); saveRoster(next); return next; });
-  }, []);
-  const removePerson = useCallback((name) => {
-    setRoster(prev => { const next = removeAssigneeFromList(prev, name); saveRoster(next); return next; });
-  }, []);
 
   /* ---- drag-and-drop reorder, constrained to a single priority tier ----
      Reordering only happens WITHIN a tier (high/medium/low). Dragging a card over
@@ -816,8 +737,7 @@ export default function ResearchTaskPanel({ ticker, companyName }) {
           roster={roster}
           anchorRef={assigneeFor.anchorRef}
           onSelect={(name) => patchTask(assigneeFor.task, { assignee: name })}
-          onAddPerson={addPerson}
-          onRemovePerson={removePerson}
+          onSetColor={setAssigneeColor}
           onClose={() => setAssigneeFor(null)}
         />
       )}

@@ -17,6 +17,19 @@ export const COLOR_PALETTE = [
 
 export const DEFAULT_BOARDS = [{ id: 'default', name: 'Main Board' }];
 
+// A stable colour for a name, hashed into COLOR_PALETTE. Used to give each
+// workspace user a consistent assignee-tag colour without storing a roster —
+// the same name always lands on the same palette entry.
+export function colorForName(name) {
+  const s = String(name || '');
+  if (!s) return COLOR_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash * 31 + s.charCodeAt(i)) | 0;
+  }
+  return COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length];
+}
+
 export function getColorForAssignee(assignee, savedAssignees) {
   if (!assignee) return null;
   const found = savedAssignees.find(a => a.name.toLowerCase() === assignee.toLowerCase());

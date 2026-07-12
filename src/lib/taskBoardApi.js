@@ -69,15 +69,21 @@ export async function deleteTasksForBoard(boardId) {
   await Promise.all(tasksInBoard.map(task => deleteTask(task.id)));
 }
 
-export async function fetchAssigneesForBoard(boardId) {
-  const res = await fetch(`/api/assignees?board_id=${encodeURIComponent(boardId)}`);
-  return readJson(res);
+// The people you can assign are the workspace's users (see /api/workspace-users).
+// Returns [{ id, name, email, hasEmail, color }] — a drop-in for the old
+// free-text roster shape, so the assignee tag styling keeps working.
+export async function fetchWorkspaceUsers() {
+  const res = await fetch('/api/workspace-users');
+  const data = await readJson(res);
+  return Array.isArray(data.users) ? data.users : [];
 }
 
-export async function saveAssigneesForBoard(boardId, assignees) {
-  return fetch('/api/assignees', {
+// Recolour a workspace person's assignee tag. Persisted per-tenant so the colour
+// is consistent everywhere they appear (Tasks board, Week/Backlog, Research Tasks).
+export async function saveWorkspaceUserColor(name, color) {
+  return fetch('/api/workspace-users', {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ assignees, board_id: boardId }),
+    body: JSON.stringify({ name, color }),
   });
 }

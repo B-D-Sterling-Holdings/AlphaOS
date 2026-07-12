@@ -17,6 +17,7 @@ import {
   useDraggable, useDroppable, pointerWithin, rectIntersection,
 } from '@dnd-kit/core';
 import { getAssigneeInlineStyle } from '@/lib/taskBoard';
+import AssigneeColorDot from '@/components/AssigneeColorDot';
 import {
   startOfWeek, addWeeks, weekLabel,
   groupTasksForWeek, dueDateFromDropId, dayDropId,
@@ -36,7 +37,7 @@ function nextPriority(current) {
 
 // --- Assignee menu (self-contained; mirrors the board's colour roster) --------
 
-function AssigneeMenu({ current, savedAssignees, onSelect, onClose, align = 'right' }) {
+function AssigneeMenu({ current, savedAssignees, onSelect, onSetColor, onClose, align = 'right' }) {
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
@@ -48,19 +49,21 @@ function AssigneeMenu({ current, savedAssignees, onSelect, onClose, align = 'rig
           Unassigned
         </button>
         {savedAssignees.map(a => (
-          <button
+          <div
             key={a.name}
-            onClick={() => { onSelect(a.name); onClose(); }}
-            className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 flex items-center gap-2"
+            className="w-full px-3 py-1.5 text-sm hover:bg-gray-50 flex items-center gap-2"
           >
-            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: a.color }} />
-            <span className={current?.toLowerCase() === a.name.toLowerCase() ? 'font-semibold text-gray-900' : 'text-gray-700'}>
+            <AssigneeColorDot color={a.color} onPick={onSetColor ? (c) => onSetColor(a.name, c) : undefined} />
+            <button
+              onClick={() => { onSelect(a.name); onClose(); }}
+              className={`flex-1 text-left ${current?.toLowerCase() === a.name.toLowerCase() ? 'font-semibold text-gray-900' : 'text-gray-700'}`}
+            >
               {a.name}
-            </span>
-          </button>
+            </button>
+          </div>
         ))}
         {savedAssignees.length === 0 && (
-          <div className="px-3 py-2 text-xs text-gray-400">No saved people yet — add them in Board view.</div>
+          <div className="px-3 py-2 text-xs text-gray-400">No people in this workspace yet — add users in Admin.</div>
         )}
       </div>
     </>
@@ -201,6 +204,7 @@ function TaskChip({ task, savedAssignees, handlers, expandable = false, expanded
               current={task.assignee}
               savedAssignees={savedAssignees}
               onSelect={name => handlers.onUpdateAssignee(task.id, name)}
+              onSetColor={handlers.onSetColor}
               onClose={() => setMenuOpen(false)}
               align="left"
             />

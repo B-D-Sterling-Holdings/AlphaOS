@@ -105,12 +105,24 @@ const isWatching = (s) => s.stage === 'watching' || s.stage === 'researching';
 // Coerce a stock's (possibly absent) comment review into the full shape the
 // Draft & Review comment components expect: threads + author/reviewer people +
 // a normalized auto-notify config.
+// Author/Reviewer are workspace users: a stable userId + display-name snapshot. A
+// legacy record may still carry `email` (typed in before the switch) — preserved
+// so old reviews can still notify until they are re-picked.
+function normalizePerson(person) {
+  const p = person || {};
+  return {
+    userId: p.userId || '',
+    name: p.name || '',
+    ...(p.email ? { email: p.email } : {}),
+  };
+}
+
 function normalizeReview(review) {
   const r = review || {};
   return {
     threads: Array.isArray(r.threads) ? r.threads : [],
-    author: { name: r.author?.name || '', email: r.author?.email || '' },
-    reviewer: { name: r.reviewer?.name || '', email: r.reviewer?.email || '' },
+    author: normalizePerson(r.author),
+    reviewer: normalizePerson(r.reviewer),
     autoNotify: normalizeAutoNotify(r.autoNotify),
   };
 }
@@ -122,19 +134,18 @@ function openCommentCount(threads) {
   return (threads || []).filter(t => !t.resolved && (t.messages || []).length > 0).length;
 }
 
-// Fold an edited author into the ticker→author map the cards read: set it when a
-// name/email exists, drop the key when it's been cleared — so the card flips back to
+// Fold an edited author into the ticker→author map the cards read: set it when an
+// author is chosen, drop the key when it's been cleared — so the card flips back to
 // the "no author set" nudge (matching /api/review-summary, which omits empty authors).
 function setCardAuthor(map, ticker, author) {
   const name = author?.name?.trim() || '';
-  const email = author?.email?.trim() || '';
-  if (!name && !email) {
+  if (!name) {
     if (!(ticker in map)) return map;
     const next = { ...map };
     delete next[ticker];
     return next;
   }
-  return { ...map, [ticker]: { name, email } };
+  return { ...map, [ticker]: { name } };
 }
 
 // Stable-partition a list so pinned (starred) names float ahead of the rest while

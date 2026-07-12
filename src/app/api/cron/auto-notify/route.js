@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { sendEmail, renderNotifyEmail } from '@/lib/email';
+import { getEmailsForUserIds } from '@/lib/users';
 import { selectDueReminders, computeNextSent } from '@/lib/autoNotify';
 import { signStorageUrlsForTenant } from '@/lib/storage';
 import { STAGE_LABELS, normalizeStage } from '@/lib/stageMove';
@@ -86,7 +87,17 @@ async function runAutoNotify() {
     const threads = draftReview.threads || [];
     const author = draftReview.author || {};
     const reviewer = draftReview.reviewer || {};
-    const emails = { author: author.email, reviewer: reviewer.email };
+
+    // Author/reviewer are workspace users now: resolve their email live from the
+    // users table (scoped to THIS thesis's tenant), falling back to any legacy
+    // typed-in address so pre-migration reviews still fire.
+    const emailById = await getEmailsForUserIds(
+      [author.userId, reviewer.userId].filter(Boolean),
+      row.tenant_id,
+    );
+    const emailFor = (person) =>
+      (person?.userId && emailById.get(person.userId)) || person?.email || null;
+    const emails = { author: emailFor(author), reviewer: emailFor(reviewer) };
 
     // Where the name currently sits (Watchlist / Draft & Review / …). Only labeled
     // when the ticker is actually on a watchlist — an unknown stage stays generic so
@@ -102,15 +113,16 @@ async function runAutoNotify() {
       const items = due[role];
       if (!items.length) continue;
       const person = role === 'reviewer' ? reviewer : author;
-      if (!person.email) {
-        summary.skipped.push({ ticker: row.ticker, role, count: items.length, reason: 'no email set' });
+      const personEmail = emails[role];
+      if (!personEmail) {
+        summary.skipped.push({ ticker: row.ticker, role, count: items.length, reason: 'email is not set up' });
         continue;
       }
       // CC the counterpart so both sides stay in the loop (author copied when the
       // reviewer is emailed, and vice versa). Skip if it's the same/absent address.
-      const counterpart = role === 'reviewer' ? author : reviewer;
-      const cc = counterpart.email && counterpart.email.toLowerCase() !== person.email.toLowerCase()
-        ? counterpart.email
+      const counterpartEmail = role === 'reviewer' ? emails.author : emails.reviewer;
+      const cc = counterpartEmail && counterpartEmail.toLowerCase() !== personEmail.toLowerCase()
+        ? counterpartEmail
         : undefined;
       // Inline images reference auth-gated app URLs (or legacy public URLs),
       // neither of which an email client can load. Re-sign them for the
@@ -125,7 +137,7 @@ async function runAutoNotify() {
         stageLabel,
       });
       try {
-        await sendEmail({ to: person.email, cc, subject, html });
+        await sendEmail({ to: personEmail, cc, subject, html });
         summary.emailsSent++;
         for (const t of items) remindedIds.push(t.id);
       } catch (e) {

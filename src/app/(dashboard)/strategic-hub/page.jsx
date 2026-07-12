@@ -18,6 +18,10 @@ import { schemeTopWeights } from '@/lib/allocationEngine';
 import { useCache } from '@/lib/CacheContext';
 
 /* ── helpers ── */
+// Compact height for the collapsed Portfolio Notes box; expanding grows it to
+// fit the full content (mirrors the Watchlist note expand/collapse).
+const COLLAPSED_PORTFOLIO_NOTES_HEIGHT = 140;
+
 const fmt$ = v => {
   const n = Number(v);
   if (Math.abs(n) >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
@@ -516,6 +520,7 @@ export default function StrategicHubPage() {
   const [sortBy, setSortBy] = useState('priority'); // priority | weight | gl | sentiment
   const [filterSentiment, setFilterSentiment] = useState('all');
   const [portfolioNotes, setPortfolioNotes] = useState('');
+  const [notesExpanded, setNotesExpanded] = useState(false); // portfolio notes: compact by default, expand to full height
   // Watchlist + pipeline source (shared scope)
   const [watchlistData, setWatchlistData] = useState(() => cache.get('workflow_watchlist') || null);
   const [activeWlId, setActiveWlId] = useState(null);
@@ -585,11 +590,17 @@ export default function StrategicHubPage() {
   useLayoutEffect(() => {
     const el = portfolioNotesRef.current;
     if (!el) return;
+    // Collapsed: clamp to a compact height (scroll inside). Expanded: grow to fit
+    // the full content, like the Watchlist "Why I'm interested" notes.
+    if (!notesExpanded) {
+      el.style.height = `${COLLAPSED_PORTFOLIO_NOTES_HEIGHT}px`;
+      return;
+    }
     const y = window.scrollY;
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
     if (window.scrollY < y) window.scrollTo(window.scrollX, y);
-  }, [portfolioNotes]);
+  }, [portfolioNotes, notesExpanded]);
 
   const load = useCallback(async () => {
     try {
@@ -1146,14 +1157,27 @@ export default function StrategicHubPage() {
           <h2 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">Portfolio Notes</h2>
           <span className={`text-[10px] text-emerald-600 transition-opacity ${notesSaved ? 'opacity-100' : 'opacity-0'}`}>Saved</span>
         </div>
-        <textarea spellCheck={true}
-          value={portfolioNotes}
-          onChange={e => handleNotesChange(e.target.value)}
-          ref={portfolioNotesRef}
-          placeholder="Overall thoughts on the portfolio, market, themes, ideas to revisit..."
-          rows={6}
-          className="w-full border-0 bg-transparent text-sm text-gray-700 placeholder-gray-300 focus:outline-none resize-none leading-relaxed overflow-hidden"
-        />
+        <div className="relative">
+          <textarea spellCheck={true}
+            value={portfolioNotes}
+            onChange={e => handleNotesChange(e.target.value)}
+            ref={portfolioNotesRef}
+            placeholder="Overall thoughts on the portfolio, market, themes, ideas to revisit..."
+            rows={6}
+            className={`w-full border-0 bg-transparent text-sm text-gray-700 placeholder-gray-300 focus:outline-none resize-none leading-relaxed ${notesExpanded ? 'overflow-hidden' : 'overflow-y-auto'}`}
+          />
+          {(portfolioNotes.trim() || notesExpanded) && (
+            <button
+              type="button"
+              onClick={() => setNotesExpanded(v => !v)}
+              className="absolute bottom-1 right-1 flex items-center gap-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-300 hover:text-emerald-600 bg-white rounded pl-1.5 py-0.5 transition-colors"
+              title={notesExpanded ? 'Collapse notes' : 'Expand notes'}
+            >
+              {notesExpanded ? 'Collapse' : 'Expand'}
+              {notesExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            </button>
+          )}
+        </div>
       </div>
 
       </div>
